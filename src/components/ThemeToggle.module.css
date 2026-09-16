@@ -1,0 +1,38 @@
+.toggleButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.toggleButton:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.toggleIcon {
+  flex-shrink: 0;
+  color: var(--text-primary);
+  transition: transform 0.2s ease;
+}
+
+.toggleButton:hover .toggleIcon {
+  transform: rotate(15deg);
+}
+
+.toggleLabel {
+  white-space: nowrap;
+}
