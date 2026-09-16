@@ -1,0 +1,317 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  DIREKTOR
+  RUKOVODILAC
+  MAGACIN
+  MEHANICAR
+  OPERATER
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  role          Role      @default(OPERATER)
+  pin           String?
+  phone         String?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions           Session[]
+  accounts           Account[]
+  worker             Worker?
+  fieldWorks         FieldWork[]
+  machineAssignments MachineAssignment[]
+
+  @@map("user")
+}
+
+// ===== ŠIFARNICI (MASTER DATA) =====
+
+enum WorkerType {
+  STALNI
+  SEZONAC
+}
+
+model Worker {
+  id         String     @id @default(cuid())
+  name       String
+  type       WorkerType @default(STALNI)
+  jmbg       String?
+  phone      String?
+  hourlyRate Float?     @default(0)
+  isActive   Boolean    @default(true)
+  userId     String?    @unique
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  fieldWorks         FieldWork[]
+  machineAssignments MachineAssignment[]
+
+  @@map("worker")
+}
+
+model Parcel {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  areaHa      Float
+  location    String?
+  currentCrop String?
+  notes       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  fieldWorks         FieldWork[]
+  machineAssignments MachineAssignment[]
+
+  @@map("parcel")
+}
+
+enum MachineType {
+  TRAKTOR
+  PRIKLJUCAK
+  KOMBAJN
+  KAMION
+  VILJUSKAR
+  OSTALO
+}
+
+enum MachineStatus {
+  SLOBODNA
+  ZADUZENA
+  U_KVARU
+  SERVIS
+}
+
+model Machine {
+  id           String        @id @default(cuid())
+  name         String
+  type         MachineType   @default(TRAKTOR)
+  brandModel   String?
+  regNumber    String?
+  year         Int?
+  currentHours Float         @default(0)
+  status       MachineStatus @default(SLOBODNA)
+  notes        String?
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  fieldWorks  FieldWork[]
+  assignments MachineAssignment[]
+
+  @@map("machine")
+}
+
+enum WorkCategory {
+  OBRADA
+  ZASTITA
+  SETVA
+  ZETVA_BERBA
+  TRANSPORT
+  OSTALO
+}
+
+model WorkType {
+  id        String       @id @default(cuid())
+  name      String       @unique
+  category  WorkCategory @default(OBRADA)
+  unit      String       @default("ha")
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  fieldWorks FieldWork[]
+
+  @@map("work_type")
+}
+
+model Crop {
+  id        String   @id @default(cuid())
+  name      String
+  variety   String?
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("crop")
+}
+
+enum PartnerType {
+  KUPAC
+  DOBAVLJAC
+  SERVIS
+  OBA
+}
+
+model Partner {
+  id        String      @id @default(cuid())
+  name      String
+  type      PartnerType @default(KUPAC)
+  pib       String?
+  phone     String?
+  email     String?
+  address   String?
+  notes     String?
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@map("partner")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verification")
+}
+
+// ===== FAZA 2: OPERATIVA NA NJIVI & MAŠINE =====
+
+enum ShiftType {
+  PRVA
+  DRUGA
+  TRECA
+}
+
+enum WorkStatus {
+  U_TOKU
+  ZAVRSENO
+  STORNO
+}
+
+model FieldWork {
+  id           String      @id @default(cuid())
+  date         DateTime    @default(now())
+  shift        ShiftType   @default(PRVA)
+  
+  // Relacije ka šifarnicima
+  parcelId     String
+  parcel       Parcel      @relation(fields: [parcelId], references: [id])
+  
+  machineId    String
+  machine      Machine     @relation(fields: [machineId], references: [id])
+  
+  workerId     String
+  worker       Worker      @relation(fields: [workerId], references: [id])
+  
+  workTypeId   String
+  workType     WorkType    @relation(fields: [workTypeId], references: [id])
+  
+  // Metrika učinka
+  areaDoneHa   Float       // Urađeno hektara (validira se: max parcel.areaHa * 1.2)
+  startTime    String?     // npr. "07:00"
+  endTime      String?     // npr. "15:30"
+  workHours    Float?      // Automatski izračunava backend iz startTime/endTime
+  
+  status       WorkStatus  @default(ZAVRSENO)
+  notes        String?
+  photoUrl     String?     // Slika sa njive po potrebi
+  
+  // Audit trag (Ko je uneo zapis)
+  createdById  String
+  createdBy    User        @relation(fields: [createdById], references: [id])
+  
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([date])
+  @@index([parcelId, date])
+  @@index([workerId, date])
+  @@index([machineId, date])
+  @@map("field_work")
+}
+
+enum AssignmentStatus {
+  ZADUZENA
+  RAZDUZENA
+  VRACENA_SA_KVAROM
+}
+
+model MachineAssignment {
+  id              String           @id @default(cuid())
+  machineId       String
+  machine         Machine          @relation(fields: [machineId], references: [id])
+  
+  workerId        String
+  worker          Worker           @relation(fields: [workerId], references: [id])
+  
+  parcelId        String?
+  parcel          Parcel?          @relation(fields: [parcelId], references: [id])
+  
+  // Podaci o zaduženju
+  assignedAt      DateTime         @default(now())
+  startFuelLevel  Float?           // Procenat ili litara
+  startHours      Float            // Automatski preuzeto iz Machine.currentHours
+  assignNotes     String?
+  
+  // Podaci o razduženju
+  returnedAt      DateTime?
+  endFuelLevel    Float?           // Krajnje gorivo
+  endHours        Float?           // Krajnji radni sati (rh) -> ažurira Machine.currentHours
+  isOperational   Boolean          @default(true) // Da li je vraćena ispravna
+  returnNotes     String?          // Opis problema ako nije ispravna
+  
+  status          AssignmentStatus @default(ZADUZENA)
+  
+  createdById     String
+  createdBy       User             @relation(fields: [createdById], references: [id])
+  
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([machineId, status])
+  @@map("machine_assignment")
+}
