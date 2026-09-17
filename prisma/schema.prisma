@@ -32,6 +32,7 @@ model User {
   worker             Worker?
   fieldWorks         FieldWork[]
   machineAssignments MachineAssignment[]
+  auditLogs          AuditLog[]
 
   @@map("user")
 }
@@ -314,4 +315,29 @@ model MachineAssignment {
 
   @@index([machineId, status])
   @@map("machine_assignment")
+}
+
+// ===== REVIZORSKI TRAG (AUDIT LOG) =====
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  entityType  String   // npr. "FieldWork"
+  entityId    String   // ID unosa koji je menjan
+  action      String   // "IZMENA", "STORNO", "KREIRANJE"
+  
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userName    String   // Denormalizovano ime korisnika
+  userRole    String   // DIREKTOR, RUKOVODILAC, OPERATER...
+  
+  description String   // Sažetak izmene (npr. "Urađena površina: 3.5 ha -> 4.0 ha")
+  oldValues   Json?    // Stare vrednosti pre izmene
+  newValues   Json?    // Nove vrednosti nakon izmene
+  
+  createdAt   DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_log")
 }

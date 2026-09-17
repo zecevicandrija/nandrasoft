@@ -301,4 +301,142 @@ router.post("/checkin", async (req, res) => {
   }
 });
 
+// ==========================================
+// 6. DIREKTNO / RETROAKTIVNO ZADUŽENJE I RAZDUŽENJE U JEDNOM KORAKU (DIREKTOR & RUKOVODILAC)
+// ==========================================
+const directAssignSchema = z.object({
+  machineId: z.string().min(1, "Mašina je obavezna"),
+  workerId: z.string().min(1, "Radnik je obavezan"),
+  parcelId: z.string().optional().nullable(),
+  date: z.string().optional().nullable(),
+  startHours: z.number().nonnegative("Početni radni sati ne mogu biti negativni"),
+  endHours: z.number().nonnegative("Krajnji radni sati moraju biti pozitivan broj"),
+  startFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  endFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  isOperational: z.boolean().default(true),
+  notes: z.string().max(500).optional().nullable(),
+});
+
+router.post("/direct", async (req, res) => {
+  try {
+    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
+    if (!isManager) {
+      return res.status(403).json({ error: "Samo direktor i rukovodilac mogu vršiti direktno zaduživanje." });
+    }
+
+    const parsed = directAssignSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: parsed.error.issues.map((i) => i.message).join(". "),
+      });
+    }
+
+    const {
+      machineId,
+      workerId,
+      parcelId,
+      date,
+      startHours,
+      endHours,
+      startFuelLevel,
+      endFuelLevel,
+      isOperational,
+      notes,
+    } = parsed.data;
+
+    if (endHours < startHours) {
+      return res.status(400).json({
+        error: `Krajnji radni sati (${endHours} rh) ne mogu biti manji od početnih (${startHours} rh).`,
+      });
+    }
+
+    const machine = await prisma.machine.findUnique({
+      where: { id: machineId },
+    });
+
+    if (!machine) {
+      return res.status(404).json({ error: "Izabrana mašina ne postoji u sistemu." });
+    }
+
+    let assignDate = new Date();
+    if (date) {
+      const parsedDate = new Date(date);
+      if (!isNaN(parsedDate.getTime())) {
+        assignDate = parsedDate;
+      }
+    }
+
+    const newAssignmentStatus = isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM";
+    const newMachineStatus = isOperational ? (machine.status === "ZADUZENA" ? "SLOBODNA" : machine.status) : "U_KVARU";
+    const updatedCurrentHours = Math.max(machine.currentHours || 0, endHours);
+
+    const [assignment] = await prisma.$transaction([
+      prisma.machineAssignment.create({
+        data: {
+          machineId,
+          workerId,
+          parcelId: parcelId || null,
+          assignedAt: assignDate,
+          returnedAt: assignDate,
+          startHours,
+          endHours,
+          startFuelLevel: startFuelLevel !== undefined ? startFuelLevel : null,
+          endFuelLevel: endFuelLevel !== undefined ? endFuelLevel : null,
+          isOperational,
+          assignNotes: notes || "Direktno evidentirano zaduženje (rešena neusklađenost)",
+          returnNotes: notes || null,
+          status: newAssignmentStatus,
+          createdById: req.user.id,
+        },
+        include: {
+          machine: true,
+          worker: true,
+          parcel: true,
+        },
+      }),
+      prisma.machine.update({
+        where: { id: machineId },
+        data: {
+          status: newMachineStatus,
+          currentHours: updatedCurrentHours,
+        },
+      }),
+    ]);
+
+    // Audit log zapis
+    try {
+      await prisma.auditLog.create({
+        data: {
+          entityType: "MachineAssignment",
+          entityId: assignment.id,
+          action: "DIREKTNO_ZADUZENJE",
+          userId: req.user.id,
+          userName: req.user.name,
+          userRole: req.user.role,
+          description: `Direktno evidentirano i zatvoreno zaduženje za mašinu "${machine.name}" (rešena neusklađenost sa njive).`,
+          newValues: {
+            machineName: machine.name,
+            startHours,
+            endHours,
+            startFuelLevel,
+            endFuelLevel,
+            isOperational,
+            assignedAt: assignDate,
+          },
+        },
+      });
+    } catch (auditErr) {
+      console.warn("Audit log greška:", auditErr);
+    }
+
+    res.status(201).json({
+      message: `Zaduženje i razduženje za mašinu "${machine.name}" je uspešno evidentirano u jednom koraku.`,
+      assignment,
+    });
+  } catch (error) {
+    console.error("Greška pri direktnom zaduživanju:", error);
+    res.status(500).json({ error: "Greška na serveru pri direktnom zaduživanju." });
+  }
+});
+
 export default router;

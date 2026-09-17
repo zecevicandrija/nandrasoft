@@ -2,7 +2,7 @@
   "name": "nandra-backend",
   "type": "module",
   "scripts": {
-    "dev": "node --watch index.js",
+    "dev": "node --watch-path=routes --watch-path=middlewares --watch-path=lib --watch-path=index.js index.js",
     "seed": "node seed.js"
   },
   "dependencies": {

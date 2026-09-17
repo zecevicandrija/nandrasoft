@@ -9,6 +9,7 @@ import usersRouter from "./routes/users.js";
 import masterDataRouter from "./routes/masterData.js";
 import assignmentsRouter from "./routes/assignments.js";
 import fieldWorkRouter from "./routes/fieldWork.js";
+import auditLogRouter from "./routes/auditLog.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -64,6 +65,7 @@ app.use("/api/users", usersRouter);
 app.use("/api/master", masterDataRouter);
 app.use("/api/assignments", assignmentsRouter);
 app.use("/api/field-work", fieldWorkRouter);
+app.use("/api/audit-logs", auditLogRouter);
 
 // Health check
 app.get("/api/health", (req, res) => {
