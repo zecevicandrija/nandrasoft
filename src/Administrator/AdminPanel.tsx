@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
-  Building2,
   ShieldCheck,
   ClipboardList,
   Package,
@@ -15,18 +14,15 @@ import {
   Pencil,
   KeyRound,
   Trash2,
-  ArrowLeft,
-  LogOut,
   X,
   CheckCircle2,
   AlertCircle,
   Loader2,
   Filter,
-  Database,
 } from 'lucide-react';
-import { useSession, signOut } from '../lib/auth-client';
+import { useSession } from '../lib/auth-client';
+import AppLayout from '../components/Layout/AppLayout';
 import styles from './AdminPanel.module.css';
-import ThemeToggle from '../components/ThemeToggle';
 
 const API = 'http://localhost:5000/api';
 
@@ -128,11 +124,6 @@ const AdminPanel: React.FC = () => {
       }
     }
   }, [sessionLoading, session, fetchUsers, navigate]);
-
-  const handleLogout = async () => {
-    await signOut({});
-    navigate('/');
-  };
 
   // Filter users by search and role
   const filteredUsers = users.filter((u) => {
@@ -304,16 +295,19 @@ const AdminPanel: React.FC = () => {
   // Loading
   if (sessionLoading || loading) {
     return (
-      <div className={styles.loadingPage}>
-        <Loader2 className={styles.spinner} size={36} />
-      </div>
+      <AppLayout pageTitle="Korisnički Nalozi & Administracija">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: '0.75rem', color: 'var(--text-muted)' }}>
+          <Loader2 className="animate-spin" size={32} />
+          <span>Učitavanje korisnika...</span>
+        </div>
+      </AppLayout>
     );
   }
 
   const currentUser = (session as any)?.user;
 
   return (
-    <div className={styles.adminPage}>
+    <AppLayout pageTitle="Korisnički Nalozi & Administracija">
       {/* Toast notification */}
       {toast && (
         <div
@@ -329,47 +323,8 @@ const AdminPanel: React.FC = () => {
         </div>
       )}
 
-      {/* Top bar */}
-      <header className={styles.topBar}>
-        <div className={styles.topBarBrand}>
-          <div className={styles.topBarLogo}>
-            <Building2 size={20} />
-          </div>
-          <div className={styles.topBarTitle}>
-            NANDRA<span>Admin Panel</span>
-          </div>
-        </div>
-
-        <div className={styles.topBarRight}>
-          <div className={styles.topBarUser}>
-            <span>Prijavljeni:</span>
-            <strong>{currentUser?.name}</strong>
-            <span className={styles.userBadge} title="Direktor">
-              <ShieldCheck size={14} />
-            </span>
-          </div>
-
-          <ThemeToggle />
-
-          <Link to="/sifarnici" className={styles.backBtn} title="Šifarnici (Master Data)">
-            <Database size={16} />
-            <span>Šifarnici</span>
-          </Link>
-
-          <Link to="/" className={styles.backBtn} title="Nazad na početnu">
-            <ArrowLeft size={16} />
-            <span>Početna</span>
-          </Link>
-
-          <button className={styles.logoutBtn} onClick={handleLogout} title="Odjavi se">
-            <LogOut size={16} />
-            <span>Odjavi se</span>
-          </button>
-        </div>
-      </header>
-
       {/* Main content */}
-      <main className={styles.mainContent}>
+      <div className={styles.mainContent}>
         {/* Stats */}
         <div className={styles.statsBar}>
           <div className={styles.statCard}>
@@ -555,7 +510,7 @@ const AdminPanel: React.FC = () => {
             </table>
           )}
         </div>
-      </main>
+      </div>
 
       {/* ===== ADD USER MODAL ===== */}
       {modal === 'add' && (
@@ -828,7 +783,7 @@ const AdminPanel: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+    </AppLayout>
   );
 };
 

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import {
   Tractor,
   KeyRound,
@@ -15,13 +16,16 @@ import {
   AlertCircle,
   Wrench,
   ShieldCheck,
+  Zap,
+  ArrowLeft,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import { useSession } from '../lib/auth-client';
 import styles from './MasineZaduzenje.module.css';
 
 const API = 'http://localhost:5000/api';
 
-type TabType = 'active' | 'checkout' | 'history';
+type TabType = 'active' | 'checkout' | 'history' | 'direct';
 
 interface Toast {
   message: string;
@@ -29,6 +33,7 @@ interface Toast {
 }
 
 const MasineZaduzenje: React.FC = () => {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabType>('active');
   const [toast, setToast] = useState<Toast | null>(null);
@@ -53,6 +58,32 @@ const MasineZaduzenje: React.FC = () => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
   };
+
+  // Uloga korisnika
+  const { data: session } = useSession();
+  const currentUser = (session as any)?.user;
+  const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(currentUser?.role || '');
+
+  // Search parametri (za direktno rešavanje neusklađenosti)
+  const [searchParams] = useSearchParams();
+  const isDirectParam = searchParams.get('direct') === 'true';
+  const paramMachineId = searchParams.get('machineId') || '';
+  const paramWorkerId = searchParams.get('workerId') || '';
+  const paramParcelId = searchParams.get('parcelId') || '';
+  const paramDate = searchParams.get('date') || '';
+  const paramWorkHours = searchParams.get('workHours') || '';
+
+  // Form states za Direktno Zaduženje (Jedan Korak)
+  const [directMachineId, setDirectMachineId] = useState(paramMachineId);
+  const [directWorkerId, setDirectWorkerId] = useState(paramWorkerId);
+  const [directParcelId, setDirectParcelId] = useState(paramParcelId);
+  const [directDate, setDirectDate] = useState(paramDate || new Date().toISOString().split('T')[0]);
+  const [directStartHours, setDirectStartHours] = useState<number | string>('');
+  const [directEndHours, setDirectEndHours] = useState<number | string>('');
+  const [directStartFuel, setDirectStartFuel] = useState<number>(100);
+  const [directEndFuel, setDirectEndFuel] = useState<number>(75);
+  const [directOperational, setDirectOperational] = useState<boolean>(true);
+  const [directNotes, setDirectNotes] = useState<string>('Direktno evidentirano zaduženje (rešena neusklađenost)');
 
   // 1. STATISTIKA ZADUŽENJA
   const { data: statsData } = useQuery({
@@ -232,6 +263,109 @@ const MasineZaduzenje: React.FC = () => {
     });
   };
 
+  // Učitavanje i automatsko popunjavanje direktnog zaduženja iz URL parametara
+  useEffect(() => {
+    if (isDirectParam && isManager) {
+      setActiveTab('direct');
+      if (paramMachineId) setDirectMachineId(paramMachineId);
+      if (paramWorkerId) setDirectWorkerId(paramWorkerId);
+      if (paramParcelId) setDirectParcelId(paramParcelId);
+      if (paramDate) setDirectDate(paramDate);
+
+      const m = machinesData?.machines?.find((item: any) => item.id === paramMachineId);
+      if (m) {
+        const currentH = Number(m.currentHours) || 0;
+        setDirectStartHours(currentH);
+        if (paramWorkHours) {
+          const wh = parseFloat(paramWorkHours);
+          if (!isNaN(wh)) {
+            setDirectEndHours(parseFloat((currentH + wh).toFixed(1)));
+          } else {
+            setDirectEndHours(currentH);
+          }
+        } else {
+          setDirectEndHours(currentH);
+        }
+      }
+    }
+  }, [isDirectParam, isManager, paramMachineId, paramWorkerId, paramParcelId, paramDate, paramWorkHours, machinesData]);
+
+  const handleSelectDirectMachine = (id: string) => {
+    setDirectMachineId(id);
+    const m = machinesData?.machines?.find((item: any) => item.id === id);
+    if (m) {
+      const currentH = Number(m.currentHours) || 0;
+      setDirectStartHours(currentH);
+      if (paramWorkHours) {
+        const wh = parseFloat(paramWorkHours);
+        setDirectEndHours(!isNaN(wh) ? parseFloat((currentH + wh).toFixed(1)) : currentH);
+      } else {
+        setDirectEndHours(currentH);
+      }
+    }
+  };
+
+  // MUTACIJA: DIREKTNO ZADUŽENJE U JEDNOM KORAKU
+  const directMutation = useMutation({
+    mutationFn: async (payload: any) => {
+      const res = await fetch(`${API}/assignments/direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Greška pri direktnom zaduživanju.');
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
+      queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
+      queryClient.invalidateQueries({ queryKey: ['machines-all'] });
+      queryClient.invalidateQueries({ queryKey: ['unassigned-warnings'] });
+      queryClient.invalidateQueries({ queryKey: ['field-work-stats'] });
+      showToast(data.message || 'Zaduženje i razduženje uspešno završeno!', 'success');
+      navigate('/masine/neusklađenosti');
+    },
+    onError: (err: any) => {
+      showToast(err.message, 'error');
+    },
+  });
+
+  const handleDirectSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!directMachineId || !directWorkerId) {
+      showToast('Morate izabrati mašinu i radnika.', 'error');
+      return;
+    }
+    const startH = Number(directStartHours);
+    const endH = Number(directEndHours);
+    if (isNaN(startH) || isNaN(endH)) {
+      showToast('Radni sati moraju biti uneti kao validan broj.', 'error');
+      return;
+    }
+    if (endH < startH) {
+      showToast(`Krajnji radni sati (${endH} rh) ne mogu biti manji od početnih (${startH} rh).`, 'error');
+      return;
+    }
+
+    directMutation.mutate({
+      machineId: directMachineId,
+      workerId: directWorkerId,
+      parcelId: directParcelId || null,
+      date: directDate,
+      startHours: startH,
+      endHours: endH,
+      startFuelLevel: Number(directStartFuel),
+      endFuelLevel: Number(directEndFuel),
+      isOperational: directOperational,
+      notes: directNotes,
+    });
+  };
+
   const activeAssignments = activeData?.assignments || [];
   const historyList = historyData?.assignments || [];
   const hoursWorkedLive =
@@ -322,6 +456,17 @@ const MasineZaduzenje: React.FC = () => {
             <Clock size={16} />
             <span>Dnevnik Zaduženja (Istorijat)</span>
           </button>
+
+          {isManager && (
+            <button
+              className={`${styles.tabBtn} ${activeTab === 'direct' ? styles.tabBtnActive : ''}`}
+              onClick={() => setActiveTab('direct')}
+              style={activeTab === 'direct' ? { backgroundColor: '#d97706', borderColor: '#d97706', color: '#ffffff' } : {}}
+            >
+              <Zap size={16} />
+              <span>Direktno Zaduženje (Jedan Korak)</span>
+            </button>
+          )}
         </div>
 
         {/* TAB 1: AKTIVNA ZADUŽENJA */}
@@ -606,6 +751,243 @@ const MasineZaduzenje: React.FC = () => {
                   <>
                     <KeyRound size={18} />
                     <span>Potvrdi Zaduženje Mašine</span>
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* TAB 4: DIREKTNO / RETROAKTIVNO ZADUŽENJE (SAMO DIREKTOR & RUKOVODILAC) */}
+        {activeTab === 'direct' && isManager && (
+          <div className={styles.formCard} style={{ maxWidth: 680 }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <h3 className={styles.formTitle}>
+                  <Zap size={22} color="#d97706" />
+                  Direktno Zaduženje i Razduženje
+                </h3>
+                <Link to="/masine/neusklađenosti" style={{ fontSize: '0.8rem', color: '#2563eb', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none' }}>
+                  <ArrowLeft size={14} />
+                  Sve neusklađenosti
+                </Link>
+              </div>
+              <p className={styles.formSubtitle}>
+                Ekspresno evidentiranje oba koraka (početak i kraj rada) u jednom unosu. Koristi se kada radnik nije ujutru zadužio traktor a posao je već obavljen na njivi.
+              </p>
+            </div>
+
+            {isDirectParam && (
+              <div className={styles.directNotice}>
+                <Zap size={20} color="#d97706" style={{ flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <strong>Rešavanje neusklađenosti sa njive:</strong>
+                  <br />
+                  Podaci o radniku, mašini, parceli i radnim satima su automatski povučeni iz unetog rada. Proverite početne i krajnje sate i nivo goriva, pa potvrdite unos.
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleDirectSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+              {/* Izbor radnika */}
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>
+                  <span>Radnik (Koji je upravljao mašinom)</span>
+                </label>
+                <select
+                  className={styles.selectField}
+                  value={directWorkerId}
+                  onChange={(e) => setDirectWorkerId(e.target.value)}
+                  required
+                >
+                  <option value="">-- Izaberite radnika --</option>
+                  {workersData?.workers?.map((w: any) => (
+                    <option key={w.id} value={w.id}>
+                      👤 {w.name} {w.phone ? `(${w.phone})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Izbor mašine */}
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>
+                  <span>Mašina / Traktor</span>
+                </label>
+                <select
+                  className={styles.selectField}
+                  value={directMachineId}
+                  onChange={(e) => handleSelectDirectMachine(e.target.value)}
+                  required
+                >
+                  <option value="">-- Izaberite mašinu --</option>
+                  {machinesData?.machines?.map((m: any) => (
+                    <option key={m.id} value={m.id}>
+                      🚜 {m.name} ({m.brandModel || m.type}) — Stanje: {m.currentHours} rh
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Parcela i Datum */}
+              <div className={styles.twoColRow}>
+                <div className={styles.formGroup}>
+                  <label className={styles.formLabel}>
+                    <span>Parcela (Opciono)</span>
+                  </label>
+                  <select
+                    className={styles.selectField}
+                    value={directParcelId}
+                    onChange={(e) => setDirectParcelId(e.target.value)}
+                  >
+                    <option value="">-- Bez specifične parcele --</option>
+                    {parcelsData?.parcels?.map((p: any) => (
+                      <option key={p.id} value={p.id}>
+                        📍 {p.name} ({p.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label className={styles.formLabel}>
+                    <span>Datum rada</span>
+                  </label>
+                  <input
+                    type="date"
+                    className={styles.inputField}
+                    value={directDate}
+                    onChange={(e) => setDirectDate(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Početni i krajnji sati */}
+              <div className={styles.twoColRow}>
+                <div className={styles.formGroup}>
+                  <label className={styles.formLabel}>
+                    <span>Početni radni sati (rh)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    className={styles.inputField}
+                    value={directStartHours}
+                    onChange={(e) => setDirectStartHours(e.target.value)}
+                    placeholder="0.0"
+                    required
+                  />
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label className={styles.formLabel}>
+                    <span>Krajnji radni sati (rh)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    className={styles.inputField}
+                    value={directEndHours}
+                    onChange={(e) => setDirectEndHours(e.target.value)}
+                    placeholder="0.0"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Nivoi goriva */}
+              <div className={styles.twoColRow}>
+                <div className={styles.formGroup}>
+                  <label className={styles.formLabel}>
+                    <span>Gorivo na početku (%)</span>
+                    <span style={{ color: '#2563eb', fontWeight: 800 }}>{directStartFuel}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={directStartFuel}
+                    onChange={(e) => setDirectStartFuel(Number(e.target.value))}
+                    style={{ width: '100%', accentColor: '#2563eb' }}
+                  />
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label className={styles.formLabel}>
+                    <span>Gorivo na kraju (%)</span>
+                    <span style={{ color: '#16a34a', fontWeight: 800 }}>{directEndFuel}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={directEndFuel}
+                    onChange={(e) => setDirectEndFuel(Number(e.target.value))}
+                    style={{ width: '100%', accentColor: '#16a34a' }}
+                  />
+                </div>
+              </div>
+
+              {/* Ispravnost mašine */}
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>
+                  <span>Stanje ispravnosti mašine na kraju</span>
+                </label>
+                <div className={styles.toggleBtnGroup}>
+                  <button
+                    type="button"
+                    className={`${styles.toggleBtn} ${directOperational ? styles.toggleBtnActiveSuccess : ''}`}
+                    onClick={() => setDirectOperational(true)}
+                  >
+                    <CheckCircle2 size={16} />
+                    Ispravna (Parkirana u dvorištu)
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.toggleBtn} ${!directOperational ? styles.toggleBtnActiveDanger : ''}`}
+                    onClick={() => setDirectOperational(false)}
+                  >
+                    <Wrench size={16} />
+                    Prijavljen kvar / servis
+                  </button>
+                </div>
+              </div>
+
+              {/* Napomena */}
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>
+                  <span>Napomena / Razlog direktnog zaduženja</span>
+                </label>
+                <textarea
+                  className={styles.textareaField}
+                  rows={2}
+                  value={directNotes}
+                  onChange={(e) => setDirectNotes(e.target.value)}
+                  placeholder="Unesite obrazloženje ili detalje..."
+                  style={{ resize: 'vertical' }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                className={styles.btnCheckoutSubmit}
+                style={{ backgroundColor: '#d97706' }}
+                disabled={directMutation.isPending || !directMachineId || !directWorkerId}
+              >
+                {directMutation.isPending ? (
+                  <>
+                    <Loader2 size={18} className="spin" />
+                    <span>Evidentiranje u toku...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap size={18} />
+                    <span>Zatvori i evidentiraj zaduženje u jednom koraku</span>
                   </>
                 )}
               </button>

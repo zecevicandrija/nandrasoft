@@ -115,10 +115,10 @@ const PocetniEkran: React.FC = () => {
     const role = user.role || 'OPERATER';
     const initials = user.name
       ? user.name
-          .split(' ')
-          .map((n: string) => n[0])
-          .join('')
-          .toUpperCase()
+        .split(' ')
+        .map((n: string) => n[0])
+        .join('')
+        .toUpperCase()
       : '?';
 
     return (
@@ -174,7 +174,7 @@ const PocetniEkran: React.FC = () => {
             {['DIREKTOR', 'RUKOVODILAC', 'MAGACIN'].includes(role) && (
               <Link to="/sifarnici" className={styles.adminBtn}>
                 <Database size={18} />
-                Šifarnici (Master Data)
+                Šifarnici
               </Link>
             )}
 

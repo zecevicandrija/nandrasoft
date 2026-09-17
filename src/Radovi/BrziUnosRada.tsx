@@ -11,8 +11,10 @@ import {
   Loader2,
   Plus,
   Info,
+  User,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import { useSession } from '../lib/auth-client';
 import styles from './BrziUnosRada.module.css';
 
 const API = 'http://localhost:5000/api';
@@ -20,6 +22,9 @@ const API = 'http://localhost:5000/api';
 const BrziUnosRada: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { data: session } = useSession();
+  const currentUser = (session as any)?.user;
+  const isOperator = currentUser?.role === 'OPERATER';
 
   // Form states
   const [shift, setShift] = useState<'PRVA' | 'DRUGA' | 'TRECA'>('PRVA');
@@ -158,8 +163,8 @@ const BrziUnosRada: React.FC = () => {
     e.preventDefault();
     setErrorMsg('');
 
-    if (!parcelId || !machineId || !workerId || !workTypeId) {
-      setErrorMsg('Molimo izaberite parcelu, mašinu, radnika i operaciju.');
+    if (!parcelId || !machineId || (!isOperator && !workerId) || !workTypeId) {
+      setErrorMsg('Molimo popunite sva obavezna polja.');
       return;
     }
 
@@ -175,17 +180,22 @@ const BrziUnosRada: React.FC = () => {
       return;
     }
 
-    submitMutation.mutate({
+    const payload: any = {
       shift,
       parcelId,
       machineId,
-      workerId,
       workTypeId,
       areaDoneHa: currentNumericArea,
       startTime: startTime || null,
       endTime: endTime || null,
       notes: notes || null,
-    });
+    };
+
+    if (!isOperator && workerId) {
+      payload.workerId = workerId;
+    }
+
+    submitMutation.mutate(payload);
   };
 
   const handleResetForNext = () => {
@@ -444,21 +454,42 @@ const BrziUnosRada: React.FC = () => {
                   </select>
                 </div>
 
-                <div className={styles.fieldGroup}>
-                  <label className={styles.fieldLabel}>Radnik (Traktorista / Sezonac)</label>
-                  <select
-                    className={styles.fieldSelect}
-                    value={workerId}
-                    onChange={(e) => setWorkerId(e.target.value)}
-                    required
+                {!isOperator ? (
+                  <div className={styles.fieldGroup}>
+                    <label className={styles.fieldLabel}>Radnik (Traktorista / Sezonac)</label>
+                    <select
+                      className={styles.fieldSelect}
+                      value={workerId}
+                      onChange={(e) => setWorkerId(e.target.value)}
+                      required
+                    >
+                      {workersData?.workers?.map((w: any) => (
+                        <option key={w.id} value={w.id}>
+                          👤 {w.name} [{w.type}]
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      fontSize: '0.85rem',
+                      color: 'var(--text-secondary)',
+                      backgroundColor: 'var(--bg-secondary)',
+                      padding: '0.75rem 1rem',
+                      borderRadius: 12,
+                      border: '1.5px solid var(--border-color)',
+                    }}
                   >
-                    {workersData?.workers?.map((w: any) => (
-                      <option key={w.id} value={w.id}>
-                        👤 {w.name} [{w.type}]
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                    <User size={16} color="#16a34a" />
+                    <span>
+                      Radnik: <strong>{currentUser?.name || 'Operater'}</strong> (automatski se beleži sa vašeg naloga)
+                    </span>
+                  </div>
+                )}
 
                 {/* 6. VREME RADA I AUTOMATSKI RADNI SATI */}
                 <div className={styles.timeRow}>

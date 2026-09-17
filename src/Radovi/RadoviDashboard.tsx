@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -17,6 +17,10 @@ import {
   Loader2,
   X,
   KeyRound,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -38,6 +42,19 @@ const RadoviDashboard: React.FC = () => {
   const { data: session } = useSession();
   const currentUser = (session as any)?.user;
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(currentUser?.role || '');
+  const isOperator = currentUser?.role === 'OPERATER';
+
+  // Pomoćna funkcija: da li je datum jednak današnjem kalendarskom danu
+  const isSameCalendarDay = (date1: string | Date) => {
+    if (!date1) return false;
+    const d1 = new Date(date1);
+    const d2 = new Date();
+    return (
+      d1.getFullYear() === d2.getFullYear() &&
+      d1.getMonth() === d2.getMonth() &&
+      d1.getDate() === d2.getDate()
+    );
+  };
 
   // Filter stanja
   const [period, setPeriod] = useState<PeriodType>('sve');
@@ -48,6 +65,32 @@ const RadoviDashboard: React.FC = () => {
   const [selectedWorker, setSelectedWorker] = useState('');
   const [selectedWorkType, setSelectedWorkType] = useState('');
   const [search, setSearch] = useState('');
+
+  // Paginacija
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+  // Reset na stranu 1 pri svakoj promeni filtera ili veličine strane
+  useEffect(() => {
+    setPage(1);
+  }, [period, dateFrom, dateTo, selectedParcel, selectedMachine, selectedWorker, selectedWorkType, search, pageSize]);
+
+  // Helper za prikaz paginacionih brojeva sa elipsom (...)
+  const getPageNumbers = (current: number, total: number) => {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    const pages: (number | string)[] = [];
+    if (current <= 4) {
+      pages.push(1, 2, 3, 4, 5, '...', total);
+    } else if (current >= total - 3) {
+      pages.push(1, '...', total - 4, total - 3, total - 2, total - 1, total);
+    } else {
+      pages.push(1, '...', current - 1, current, current + 1, '...', total);
+    }
+    return pages;
+  };
 
   // Modali i toast
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -133,10 +176,12 @@ const RadoviDashboard: React.FC = () => {
 
   const currentRange = getDateRange();
 
-  // 3. GLAVNA TABELA RADOVA
+  // 3. GLAVNA TABELA RADOVA (Serverska paginacija i keširanje)
   const { data: worksData, isLoading } = useQuery({
     queryKey: [
       'field-works',
+      page,
+      pageSize,
       currentRange.from,
       currentRange.to,
       selectedParcel,
@@ -147,6 +192,8 @@ const RadoviDashboard: React.FC = () => {
     ],
     queryFn: async () => {
       const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(pageSize));
       if (currentRange.from) params.append('dateFrom', currentRange.from);
       if (currentRange.to) params.append('dateTo', currentRange.to);
       if (selectedParcel) params.append('parcelId', selectedParcel);
@@ -246,7 +293,7 @@ const RadoviDashboard: React.FC = () => {
     }
   };
 
-  // EXCEL DOWNLOAD
+  // EXCEL DOWNLOAD (Izvozi SVE unose koji odgovaraju izabranom filteru perioda, parcele, itd.)
   const handleExportExcel = () => {
     const params = new URLSearchParams();
     if (currentRange.from) params.append('dateFrom', currentRange.from);
@@ -255,77 +302,156 @@ const RadoviDashboard: React.FC = () => {
     if (selectedMachine) params.append('machineId', selectedMachine);
     if (selectedWorker) params.append('workerId', selectedWorker);
     if (selectedWorkType) params.append('workTypeId', selectedWorkType);
+    if (search) params.append('search', search);
 
     window.open(`${API}/field-work/export/excel?${params.toString()}`, '_blank');
   };
 
-  // PDF DOWNLOAD (jspdf + autotable)
-  const handleExportPdf = () => {
-    const works = worksData?.works || [];
-    if (works.length === 0) {
-      showToast('Nema podataka za štampu.', 'error');
-      return;
-    }
+  // PDF DOWNLOAD (Dohvata sve zapise koji odgovaraju filteru, sa zbirnim redom na dnu)
+  const handleExportPdf = async () => {
+    try {
+      setIsExportingPdf(true);
+      const params = new URLSearchParams();
+      if (currentRange.from) params.append('dateFrom', currentRange.from);
+      if (currentRange.to) params.append('dateTo', currentRange.to);
+      if (selectedParcel) params.append('parcelId', selectedParcel);
+      if (selectedMachine) params.append('machineId', selectedMachine);
+      if (selectedWorker) params.append('workerId', selectedWorker);
+      if (selectedWorkType) params.append('workTypeId', selectedWorkType);
+      if (search) params.append('search', search);
+      params.append('limit', '5000'); // preuzima sve unose bez sečenja na trenutnu stranu
 
-    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const res = await fetch(`${API}/field-work?${params.toString()}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Greška pri preuzimanju podataka za PDF izveštaj.');
+      const data = await res.json();
+      const works = data.works || [];
 
-    // Naslov
-    doc.setFontSize(14);
-    doc.setTextColor(22, 101, 52); // tamno zelena
-    doc.text('NANDRA — Dnevnik Radova na Njivi', 14, 15);
+      if (works.length === 0) {
+        showToast('Nema podataka za štampu prema izabranim filterima.', 'error');
+        return;
+      }
 
-    doc.setFontSize(9);
-    doc.setTextColor(100, 116, 139);
-    doc.text(
-      `Generisano: ${new Date().toLocaleDateString('sr-RS')} | Ukupno evidentirano: ${works.length} poslova`,
-      14,
-      21
-    );
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
-    const tableData = works.map((w: any, idx: number) => [
-      idx + 1,
-      new Date(w.date).toLocaleDateString('sr-RS'),
-      w.shift === 'PRVA' ? '1. Smena' : w.shift === 'DRUGA' ? '2. Smena' : 'Noćna',
-      `[${w.parcel?.code}] ${w.parcel?.name}`,
-      `${w.areaDoneHa} ha`,
-      w.worker?.name,
-      w.machine?.name,
-      w.workType?.name,
-      w.startTime && w.endTime ? `${w.startTime} - ${w.endTime}` : '-',
-      `${w.workHours || 0} rh`,
-      w.notes || '-',
-    ]);
+      // Naslov
+      doc.setFontSize(14);
+      doc.setTextColor(22, 101, 52); // Tamno zelena
+      doc.text('NANDRA — Zvanični Dnevnik Radova na Njivi', 14, 15);
 
-    autoTable(doc, {
-      head: [
-        [
-          'RB',
-          'Datum',
-          'Smena',
-          'Parcela',
-          'Urađeno',
-          'Radnik',
-          'Mašina',
-          'Operacija',
-          'Vreme',
-          'Sati',
-          'Napomena',
+      let periodLabel = 'Svi unosi';
+      if (period === 'danas') periodLabel = `Danas (${new Date().toLocaleDateString('sr-RS')})`;
+      else if (period === 'nedelja') periodLabel = 'Ova nedelja';
+      else if (period === 'mesec') periodLabel = 'Ovaj mesec';
+      else if (period === 'custom') periodLabel = `Od ${dateFrom} do ${dateTo}`;
+
+      doc.setFontSize(9);
+      doc.setTextColor(100, 116, 139);
+      doc.text(
+        `Filter: ${periodLabel} | Generisano: ${new Date().toLocaleDateString('sr-RS')} | Ukupno: ${works.length} poslova`,
+        14,
+        21
+      );
+
+      let totalHa = 0;
+      let totalHours = 0;
+
+      const tableData = works.map((w: any, idx: number) => {
+        totalHa += w.areaDoneHa || 0;
+        totalHours += w.workHours || 0;
+
+        return [
+          idx + 1,
+          new Date(w.date).toLocaleDateString('sr-RS'),
+          w.shift === 'PRVA' ? '1. Smena' : w.shift === 'DRUGA' ? '2. Smena' : 'Noćna',
+          `[${w.parcel?.code}] ${w.parcel?.name}`,
+          `${w.areaDoneHa} ha`,
+          w.worker?.name,
+          w.machine?.name,
+          w.workType?.name,
+          w.startTime && w.endTime ? `${w.startTime} - ${w.endTime}` : '-',
+          `${w.workHours || 0} rh`,
+          w.notes || '-',
+        ];
+      });
+
+      autoTable(doc, {
+        head: [
+          [
+            'RB',
+            'Datum',
+            'Smena',
+            'Parcela',
+            'Urađeno',
+            'Radnik',
+            'Mašina',
+            'Operacija',
+            'Vreme',
+            'Sati',
+            'Napomena',
+          ],
         ],
-      ],
-      body: tableData,
-      startY: 25,
-      styles: { fontSize: 8, cellPadding: 2 },
-      headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
-      alternateRowStyles: { fillColor: [248, 250, 252] },
-    });
+        body: tableData,
+        foot: [
+          [
+            'UKUPNO',
+            '',
+            '',
+            '',
+            `${Math.round(totalHa * 100) / 100} ha`,
+            '',
+            '',
+            '',
+            '',
+            `${Math.round(totalHours * 10) / 10} rh`,
+            '',
+          ],
+        ],
+        startY: 25,
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
+        footStyles: { fillColor: [22, 101, 52], textColor: [255, 255, 255], fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+      });
 
-    doc.save(`nandra_dnevnik_radova_${new Date().toISOString().slice(0, 10)}.pdf`);
-    showToast('PDF izveštaj uspešno generisan!', 'success');
+      doc.save(`nandra_dnevnik_radova_${new Date().toISOString().slice(0, 10)}.pdf`);
+      showToast('PDF izveštaj uspešno generisan!', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Greška pri generisanju PDF-a.', 'error');
+    } finally {
+      setIsExportingPdf(false);
+    }
   };
 
   const worksList = worksData?.works || [];
+  const totalWorks = worksData?.total || 0;
+  const totalPages = worksData?.totalPages || 1;
   const todayStats = statsData?.today || { areaDoneHa: 0, workHours: 0, count: 0, unassignedWarnings: 0 };
-  const weekStats = statsData?.week || { areaDoneHa: 0, workHours: 0, count: 0 };
+  const weekStats = statsData?.week || { areaDoneHa: 0, workHours: 0, count: 0, unassignedWarnings: 0 };
+  const monthStats = statsData?.month || { areaDoneHa: 0, count: 0, unassignedWarnings: 0 };
+
+  // Dinamičko računanje nezaduženih mašina za trenutno izabrani period
+  let currentPeriodUnassigned = 0;
+  let periodLabelText = 'danas';
+  let periodParam = 'danas';
+
+  if (period === 'danas') {
+    currentPeriodUnassigned = todayStats.unassignedWarnings || 0;
+    periodLabelText = 'danas';
+    periodParam = 'danas';
+  } else if (period === 'nedelja') {
+    currentPeriodUnassigned = weekStats.unassignedWarnings || 0;
+    periodLabelText = 'ove nedelje';
+    periodParam = 'nedelja';
+  } else if (period === 'mesec') {
+    currentPeriodUnassigned = monthStats.unassignedWarnings || 0;
+    periodLabelText = 'ovog meseca';
+    periodParam = 'mesec';
+  } else {
+    // 'sve' ili 'custom'
+    currentPeriodUnassigned = statsData?.unassignedWarningsTotal || 0;
+    periodLabelText = 'u izabranom periodu';
+    periodParam = 'sve';
+  }
 
   return (
     <AppLayout pageTitle="Operativa na Njivi">
@@ -361,9 +487,18 @@ const RadoviDashboard: React.FC = () => {
               <span>Excel</span>
             </button>
 
-            <button onClick={handleExportPdf} className={styles.btnSecondary} title="Odštampaj ili preuzmi PDF">
-              <Printer size={16} color="#2563eb" />
-              <span>PDF</span>
+            <button
+              onClick={handleExportPdf}
+              className={styles.btnSecondary}
+              title="Odštampaj ili preuzmi PDF"
+              disabled={isExportingPdf}
+            >
+              {isExportingPdf ? (
+                <Loader2 size={16} className="spin" />
+              ) : (
+                <Printer size={16} color="#2563eb" />
+              )}
+              <span>{isExportingPdf ? 'Generisanje...' : 'PDF'}</span>
             </button>
 
             <Link to="/radovi/novi" className={styles.btnPrimary} title="Unos novog rada sa njive">
@@ -414,27 +549,43 @@ const RadoviDashboard: React.FC = () => {
             </div>
           </div>
 
-          <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.iconWarning}`}>
-              <AlertTriangle size={22} />
-            </div>
-            <div className={styles.statInfo}>
-              <div className={styles.statValue}>
-                {todayStats.unassignedWarnings}
+          {isManager && (
+            <Link
+              to={`/masine/neusklađenosti?period=${periodParam}`}
+              className={styles.statCard}
+              style={{ textDecoration: 'none', cursor: 'pointer' }}
+              title="Kliknite za detaljan pregled radova bez jutarnjeg zaduženja"
+            >
+              <div className={`${styles.statIcon} ${styles.iconWarning}`}>
+                <AlertTriangle size={22} />
               </div>
-              <div className={styles.statLabel}>Radovi bez jutarnjeg zaduženja</div>
-            </div>
-          </div>
+              <div className={styles.statInfo}>
+                <div className={styles.statValue}>
+                  {currentPeriodUnassigned}
+                </div>
+                <div className={styles.statLabel}>
+                  Radovi bez zaduženja ({period === 'danas' ? 'Danas' : period === 'nedelja' ? 'Ove nedelje' : period === 'mesec' ? 'Ovog meseca' : 'Svi unosi'})
+                </div>
+              </div>
+            </Link>
+          )}
         </div>
 
-        {/* Upozorenje rukovodiocu ako postoje radovi bez zaduženja */}
-        {todayStats.unassignedWarnings > 0 && (
+        {/* Upozorenje rukovodiocu ako u izabranom periodu postoje radovi bez zaduženja */}
+        {isManager && currentPeriodUnassigned > 0 && (
           <div className={styles.warningNotice}>
-            <AlertTriangle size={18} />
-            <span>
-              Pažnja: Evidentirano je {todayStats.unassignedWarnings} unosa rada gde traktor nije imao zvanično
-              jutarnje zaduženje u sistemu. Radovi su prihvaćeni radi kontinuiteta proizvodnje.
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+              <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+              <span>
+                Pažnja: Evidentirano je{' '}
+                <strong>{currentPeriodUnassigned}</strong>{' '}
+                {currentPeriodUnassigned === 1 ? 'unos rada' : currentPeriodUnassigned < 5 ? 'unosa rada' : 'unosa rada'}{' '}
+                gde traktor nije imao zvanično jutarnje zaduženje u sistemu ({periodLabelText}). Radovi su prihvaćeni radi kontinuiteta proizvodnje.
+              </span>
+            </div>
+            <Link to={`/masine/neusklađenosti?period=${periodParam}`} className={styles.btnWarningAction}>
+              Pogledaj problem
+            </Link>
           </div>
         )}
 
@@ -532,18 +683,20 @@ const RadoviDashboard: React.FC = () => {
               ))}
             </select>
 
-            <select
-              className={styles.selectInput}
-              value={selectedWorker}
-              onChange={(e) => setSelectedWorker(e.target.value)}
-            >
-              <option value="">Svi radnici</option>
-              {workersData?.workers?.map((w: any) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </select>
+            {!isOperator && (
+              <select
+                className={styles.selectInput}
+                value={selectedWorker}
+                onChange={(e) => setSelectedWorker(e.target.value)}
+              >
+                <option value="">Svi radnici</option>
+                {workersData?.workers?.map((w: any) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
+            )}
 
             <select
               className={styles.selectInput}
@@ -564,7 +717,9 @@ const RadoviDashboard: React.FC = () => {
         <div className={styles.tableCard}>
           <div className={styles.tableHeaderBar}>
             <span className={styles.tableTitle}>Evidentirani Poslovi</span>
-            <span className={styles.tableCountBadge}>Prikazano: {worksList.length}</span>
+            <span className={styles.tableCountBadge}>
+              Ukupno: {totalWorks} | Strana {page} od {totalPages}
+            </span>
           </div>
 
           <div className={styles.tableWrapper}>
@@ -594,7 +749,7 @@ const RadoviDashboard: React.FC = () => {
                     <th>Vreme Rada</th>
                     <th>Status</th>
                     <th>Napomena</th>
-                    {(isManager || true) && <th style={{ textAlign: 'right' }}>Akcije</th>}
+                    {(isManager || isOperator) && <th style={{ textAlign: 'right' }}>Akcije</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -624,7 +779,7 @@ const RadoviDashboard: React.FC = () => {
                         <td>
                           <div className={styles.workerCell}>
                             <span className={styles.workerName}>{work.worker?.name}</span>
-                            <span className={styles.machineName}>🚜 {work.machine?.name}</span>
+                            <span className={styles.machineName}>{work.machine?.name}</span>
                           </div>
                         </td>
                         <td>
@@ -647,31 +802,49 @@ const RadoviDashboard: React.FC = () => {
                             {work.status === 'ZAVRSENO'
                               ? 'Završeno'
                               : work.status === 'U_TOKU'
-                              ? 'U toku'
-                              : 'Storno'}
+                                ? 'U toku'
+                                : 'Storno'}
                           </span>
                         </td>
                         <td style={{ maxWidth: 200, color: 'var(--text-secondary)' }}>
                           {work.notes || '-'}
                         </td>
-                        <td>
-                          <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
-                            <button
-                              className={styles.btnIcon}
-                              title="Izmeni unos"
-                              onClick={() => handleOpenEdit(work)}
-                            >
-                              <Pencil size={14} />
-                            </button>
-                            <button
-                              className={`${styles.btnIcon} ${styles.btnDelete}`}
-                              title="Storniraj rad"
-                              onClick={() => handleDelete(work.id, work.parcel?.name || '')}
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        </td>
+                        {(isManager || isOperator) && (
+                          <td>
+                            <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
+                              {isManager || (isOperator && isSameCalendarDay(work.date)) ? (
+                                <button
+                                  className={styles.btnIcon}
+                                  title="Izmeni unos rada"
+                                  onClick={() => handleOpenEdit(work)}
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                              ) : isOperator ? (
+                                <span
+                                  style={{
+                                    fontSize: '0.72rem',
+                                    color: 'var(--text-muted)',
+                                    fontStyle: 'italic',
+                                  }}
+                                  title="Istekao rok za izmenu (dozvoljeno samo na dan unosa)"
+                                >
+                                  Zaključano
+                                </span>
+                              ) : null}
+
+                              {isManager && (
+                                <button
+                                  className={`${styles.btnIcon} ${styles.btnDelete}`}
+                                  title="Storniraj rad"
+                                  onClick={() => handleDelete(work.id, work.parcel?.name || '')}
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -679,6 +852,92 @@ const RadoviDashboard: React.FC = () => {
               </table>
             )}
           </div>
+
+          {/* Serverska Paginacija */}
+          {totalWorks > 0 && (
+            <div className={styles.paginationBar}>
+              <div className={styles.paginationInfo}>
+                Prikazano <strong>{(page - 1) * pageSize + 1}</strong> do{' '}
+                <strong>{Math.min(page * pageSize, totalWorks)}</strong> od ukupno{' '}
+                <strong>{totalWorks}</strong> {totalWorks === 1 ? 'posla' : 'poslova'}
+              </div>
+
+              <div className={styles.paginationControls}>
+                <div className={styles.pageSizeWrapper}>
+                  <span>Po strani:</span>
+                  <select
+                    className={styles.pageSizeSelect}
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setPage(1);
+                    }}
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+
+                <div className={styles.paginationButtons}>
+                  <button
+                    className={styles.paginationBtn}
+                    onClick={() => setPage(1)}
+                    disabled={page <= 1}
+                    title="Prva strana"
+                  >
+                    <ChevronsLeft size={16} />
+                  </button>
+                  <button
+                    className={styles.paginationBtn}
+                    onClick={() => setPage((p) => Math.max(p - 1, 1))}
+                    disabled={page <= 1}
+                    title="Prethodna strana"
+                  >
+                    <ChevronLeft size={16} />
+                    <span>Prethodna</span>
+                  </button>
+
+                  <div className={styles.pageNumbers}>
+                    {getPageNumbers(page, totalPages).map((pNum, idx) =>
+                      pNum === '...' ? (
+                        <span key={`dots-${idx}`} className={styles.paginationEllipsis}>
+                          ...
+                        </span>
+                      ) : (
+                        <button
+                          key={pNum}
+                          className={`${styles.paginationPageBtn} ${pNum === page ? styles.paginationPageBtnActive : ''}`}
+                          onClick={() => setPage(Number(pNum))}
+                        >
+                          {pNum}
+                        </button>
+                      )
+                    )}
+                  </div>
+
+                  <button
+                    className={styles.paginationBtn}
+                    onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
+                    disabled={page >= totalPages}
+                    title="Sledeća strana"
+                  >
+                    <span>Sledeća</span>
+                    <ChevronRight size={16} />
+                  </button>
+                  <button
+                    className={styles.paginationBtn}
+                    onClick={() => setPage(totalPages)}
+                    disabled={page >= totalPages}
+                    title="Poslednja strana"
+                  >
+                    <ChevronsRight size={16} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Modal za izmenu unosa */}
@@ -696,12 +955,15 @@ const RadoviDashboard: React.FC = () => {
                 <div className={styles.modalBody}>
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Datum rada</label>
+                      <label className={styles.formLabel}>
+                        Datum rada {isOperator && '(fiksiran na dan unosa)'}
+                      </label>
                       <input
                         type="date"
                         className={styles.selectInput}
                         value={editForm.date}
                         onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                        disabled={isOperator}
                         required
                       />
                     </div>
@@ -766,11 +1028,14 @@ const RadoviDashboard: React.FC = () => {
                       </select>
                     </div>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Radnik</label>
+                      <label className={styles.formLabel}>
+                        Radnik {isOperator && '(automatski vezan nalog)'}
+                      </label>
                       <select
                         className={styles.selectInput}
                         value={editForm.workerId}
                         onChange={(e) => setEditForm({ ...editForm, workerId: e.target.value })}
+                        disabled={isOperator}
                         required
                       >
                         {workersData?.workers?.map((w: any) => (

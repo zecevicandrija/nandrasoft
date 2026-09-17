@@ -13,6 +13,8 @@ import {
   LogOut,
   LayoutDashboard,
   Sprout,
+  History,
+  ShieldAlert,
 } from 'lucide-react';
 import { useSession, signOut } from '../../lib/auth-client';
 import ThemeToggle from '../ThemeToggle';
@@ -55,13 +57,19 @@ const NAV_GROUPS: NavGroup[] = [
         title: 'Evidencija goriva',
         to: '/gorivo',
         icon: <Fuel size={18} />,
-        allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR', 'OPERATER'],
+        allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR'],
       },
       {
         title: 'Mašine & Kvarovi',
         to: '/masine-kvarovi',
         icon: <Wrench size={18} />,
         allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR', 'OPERATER'],
+      },
+      {
+        title: 'Neusklađenosti mašina',
+        to: '/masine/neusklađenosti',
+        icon: <ShieldAlert size={18} />,
+        allowedRoles: ['DIREKTOR', 'RUKOVODILAC'],
       },
     ],
   },
@@ -92,7 +100,7 @@ const NAV_GROUPS: NavGroup[] = [
     groupName: 'Sistem & Podaci',
     items: [
       {
-        title: 'Šifarnici (Master Data)',
+        title: 'Šifarnici',
         to: '/sifarnici',
         icon: <Database size={18} />,
         allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MAGACIN'],
@@ -102,6 +110,12 @@ const NAV_GROUPS: NavGroup[] = [
         to: '/admin',
         icon: <ShieldCheck size={18} />,
         allowedRoles: ['DIREKTOR'],
+      },
+      {
+        title: 'Revizija & Logovi',
+        to: '/revizija',
+        icon: <History size={18} />,
+        allowedRoles: ['DIREKTOR', 'RUKOVODILAC'],
       },
     ],
   },
@@ -164,10 +178,9 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
                   to={item.to}
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `${styles.navLink} ${
-                      isActive || (item.to !== '/' && location.pathname.startsWith(item.to))
-                        ? styles.navLinkActive
-                        : ''
+                    `${styles.navLink} ${isActive || (item.to !== '/' && location.pathname.startsWith(item.to))
+                      ? styles.navLinkActive
+                      : ''
                     }`
                   }
                 >
@@ -206,9 +219,8 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
             <div className={styles.userPill}>
               <span>{currentUser?.name}</span>
               <span
-                className={`${styles.userRoleBadge} ${
-                  styles[`role${userRole}` as keyof typeof styles] || ''
-                }`}
+                className={`${styles.userRoleBadge} ${styles[`role${userRole}` as keyof typeof styles] || ''
+                  }`}
               >
                 {ROLE_LABELS[userRole] || userRole}
               </span>

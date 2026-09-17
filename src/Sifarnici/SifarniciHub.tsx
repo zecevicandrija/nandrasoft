@@ -222,7 +222,7 @@ const SifarniciHub: React.FC = () => {
   const isLoading = loadingParcels || loadingMachines || loadingWorkers || loadingWorkTypes || loadingCrops || loadingPartners;
 
   return (
-    <AppLayout pageTitle="Šifarnici (Master Data)">
+    <AppLayout pageTitle="Šifarnici">
       {/* Toast Notification */}
       {toast && (
         <div className={`${styles.toast} ${toast.type === 'success' ? styles.toastSuccess : styles.toastError}`}>
@@ -346,7 +346,7 @@ const SifarniciHub: React.FC = () => {
 
         <button className={styles.addBtn} onClick={openAddModal}>
           <Plus size={18} />
-          <span>Dodaj {activeTab.slice(0, -1)}</span>
+          <span>Dodaj</span>
         </button>
       </div>
 
@@ -429,11 +429,10 @@ const SifarniciHub: React.FC = () => {
                         <td><span className={styles.codeBadge}>{m.regNumber || '—'}</span></td>
                         <td><span className={styles.numberText}>{m.currentHours} rh</span></td>
                         <td>
-                          <span className={`${styles.pill} ${
-                            m.status === 'SLOBODNA' ? styles.pillGreen :
+                          <span className={`${styles.pill} ${m.status === 'SLOBODNA' ? styles.pillGreen :
                             m.status === 'ZADUZENA' ? styles.pillAmber :
-                            m.status === 'U_KVARU' ? styles.pillRed : styles.pillPurple
-                          }`}>
+                              m.status === 'U_KVARU' ? styles.pillRed : styles.pillPurple
+                            }`}>
                             {m.status}
                           </span>
                         </td>
@@ -579,10 +578,9 @@ const SifarniciHub: React.FC = () => {
                       <tr key={pt.id}>
                         <td><strong className={styles.primaryText}>{pt.name}</strong></td>
                         <td>
-                          <span className={`${styles.pill} ${
-                            pt.type === 'KUPAC' ? styles.pillGreen :
+                          <span className={`${styles.pill} ${pt.type === 'KUPAC' ? styles.pillGreen :
                             pt.type === 'DOBAVLJAC' ? styles.pillBlue : styles.pillAmber
-                          }`}>
+                            }`}>
                             {pt.type}
                           </span>
                         </td>
