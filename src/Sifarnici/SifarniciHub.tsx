@@ -410,7 +410,7 @@ const SifarniciHub: React.FC = () => {
                     <th>Mašina</th>
                     <th>Tip</th>
                     <th>Registracija</th>
-                    <th>Radni sati (rh)</th>
+                    <th>Radni sati (h)</th>
                     <th>Status</th>
                     <th className={styles.thActions}>Akcije</th>
                   </tr>
@@ -427,7 +427,7 @@ const SifarniciHub: React.FC = () => {
                         </td>
                         <td><span className={`${styles.pill} ${styles.pillBlue}`}>{m.type}</span></td>
                         <td><span className={styles.codeBadge}>{m.regNumber || '—'}</span></td>
-                        <td><span className={styles.numberText}>{m.currentHours} rh</span></td>
+                        <td><span className={styles.numberText}>{m.currentHours} h</span></td>
                         <td>
                           <span className={`${styles.pill} ${m.status === 'SLOBODNA' ? styles.pillGreen :
                             m.status === 'ZADUZENA' ? styles.pillAmber :
@@ -685,7 +685,7 @@ const SifarniciHub: React.FC = () => {
                       <input className={styles.formInput} value={form.regNumber || ''} onChange={(e) => setForm({ ...form, regNumber: e.target.value })} />
                     </div>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Trenutni radni sati (rh)</label>
+                      <label className={styles.formLabel}>Trenutni radni sati (h)</label>
                       <input className={styles.formInput} type="number" step="1" value={form.currentHours ?? 0} onChange={(e) => setForm({ ...form, currentHours: e.target.value })} />
                     </div>
                   </div>

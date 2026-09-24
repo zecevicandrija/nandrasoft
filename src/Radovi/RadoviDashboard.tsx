@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
 import styles from './Radovi.module.css';
@@ -332,8 +333,11 @@ const RadoviDashboard: React.FC = () => {
       }
 
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const hasUnicodeFont = await applyUnicodeFont(doc);
+      const fontName = hasUnicodeFont ? 'Roboto' : 'helvetica';
 
       // Naslov
+      doc.setFont(fontName, 'bold');
       doc.setFontSize(14);
       doc.setTextColor(22, 101, 52); // Tamno zelena
       doc.text('NANDRA — Zvanični Dnevnik Radova na Njivi', 14, 15);
@@ -344,6 +348,7 @@ const RadoviDashboard: React.FC = () => {
       else if (period === 'mesec') periodLabel = 'Ovaj mesec';
       else if (period === 'custom') periodLabel = `Od ${dateFrom} do ${dateTo}`;
 
+      doc.setFont(fontName, 'normal');
       doc.setFontSize(9);
       doc.setTextColor(100, 116, 139);
       doc.text(
@@ -369,7 +374,7 @@ const RadoviDashboard: React.FC = () => {
           w.machine?.name,
           w.workType?.name,
           w.startTime && w.endTime ? `${w.startTime} - ${w.endTime}` : '-',
-          `${w.workHours || 0} rh`,
+          `${w.workHours || 0} h`,
           w.notes || '-',
         ];
       });
@@ -402,14 +407,14 @@ const RadoviDashboard: React.FC = () => {
             '',
             '',
             '',
-            `${Math.round(totalHours * 10) / 10} rh`,
+            `${Math.round(totalHours * 10) / 10} h`,
             '',
           ],
         ],
         startY: 25,
-        styles: { fontSize: 8, cellPadding: 2 },
-        headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
-        footStyles: { fillColor: [22, 101, 52], textColor: [255, 255, 255], fontStyle: 'bold' },
+        styles: { font: fontName, fontStyle: 'normal', fontSize: 8, cellPadding: 2 },
+        headStyles: { font: fontName, fontStyle: 'bold', fillColor: [30, 41, 59], textColor: [255, 255, 255] },
+        footStyles: { font: fontName, fontStyle: 'bold', fillColor: [22, 101, 52], textColor: [255, 255, 255] },
         alternateRowStyles: { fillColor: [248, 250, 252] },
       });
 
@@ -530,7 +535,7 @@ const RadoviDashboard: React.FC = () => {
             <div className={styles.statInfo}>
               <div className={styles.statValue}>
                 {todayStats.workHours}
-                <span className={styles.statUnit}>rh</span>
+                <span className={styles.statUnit}>h</span>
               </div>
               <div className={styles.statLabel}>Radnih Sati Danas</div>
             </div>
@@ -545,7 +550,7 @@ const RadoviDashboard: React.FC = () => {
                 {weekStats.areaDoneHa}
                 <span className={styles.statUnit}>ha</span>
               </div>
-              <div className={styles.statLabel}>Ove Nedelje ({weekStats.workHours} rh)</div>
+              <div className={styles.statLabel}>Ove Nedelje ({weekStats.workHours} h)</div>
             </div>
           </div>
 
@@ -791,10 +796,10 @@ const RadoviDashboard: React.FC = () => {
                               <span>
                                 {work.startTime} - {work.endTime}
                               </span>
-                              <div className={styles.hoursHighlight}>({work.workHours} rh)</div>
+                              <div className={styles.hoursHighlight}>({work.workHours}h)</div>
                             </div>
                           ) : (
-                            <span>{work.workHours ? `${work.workHours} rh` : '-'}</span>
+                            <span>{work.workHours ? `${work.workHours} h` : '-'}</span>
                           )}
                         </td>
                         <td>

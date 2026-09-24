@@ -12,6 +12,7 @@ import {
   Plus,
   Info,
   User,
+  KeyRound,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
@@ -74,18 +75,45 @@ const BrziUnosRada: React.FC = () => {
     },
   });
 
-  // Postavi inicijalne vrednosti kada stignu podaci
-  useEffect(() => {
-    if (!parcelId && parcelsData?.parcels?.length > 0) {
-      setParcelId(parcelsData.parcels[0].id);
-    }
-  }, [parcelsData, parcelId]);
+  // 2. DOHVATANJE AKTIVNIH ZADUŽENJA (PAMETNO POVEZIVANJE - REŠENJE A)
+  const { data: activeAssignmentsData } = useQuery({
+    queryKey: ['assignments-active'],
+    queryFn: async () => {
+      const res = await fetch(`${API}/assignments/active`, { credentials: 'include' });
+      return res.json();
+    },
+  });
 
-  useEffect(() => {
-    if (!machineId && machinesData?.machines?.length > 0) {
-      setMachineId(machinesData.machines[0].id);
+  // Prepoznavanje da li trenutni radnik (ili izabrani workerId) ima zadužen traktor
+  const userActiveAssignment = activeAssignmentsData?.assignments?.find((a: any) => {
+    if (isOperator) {
+      return (
+        a.createdBy?.id === currentUser?.id ||
+        a.worker?.userId === currentUser?.id ||
+        (currentUser?.name && a.worker?.name?.toLowerCase() === currentUser?.name?.toLowerCase())
+      );
     }
-  }, [machinesData, machineId]);
+    return workerId ? a.workerId === workerId : false;
+  });
+
+  // Postavi inicijalne vrednosti (prioritet ima aktivno zaduženje mašine!)
+  useEffect(() => {
+    if (userActiveAssignment) {
+      if (userActiveAssignment.machineId) {
+        setMachineId(userActiveAssignment.machineId);
+      }
+      if (!parcelId && parcelsData?.parcels?.length > 0) {
+        setParcelId(parcelsData.parcels[0].id);
+      }
+    } else {
+      if (!parcelId && parcelsData?.parcels?.length > 0) {
+        setParcelId(parcelsData.parcels[0].id);
+      }
+      if (!machineId && machinesData?.machines?.length > 0) {
+        setMachineId(machinesData.machines[0].id);
+      }
+    }
+  }, [userActiveAssignment, parcelsData, machinesData]);
 
   useEffect(() => {
     if (!workerId && workersData?.workers?.length > 0) {
@@ -189,6 +217,7 @@ const BrziUnosRada: React.FC = () => {
       startTime: startTime || null,
       endTime: endTime || null,
       notes: notes || null,
+      autoAssignMachine: true,
     };
 
     if (!isOperator && workerId) {
@@ -243,12 +272,28 @@ const BrziUnosRada: React.FC = () => {
                 <strong>Operacija:</strong> {submittedData.workType?.name}
               </div>
               <div>
-                <strong>Radni sati:</strong> {submittedData.workHours ? `${submittedData.workHours} rh` : '-'}
+                <strong>Radni sati:</strong> {submittedData.workHours ? `${submittedData.workHours} h` : '-'}
               </div>
             </div>
 
             <div className={styles.successActions}>
-              <button onClick={handleResetForNext} className={styles.submitBtn} style={{ minWidth: 200 }}>
+              {submittedData.machineId && (
+                <button
+                  onClick={() =>
+                    navigate(
+                      `/masine-kvarovi?checkin=true&machineId=${submittedData.machineId}`
+                    )
+                  }
+                  className={styles.btnFinishDay}
+                >
+                  <KeyRound size={18} />
+                  <span>
+                    Razduži {submittedData.machine?.name ? submittedData.machine.name : 'Mašinu'} i završi dan
+                  </span>
+                </button>
+              )}
+
+              <button onClick={handleResetForNext} className={styles.submitBtn} style={{ minWidth: 190 }}>
                 <Plus size={18} />
                 <span>Unesi Još Jedan Rad</span>
               </button>
@@ -301,6 +346,32 @@ const BrziUnosRada: React.FC = () => {
               </div>
             ) : (
               <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                {/* PAMETNO PREPOZNAVANJE ZADUŽENJA (REŠENJE A) */}
+                {userActiveAssignment ? (
+                  <div className={styles.smartAssignmentBanner}>
+                    <div className={styles.smartBannerIcon}>
+                      <Tractor size={20} color="#16a34a" />
+                    </div>
+                    <div className={styles.smartBannerContent}>
+                      <div className={styles.smartBannerTitle}>
+                        Jutarnje zaduženje prepoznato: <strong>{userActiveAssignment.machine?.name}</strong>
+                      </div>
+                      <div className={styles.smartBannerDesc}>
+                        Vaš zaduženi traktor je automatski povezan sa ovim unosom rada.
+                      </div>
+                    </div>
+                    <span className={styles.smartBannerBadge}>Automatski povezano</span>
+                  </div>
+                ) : (
+                  <div className={styles.smartAssignmentEmpty}>
+                    <Info size={16} color="#2563eb" style={{ flexShrink: 0 }} />
+                    <span>
+                      Nema otvorenog jutarnjeg zaduženja — izaberite traktor ispod i sistem će ga{' '}
+                      <strong>automatski povezati</strong> sa ovim radom.
+                    </span>
+                  </div>
+                )}
+
                 {/* 1. SMENA SELEKTOR */}
                 <div className={styles.shiftSegmentContainer}>
                   <label className={styles.segmentLabel}>Radna Smena</label>
@@ -398,13 +469,12 @@ const BrziUnosRada: React.FC = () => {
                   {/* Plausibility Status Boks */}
                   {selectedParcelObj && currentNumericArea > 0 && (
                     <div
-                      className={`${styles.plausibilityBox} ${
-                        currentNumericArea <= selectedParcelObj.areaHa
-                          ? styles.plausibilityValid
-                          : currentNumericArea <= parcelMaxHa
+                      className={`${styles.plausibilityBox} ${currentNumericArea <= selectedParcelObj.areaHa
+                        ? styles.plausibilityValid
+                        : currentNumericArea <= parcelMaxHa
                           ? styles.plausibilityWarning
                           : styles.plausibilityError
-                      }`}
+                        }`}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         <Info size={14} />
@@ -412,8 +482,8 @@ const BrziUnosRada: React.FC = () => {
                           {currentNumericArea <= selectedParcelObj.areaHa
                             ? `U okviru parcele (${currentNumericArea} od ${selectedParcelObj.areaHa} ha)`
                             : currentNumericArea <= parcelMaxHa
-                            ? `Prekoračenje unutar tolerancije (+20% dozvoljeno: max ${parcelMaxHa} ha)`
-                            : `PREKORAČENJE! Maksimalno dozvoljeno je ${parcelMaxHa} ha!`}
+                              ? `Prekoračenje unutar tolerancije (+20% dozvoljeno: max ${parcelMaxHa} ha)`
+                              : `PREKORAČENJE! Maksimalno dozvoljeno je ${parcelMaxHa} ha!`}
                         </span>
                       </div>
                     </div>
@@ -439,7 +509,14 @@ const BrziUnosRada: React.FC = () => {
 
                 {/* 5. MAŠINA I RADNIK */}
                 <div className={styles.fieldGroup}>
-                  <label className={styles.fieldLabel}>Traktor / Mašina</label>
+                  <label className={styles.fieldLabel}>
+                    <span>Traktor / Mašina</span>
+                    {userActiveAssignment && userActiveAssignment.machineId === machineId && (
+                      <span style={{ fontSize: '0.72rem', color: '#16a34a', fontWeight: 800 }}>
+                        ✓ Preuzeto sa jutarnjeg zaduženja
+                      </span>
+                    )}
+                  </label>
                   <select
                     className={styles.fieldSelect}
                     value={machineId}
@@ -486,7 +563,7 @@ const BrziUnosRada: React.FC = () => {
                   >
                     <User size={16} color="#16a34a" />
                     <span>
-                      Radnik: <strong>{currentUser?.name || 'Operater'}</strong> (automatski se beleži sa vašeg naloga)
+                      Radnik: <strong>{currentUser?.name || 'Operater'}</strong>
                     </span>
                   </div>
                 )}
@@ -517,9 +594,9 @@ const BrziUnosRada: React.FC = () => {
                   <div className={styles.hoursCalculatedBox}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                       <Clock size={16} />
-                      <span>Automatski izračunato radno vreme:</span>
+                      <span>Radno vreme:</span>
                     </div>
-                    <span style={{ fontSize: '1rem', fontWeight: 800 }}>{liveHours} rh</span>
+                    <span style={{ fontSize: '1rem', fontWeight: 800 }}>{liveHours}h</span>
                   </div>
                 )}
 

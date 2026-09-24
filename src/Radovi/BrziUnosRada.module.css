@@ -386,6 +386,32 @@
   width: 100%;
 }
 
+.btnFinishDay {
+  min-height: 48px;
+  width: 100%;
+  max-width: 360px;
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: #ffffff;
+  border: none;
+  border-radius: 12px;
+  font-size: 0.98rem;
+  font-weight: 800;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.35);
+  transition: all 0.2s ease;
+  text-decoration: none;
+}
+
+.btnFinishDay:hover {
+  background: linear-gradient(135deg, #15803d, #166534);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(22, 163, 74, 0.45);
+}
+
 @keyframes scaleUp {
   from {
     opacity: 0;
@@ -395,4 +421,76 @@
     opacity: 1;
     transform: scale(1);
   }
+}
+
+/* Smart Assignment Banner (Rešenje A) */
+.smartAssignmentBanner {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.9rem 1.15rem;
+  background-color: rgba(22, 163, 74, 0.08);
+  border: 1.5px solid rgba(22, 163, 74, 0.35);
+  border-radius: 14px;
+  animation: scaleUp 0.2s ease-out;
+}
+
+[data-theme="dark"] .smartAssignmentBanner {
+  background-color: rgba(22, 163, 74, 0.12);
+  border-color: rgba(22, 163, 74, 0.45);
+}
+
+.smartBannerIcon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background-color: rgba(22, 163, 74, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.smartBannerContent {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.smartBannerTitle {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #16a34a;
+}
+
+[data-theme="dark"] .smartBannerTitle {
+  color: #4ade80;
+}
+
+.smartBannerDesc {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.smartBannerBadge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.25rem 0.55rem;
+  background-color: #16a34a;
+  color: #ffffff;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.smartAssignmentEmpty {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.8rem 1rem;
+  background-color: var(--bg-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: 12px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
 }

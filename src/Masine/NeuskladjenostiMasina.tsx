@@ -130,7 +130,7 @@ const NeuskladjenostiMasina: React.FC = () => {
               <div>
                 <strong>Zašto se pojavljuju ova upozorenja?</strong>
                 <br />
-                Kada radnik / operater na njivi unese urađen posao, sistem proverava da li je ta mašina tog jutra prošla kroz formalnu proceduru zaduženja u hangaru (unos početnih moto-časova i goriva).
+                Kada radnik / operater na njivi unese urađen posao, sistem proverava da li je ta mašina tog jutra prošla kroz formalnu proceduru zaduženja.
                 <br />
                 Kako poljoprivredni radovi ne bi stali usled zaboravnosti, radnik može uneti posao, ali se ovde beleži izuzetak kako biste mogli <strong>lično da opomenete radnika</strong> ili naknadno evidentirate početno stanje u modulu mašina.
               </div>

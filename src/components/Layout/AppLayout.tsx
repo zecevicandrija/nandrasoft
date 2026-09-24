@@ -11,7 +11,6 @@ import {
   Menu,
   X,
   LogOut,
-  LayoutDashboard,
   Sprout,
   History,
   ShieldAlert,
@@ -41,12 +40,6 @@ const NAV_GROUPS: NavGroup[] = [
   {
     groupName: 'Operativa & Njiva',
     items: [
-      {
-        title: 'Dashboard',
-        to: '/',
-        icon: <LayoutDashboard size={18} />,
-        allowedRoles: ['DIREKTOR', 'RUKOVODILAC'],
-      },
       {
         title: 'Radovi na njivi',
         to: '/radovi',
@@ -164,7 +157,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
           </div>
           <div className={styles.brandText}>
             <span className={styles.brandName}>NANDRA</span>
-            <span className={styles.brandSub}>Agro Proizvodnja</span>
+            <span className={styles.brandSub}>SOFTWARE</span>
           </div>
         </div>
 
