@@ -69,6 +69,20 @@ router.get("/active", async (req, res) => {
   }
 });
 
+// Pomoćna funkcija za izolaciju podataka operatera (radnika)
+async function getOperatorFilter(userId) {
+  const linkedWorker = await prisma.worker.findFirst({
+    where: { userId },
+    select: { id: true },
+  });
+  if (linkedWorker) {
+    return {
+      OR: [{ createdById: userId }, { workerId: linkedWorker.id }],
+    };
+  }
+  return { createdById: userId };
+}
+
 // ==========================================
 // 3. SVA ZADUŽENJA SA FILTERIMA (ISTORIJAT)
 // ==========================================
@@ -90,6 +104,13 @@ router.get("/", async (req, res) => {
         end.setHours(23, 59, 59, 999);
         where.assignedAt.lte = end;
       }
+    }
+
+    // Izolacija podataka: Radnici/operateri vide isključivo sopstvena zaduženja
+    if (req.user.role === "OPERATER") {
+      const opFilter = await getOperatorFilter(req.user.id);
+      where.AND = where.AND || [];
+      where.AND.push(opFilter);
     }
 
     const take = Math.min(Number(limit) || 50, 100);
@@ -130,7 +151,7 @@ router.get("/", async (req, res) => {
 // ==========================================
 const checkoutSchema = z.object({
   machineId: z.string().min(1, "Mašina je obavezna"),
-  workerId: z.string().min(1, "Radnik je obavezan"),
+  workerId: z.string().min(1, "Radnik je obavezan").optional().nullable(),
   parcelId: z.string().optional().nullable(),
   startFuelLevel: z.number().min(0).max(100).optional().nullable(),
   startHours: z.number().nonnegative("Početni radni sati ne mogu biti negativni").optional().nullable(),
@@ -147,6 +168,39 @@ router.post("/checkout", async (req, res) => {
     }
 
     const { machineId, workerId, parcelId, startFuelLevel, startHours, assignNotes } = parsed.data;
+
+    // Automatsko prepoznavanje / vezivanje radnika za operatera
+    let finalWorkerId = workerId;
+    if (req.user.role === "OPERATER" || !finalWorkerId) {
+      let worker = await prisma.worker.findFirst({
+        where: { userId: req.user.id },
+      });
+
+      if (!worker) {
+        worker = await prisma.worker.findFirst({
+          where: { name: { equals: req.user.name, mode: "insensitive" } },
+        });
+
+        if (worker) {
+          await prisma.worker.update({
+            where: { id: worker.id },
+            data: { userId: req.user.id },
+          });
+        }
+      }
+
+      if (!worker) {
+        worker = await prisma.worker.create({
+          data: {
+            name: req.user.name,
+            userId: req.user.id,
+            type: "STALNI",
+          },
+        });
+      }
+
+      finalWorkerId = worker.id;
+    }
 
     // 1. Provera postojanja mašine i concurrency zaštita
     const machine = await prisma.machine.findUnique({
@@ -185,7 +239,7 @@ router.post("/checkout", async (req, res) => {
       prisma.machineAssignment.create({
         data: {
           machineId,
-          workerId,
+          workerId: finalWorkerId,
           parcelId: parcelId || null,
           startFuelLevel: startFuelLevel !== undefined ? startFuelLevel : null,
           startHours: initialHours,
@@ -277,7 +331,6 @@ router.post("/checkin", async (req, res) => {
         include: {
           machine: true,
           worker: true,
-          parcel: true,
         },
       }),
       prisma.machine.update({
@@ -436,6 +489,215 @@ router.post("/direct", async (req, res) => {
   } catch (error) {
     console.error("Greška pri direktnom zaduživanju:", error);
     res.status(500).json({ error: "Greška na serveru pri direktnom zaduživanju." });
+  }
+});
+
+// ==========================================
+// 7. IZMENA ZADUŽENJA (UZ PROVERU PRAVA I AUDIT LOG)
+// ==========================================
+const updateAssignmentSchema = z.object({
+  parcelId: z.string().optional().nullable(),
+  startHours: z.number().nonnegative("Početni radni sati ne mogu biti negativni").optional().nullable(),
+  endHours: z.number().nonnegative("Krajnji radni sati ne mogu biti negativni").optional().nullable(),
+  startFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  endFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  isOperational: z.boolean().optional(),
+  assignNotes: z.string().max(500).optional().nullable(),
+  returnNotes: z.string().max(500).optional().nullable(),
+});
+
+router.put("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await prisma.machineAssignment.findUnique({
+      where: { id },
+      include: { machine: true, worker: true, parcel: true },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "Zaduženje nije pronađeno." });
+    }
+
+    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
+    const isOperator = req.user.role === "OPERATER";
+
+    if (!isManager && !isOperator) {
+      return res.status(403).json({ error: "Nemate ovlašćenje za izmenu zaduženja." });
+    }
+
+    // Specifična pravila za operatera:
+    if (isOperator) {
+      const isOwnAssignment =
+        existing.createdById === req.user.id ||
+        (existing.worker && existing.worker.userId === req.user.id);
+
+      if (!isOwnAssignment) {
+        return res.status(403).json({ error: "Možete menjati isključivo sopstvena zaduženja." });
+      }
+
+      // Dozvoljeno samo do kraja dana u kojem je zaduženje evidentirano
+      const now = new Date();
+      const recordDate = new Date(existing.assignedAt);
+      const isSameDay =
+        now.getFullYear() === recordDate.getFullYear() &&
+        now.getMonth() === recordDate.getMonth() &&
+        now.getDate() === recordDate.getDate();
+
+      if (!isSameDay) {
+        return res.status(403).json({
+          error: "Istekao je rok za izmenu. Zaduženje možete izmeniti samo do kraja dana u kojem je zabeleženo.",
+        });
+      }
+
+      if (req.body.workerId && req.body.workerId !== existing.workerId) {
+        return res.status(403).json({ error: "Ne možete menjati dodeljenog radnika." });
+      }
+    }
+
+    const parsed = updateAssignmentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: parsed.error.issues.map((i) => i.message).join(". "),
+      });
+    }
+
+    const updateData = { ...parsed.data };
+
+    // Validacija radnih sati
+    const targetStartHours =
+      updateData.startHours !== undefined && updateData.startHours !== null
+        ? updateData.startHours
+        : existing.startHours;
+    const targetEndHours =
+      updateData.endHours !== undefined && updateData.endHours !== null
+        ? updateData.endHours
+        : existing.endHours;
+
+    if (targetEndHours !== null && targetEndHours !== undefined && targetEndHours < targetStartHours) {
+      return res.status(400).json({
+        error: `Krajnji radni sati (${targetEndHours} rh) ne mogu biti manji od početnih (${targetStartHours} rh).`,
+      });
+    }
+
+    // Ažuriranje statusa zaduženja ako je razduženo i menja se ispravnost
+    let newStatus = existing.status;
+    let newMachineStatus = undefined;
+
+    if (existing.status !== "ZADUZENA" && updateData.isOperational !== undefined) {
+      newStatus = updateData.isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM";
+      newMachineStatus = updateData.isOperational ? "SLOBODNA" : "U_KVARU";
+    }
+
+    // Razlike (Diff) za Audit Log
+    const changes = [];
+    const oldValues = {};
+    const newValues = {};
+
+    if (updateData.startHours !== undefined && updateData.startHours !== existing.startHours) {
+      changes.push(`Početni sati: ${existing.startHours} rh → ${updateData.startHours} rh`);
+      oldValues.startHours = existing.startHours;
+      newValues.startHours = updateData.startHours;
+    }
+    if (updateData.endHours !== undefined && updateData.endHours !== existing.endHours) {
+      changes.push(`Krajnji sati: ${existing.endHours || "-"} rh → ${updateData.endHours} rh`);
+      oldValues.endHours = existing.endHours;
+      newValues.endHours = updateData.endHours;
+    }
+    if (updateData.startFuelLevel !== undefined && updateData.startFuelLevel !== existing.startFuelLevel) {
+      changes.push(`Gorivo polazak: ${existing.startFuelLevel ?? "-"}% → ${updateData.startFuelLevel}%`);
+      oldValues.startFuelLevel = existing.startFuelLevel;
+      newValues.startFuelLevel = updateData.startFuelLevel;
+    }
+    if (updateData.endFuelLevel !== undefined && updateData.endFuelLevel !== existing.endFuelLevel) {
+      changes.push(`Gorivo povratak: ${existing.endFuelLevel ?? "-"}% → ${updateData.endFuelLevel}%`);
+      oldValues.endFuelLevel = existing.endFuelLevel;
+      newValues.endFuelLevel = updateData.endFuelLevel;
+    }
+    if (updateData.isOperational !== undefined && updateData.isOperational !== existing.isOperational) {
+      changes.push(`Ispravnost: ${existing.isOperational ? "Ispravna" : "U kvaru"} → ${updateData.isOperational ? "Ispravna" : "U kvaru"}`);
+      oldValues.isOperational = existing.isOperational;
+      newValues.isOperational = updateData.isOperational;
+    }
+    if (updateData.parcelId !== undefined && updateData.parcelId !== existing.parcelId) {
+      const newP = updateData.parcelId ? await prisma.parcel.findUnique({ where: { id: updateData.parcelId } }) : null;
+      changes.push(`Parcela: ${existing.parcel?.name || "Bez parcele"} → ${newP ? newP.name : "Bez parcele"}`);
+      oldValues.parcel = existing.parcel?.name || null;
+      newValues.parcel = newP ? newP.name : null;
+    }
+    if (updateData.assignNotes !== undefined && updateData.assignNotes !== existing.assignNotes) {
+      changes.push(`Napomena zaduženja izmenjena`);
+      oldValues.assignNotes = existing.assignNotes;
+      newValues.assignNotes = updateData.assignNotes;
+    }
+    if (updateData.returnNotes !== undefined && updateData.returnNotes !== existing.returnNotes) {
+      changes.push(`Napomena razduženja izmenjena`);
+      oldValues.returnNotes = existing.returnNotes;
+      newValues.returnNotes = updateData.returnNotes;
+    }
+
+    const assignmentUpdatePayload = {
+      ...updateData,
+      status: newStatus,
+    };
+
+    const transactionOps = [
+      prisma.machineAssignment.update({
+        where: { id },
+        data: assignmentUpdatePayload,
+        include: {
+          machine: true,
+          worker: true,
+          parcel: true,
+        },
+      }),
+    ];
+
+    // Ako je potrebno ažurirati status ili sate mašine
+    const machineUpdateData = {};
+    if (newMachineStatus) {
+      machineUpdateData.status = newMachineStatus;
+    }
+    if (targetEndHours !== null && targetEndHours !== undefined) {
+      machineUpdateData.currentHours = Math.max(existing.machine.currentHours || 0, targetEndHours);
+    }
+    if (Object.keys(machineUpdateData).length > 0) {
+      transactionOps.push(
+        prisma.machine.update({
+          where: { id: existing.machineId },
+          data: machineUpdateData,
+        })
+      );
+    }
+
+    const [updated] = await prisma.$transaction(transactionOps);
+
+    if (changes.length > 0) {
+      try {
+        await prisma.auditLog.create({
+          data: {
+            entityType: "MachineAssignment",
+            entityId: existing.id,
+            action: "IZMENA",
+            userId: req.user.id,
+            userName: req.user.name || "Korisnik",
+            userRole: req.user.role,
+            description: `Izmenjeno zaduženje mašine "${existing.machine.name}": ${changes.join("; ")}`,
+            oldValues,
+            newValues,
+          },
+        });
+      } catch (logErr) {
+        console.warn("Audit log greška pri izmeni zaduženja:", logErr);
+      }
+    }
+
+    res.json({
+      message: "Zaduženje je uspešno ažurirano.",
+      assignment: updated,
+    });
+  } catch (error) {
+    console.error("Greška pri ažuriranju zaduženja:", error);
+    res.status(500).json({ error: "Greška na serveru pri ažuriranju zaduženja." });
   }
 });
 

@@ -383,6 +383,7 @@ const fieldWorkSchema = z.object({
   status: z.enum(["U_TOKU", "ZAVRSENO", "STORNO"]).default("ZAVRSENO"),
   notes: z.string().max(1000).optional().nullable(),
   photoUrl: z.string().url("Neispravan URL slike").optional().nullable(),
+  autoAssignMachine: z.boolean().optional().default(true),
 });
 
 router.post("/", async (req, res) => {
@@ -408,6 +409,7 @@ router.post("/", async (req, res) => {
       status,
       notes,
       photoUrl,
+      autoAssignMachine,
     } = parsed.data;
 
     // Automatsko prepoznavanje radnika za ulogovanog korisnika (operatera)
@@ -497,6 +499,52 @@ router.post("/", async (req, res) => {
         workType: true,
       },
     });
+
+    // 4. Pametno povezivanje zaduženja mašine (Rešenje A)
+    // Ako za ovu mašinu na dan rada ne postoji zaduženje, a autoAssignMachine je uključen,
+    // sistem automatski kreira uredno zaduženje kako bi se sprečile neusklađenosti.
+    try {
+      const workDate = date ? new Date(date) : new Date();
+      const startOfDay = new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 0, 0, 0);
+      const endOfDay = new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 23, 59, 59, 999);
+
+      const existingAssignment = await prisma.machineAssignment.findFirst({
+        where: {
+          machineId,
+          assignedAt: { gte: startOfDay, lte: endOfDay },
+        },
+      });
+
+      if (!existingAssignment && autoAssignMachine !== false) {
+        const machineObj = await prisma.machine.findUnique({ where: { id: machineId } });
+        const currentH = machineObj?.currentHours || 0;
+        const hoursToAdd = finalWorkHours || 0;
+
+        await prisma.machineAssignment.create({
+          data: {
+            machineId,
+            workerId: finalWorkerId,
+            parcelId: null,
+            assignedAt: workDate,
+            returnedAt: status === "ZAVRSENO" ? workDate : null,
+            startHours: currentH,
+            endHours: status === "ZAVRSENO" ? currentH + hoursToAdd : null,
+            status: status === "ZAVRSENO" ? "RAZDUZENA" : "ZADUZENA",
+            assignNotes: `Automatski evidentirano uz rad na njivi`,
+            createdById: req.user.id,
+          },
+        });
+
+        if (status === "ZAVRSENO" && hoursToAdd > 0) {
+          await prisma.machine.update({
+            where: { id: machineId },
+            data: { currentHours: currentH + hoursToAdd },
+          });
+        }
+      }
+    } catch (assignErr) {
+      console.warn("Greška pri automatskom zaduživanju mašine uz rad:", assignErr);
+    }
 
     res.status(201).json({
       message: `Uspešno evidentiran rad na parceli "${parcel.name}".`,
