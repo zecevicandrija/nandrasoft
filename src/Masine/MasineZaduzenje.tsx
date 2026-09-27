@@ -512,9 +512,6 @@ const MasineZaduzenje: React.FC = () => {
               <KeyRound size={26} color="#d97706" />
               Zaduživanje i Razduživanje Mehanizacije
             </h2>
-            <div className={styles.subtitle}>
-              Praćenje ko trenutno upravlja kojim traktorom, radnih sati i stanja ispravnosti mašina
-            </div>
           </div>
         </div>
 
@@ -1321,11 +1318,6 @@ const MasineZaduzenje: React.FC = () => {
                     <div>
                       <div style={{ fontWeight: 800, fontSize: '0.9rem' }}>
                         {checkinOperational ? 'Mašina je potpuno ispravna' : 'PRIJAVI KVAR / OŠTEĆENJE'}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        {checkinOperational
-                          ? 'Vraća se u status SLOBODNA za sledećeg radnika'
-                          : 'Prebacuje mašinu u status U_KVARU i obaveštava mehaničara'}
                       </div>
                     </div>
                   </div>

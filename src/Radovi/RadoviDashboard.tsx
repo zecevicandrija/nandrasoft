@@ -16,7 +16,6 @@ import {
   AlertCircle,
   Loader2,
   X,
-  KeyRound,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -476,17 +475,9 @@ const RadoviDashboard: React.FC = () => {
               <Tractor size={26} color="#16a34a" />
               Dnevnik Radova na Njivi
             </h2>
-            <div className={styles.subtitle}>
-              Evidencija obrade zemljišta, utrošenih sati, angažovane mehanizacije i radnika
-            </div>
           </div>
 
           <div className={styles.actionBtns}>
-            <Link to="/masine/zaduzenje" className={styles.btnSecondary} title="Zaduživanje i razduživanje mašina">
-              <KeyRound size={16} color="#d97706" />
-              <span>Zaduženja Mašina</span>
-            </Link>
-
             <button onClick={handleExportExcel} className={styles.btnSecondary} title="Preuzmi u Excel formatu">
               <FileSpreadsheet size={16} color="#16a34a" />
               <span>Excel</span>

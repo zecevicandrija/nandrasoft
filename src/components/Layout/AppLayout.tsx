@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   Tractor,
-  Fuel,
+  // Fuel,
   Wrench,
   Package,
   Users,
@@ -46,12 +46,12 @@ const NAV_GROUPS: NavGroup[] = [
         icon: <Tractor size={18} />,
         allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'OPERATER'],
       },
-      {
-        title: 'Evidencija goriva',
-        to: '/gorivo',
-        icon: <Fuel size={18} />,
-        allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR'],
-      },
+      // {
+      //   title: 'Evidencija goriva',
+      //   to: '/gorivo',
+      //   icon: <Fuel size={18} />,
+      //   allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR'],
+      // },
       {
         title: 'Mašine & Kvarovi',
         to: '/masine-kvarovi',

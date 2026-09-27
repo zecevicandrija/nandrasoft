@@ -7,7 +7,6 @@ import {
   Package,
   Wrench,
   HardHat,
-  CheckCircle2,
   AlertCircle,
   Settings,
   Database,
@@ -137,24 +136,6 @@ const PocetniEkran: React.FC = () => {
             <span>{ROLE_LABELS[role] || role}</span>
           </div>
 
-          <div className={styles.profileMeta}>
-            <div className={styles.metaRow}>
-              <span className={styles.metaLabel}>Uloga sistema</span>
-              <span className={styles.metaValue}>{role}</span>
-            </div>
-            <div className={styles.metaRow}>
-              <span className={styles.metaLabel}>Korisnički ID</span>
-              <span className={styles.metaValue}>{user.id?.slice(0, 14)}...</span>
-            </div>
-            <div className={styles.metaRow}>
-              <span className={styles.metaLabel}>Status naloga</span>
-              <span className={styles.statusActiveBadge}>
-                <CheckCircle2 size={14} />
-                Aktivan
-              </span>
-            </div>
-          </div>
-
           <div className={styles.actionButtonsCol}>
             <Link to="/radovi" className={styles.adminBtn} style={{ backgroundColor: '#16a34a', color: '#ffffff' }}>
               <Tractor size={18} />
@@ -209,13 +190,9 @@ const PocetniEkran: React.FC = () => {
           </div>
           <div className={styles.loginBrandText}>
             <span className={styles.loginBrandName}>NANDRA</span>
-            <span className={styles.loginBrandTag}>Upravljanje Proizvodnjom</span>
+            <span className={styles.loginBrandTag}>SOFTVER</span>
           </div>
         </div>
-
-        <p className={styles.loginSubtitle}>
-          Prijavite se na sistem za evidenciju proizvodnje, mašina, radnika i zaliha.
-        </p>
 
         {error && (
           <div className={styles.errorBox}>
