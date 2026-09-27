@@ -69,11 +69,11 @@ app.use("/api/audit-logs", auditLogRouter);
 
 // Health check
 app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {
-    console.log(`✅ NANDRA Backend pokrenut na http://localhost:${PORT}`);
+  console.log(`✅ NANDRA Backend pokrenut na http://localhost:${PORT}`);
 });
 
 export default app;

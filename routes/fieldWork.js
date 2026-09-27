@@ -620,6 +620,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const updateData = { ...parsed.data };
+    delete updateData.autoAssignMachine;
 
     // Plausibility provera ako se menja parcela ili površina
     const targetParcelId = updateData.parcelId || existing.parcelId;
@@ -918,16 +919,16 @@ router.get("/export/excel", async (req, res) => {
       "Smena",
       "Šifra",
       "Parcela",
-      "Kat. Površina (ha)",
+      "Površina",
       "Urađeno (ha)",
       "Radnik",
       "Mašina / Traktor",
       "Operacija",
-      "Vreme rada",
+      "Vreme",
       "Sati (rh)",
       "Napomena",
     ]);
-    headerRow.height = 26;
+    headerRow.height = 24;
 
     headerRow.eachCell((cell) => {
       cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
@@ -986,15 +987,15 @@ router.get("/export/excel", async (req, res) => {
         });
       }
 
-      // Numerička poravnanja
+      // Poravnanja: centralno za brojeve, šifre, smene i datume
       row.getCell(1).alignment = { horizontal: "center" };
       row.getCell(2).alignment = { horizontal: "center" };
       row.getCell(3).alignment = { horizontal: "center" };
       row.getCell(4).alignment = { horizontal: "center" };
-      row.getCell(6).alignment = { horizontal: "right" };
-      row.getCell(7).alignment = { horizontal: "right" };
+      row.getCell(6).alignment = { horizontal: "center" }; // Površina (ha) na sredinu
+      row.getCell(7).alignment = { horizontal: "center" }; // Urađeno (ha) na sredinu
       row.getCell(11).alignment = { horizontal: "center" };
-      row.getCell(12).alignment = { horizontal: "right" };
+      row.getCell(12).alignment = { horizontal: "center" }; // Sati (rh) na sredinu
     });
 
     // Zbirni red
@@ -1020,17 +1021,28 @@ router.get("/export/excel", async (req, res) => {
       cell.border = { top: { style: "double" }, bottom: { style: "double" } };
     });
     summaryRow.getCell(1).alignment = { horizontal: "center" };
-    summaryRow.getCell(7).alignment = { horizontal: "right" };
-    summaryRow.getCell(12).alignment = { horizontal: "right" };
+    summaryRow.getCell(7).alignment = { horizontal: "center" };
+    summaryRow.getCell(12).alignment = { horizontal: "center" };
 
-    // Auto-width kolona
-    worksheet.columns.forEach((column) => {
-      let maxLen = 12;
-      column.eachCell({ includeEmpty: false }, (cell) => {
-        const val = cell.value ? cell.value.toString() : "";
-        if (val.length > maxLen) maxLen = Math.min(val.length + 3, 40);
-      });
-      column.width = maxLen;
+    // Fiksne, optimizovane širine kolona
+    const columnWidths = [
+      6,   // 1. RB (veoma usko)
+      12,  // 2. Datum
+      9,   // 3. Smena (PRVA/DRUGA/TRECA)
+      8,   // 4. Šifra (P-01, P-02...)
+      28,  // 5. Parcela (naziv - prošireno)
+      11,  // 6. Površina
+      13,  // 7. Urađeno (ha)
+      23,  // 8. Radnik (prošireno sa 18 na 23)
+      24,  // 9. Mašina / Traktor (prošireno)
+      36,  // 10. Operacija (prošireno sa 30 na 36)
+      13,  // 11. Vreme (07:00 - 15:00)
+      9,   // 12. Sati (rh) (kompaktno za 2-3 cifre)
+      40,  // 13. Napomena (znatno prošireno)
+    ];
+
+    worksheet.columns.forEach((column, index) => {
+      column.width = columnWidths[index] || 12;
     });
 
     const fileName = `nandra_radovi_${new Date().toISOString().slice(0, 10)}.xlsx`;
