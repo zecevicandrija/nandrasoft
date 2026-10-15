@@ -8,6 +8,7 @@ import BrziUnosRada from './Radovi/BrziUnosRada';
 import MasineZaduzenje from './Masine/MasineZaduzenje';
 import AuditLogDashboard from './Administrator/AuditLogDashboard';
 import NeuskladjenostiMasina from './Masine/NeuskladjenostiMasina';
+import RadniNaloziDashboard from './Nalozi/RadniNaloziDashboard';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route path="/admin" element={<AdminPanel />} />
           <Route path="/revizija" element={<AuditLogDashboard />} />
           <Route path="/sifarnici" element={<SifarniciHub />} />
+          <Route path="/nalozi" element={<RadniNaloziDashboard />} />
           <Route path="/radovi" element={<RadoviDashboard />} />
           <Route path="/radovi/novi" element={<BrziUnosRada />} />
           <Route path="/masine/zaduzenje" element={<MasineZaduzenje />} />

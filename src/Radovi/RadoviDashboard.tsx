@@ -264,6 +264,7 @@ const RadoviDashboard: React.FC = () => {
       shift: work.shift,
       parcelId: work.parcelId,
       machineId: work.machineId,
+      attachmentId: work.attachmentId || '',
       workerId: work.workerId,
       workTypeId: work.workTypeId,
       areaDoneHa: work.areaDoneHa,
@@ -283,6 +284,7 @@ const RadoviDashboard: React.FC = () => {
       data: {
         ...editForm,
         areaDoneHa: Number(editForm.areaDoneHa),
+        attachmentId: editForm.attachmentId || null,
       },
     });
   };
@@ -775,7 +777,14 @@ const RadoviDashboard: React.FC = () => {
                         <td>
                           <div className={styles.workerCell}>
                             <span className={styles.workerName}>{work.worker?.name}</span>
-                            <span className={styles.machineName}>{work.machine?.name}</span>
+                            <span className={styles.machineName}>
+                              {work.machine?.name}
+                              {work.attachment && (
+                                <span style={{ color: '#0284c7', fontWeight: 600, fontSize: '0.74rem', display: 'block', marginTop: '1px' }}>
+                                  + {work.attachment.name}
+                                </span>
+                              )}
+                            </span>
                           </div>
                         </td>
                         <td>
@@ -1041,6 +1050,24 @@ const RadoviDashboard: React.FC = () => {
                         ))}
                       </select>
                     </div>
+                  </div>
+
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Priključak / Oruđe (opciono)</label>
+                    <select
+                      className={styles.selectInput}
+                      value={editForm.attachmentId || ''}
+                      onChange={(e) => setEditForm({ ...editForm, attachmentId: e.target.value })}
+                    >
+                      <option value="">-- Bez priključka --</option>
+                      {machinesData?.machines
+                        ?.filter((m: any) => m.type === 'PRIKLJUCAK' || m.id === editForm.attachmentId)
+                        ?.map((m: any) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} {m.brandModel ? `(${m.brandModel})` : ''}
+                          </option>
+                        ))}
+                    </select>
                   </div>
 
                   <div className={styles.formGroup}>

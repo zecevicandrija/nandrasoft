@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Tractor,
@@ -13,6 +13,12 @@ import {
   Info,
   User,
   KeyRound,
+  ClipboardList,
+  Sun,
+  SunMedium,
+  Moon,
+  Fuel,
+  AlertTriangle,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
@@ -22,15 +28,25 @@ const API = 'http://localhost:5000/api';
 
 const BrziUnosRada: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const currentUser = (session as any)?.user;
   const isOperator = currentUser?.role === 'OPERATER';
 
+  // Parametri prosleđeni sa Radnog Naloga
+  const orderIdParam = searchParams.get('orderId');
+  const parcelIdParam = searchParams.get('parcelId');
+  const machineIdParam = searchParams.get('machineId');
+  const attachmentIdParam = searchParams.get('attachmentId');
+  const workTypeIdParam = searchParams.get('workTypeId');
+  const workerIdParam = searchParams.get('workerId');
+
   // Form states
   const [shift, setShift] = useState<'PRVA' | 'DRUGA' | 'TRECA'>('PRVA');
   const [parcelId, setParcelId] = useState('');
   const [machineId, setMachineId] = useState('');
+  const [attachmentId, setAttachmentId] = useState('');
   const [workerId, setWorkerId] = useState('');
   const [workTypeId, setWorkTypeId] = useState('');
   const [areaDoneHa, setAreaDoneHa] = useState<number | string>('');
@@ -38,9 +54,26 @@ const BrziUnosRada: React.FC = () => {
   const [endTime, setEndTime] = useState('15:30');
   const [notes, setNotes] = useState('');
 
+  // Razduženje mašine i gorivo states
+  const [endFuelLiters, setEndFuelLiters] = useState<string | number>('');
+  const [endHours, setEndHours] = useState<string | number>('');
+  const [isOperational, setIsOperational] = useState<boolean>(true);
+  const [returnNotes, setReturnNotes] = useState('');
+
   // UI state
   const [errorMsg, setErrorMsg] = useState('');
   const [submittedData, setSubmittedData] = useState<any | null>(null);
+
+  // Dohvatanje detalja radnog naloga ako je prosleđen
+  const { data: orderData } = useQuery({
+    queryKey: ['work-order-detail', orderIdParam],
+    queryFn: async () => {
+      if (!orderIdParam) return null;
+      const res = await fetch(`${API}/work-orders/${orderIdParam}`, { credentials: 'include' });
+      return res.ok ? res.json() : null;
+    },
+    enabled: !!orderIdParam,
+  });
 
   // 1. DOHVATANJE ŠIFARNIKA
   const { data: parcelsData, isLoading: loadingParcels } = useQuery({
@@ -96,8 +129,17 @@ const BrziUnosRada: React.FC = () => {
     return workerId ? a.workerId === workerId : false;
   });
 
-  // Postavi inicijalne vrednosti (prioritet ima aktivno zaduženje mašine!)
+  // Postavi inicijalne vrednosti (prioritet ima radni nalog pa aktivno zaduženje!)
   useEffect(() => {
+    if (orderIdParam) {
+      if (parcelIdParam) setParcelId(parcelIdParam);
+      if (machineIdParam) setMachineId(machineIdParam);
+      if (attachmentIdParam) setAttachmentId(attachmentIdParam);
+      if (workTypeIdParam) setWorkTypeId(workTypeIdParam);
+      if (workerIdParam) setWorkerId(workerIdParam);
+      return;
+    }
+
     if (userActiveAssignment) {
       if (userActiveAssignment.machineId) {
         setMachineId(userActiveAssignment.machineId);
@@ -113,22 +155,46 @@ const BrziUnosRada: React.FC = () => {
         setMachineId(machinesData.machines[0].id);
       }
     }
-  }, [userActiveAssignment, parcelsData, machinesData]);
+  }, [userActiveAssignment, parcelsData, machinesData, orderIdParam, parcelIdParam, machineIdParam, attachmentIdParam, workTypeIdParam, workerIdParam]);
 
   useEffect(() => {
-    if (!workerId && workersData?.workers?.length > 0) {
+    if (orderData?.workOrder) {
+      const wo = orderData.workOrder;
+      if (wo.parcelId && !parcelId) setParcelId(wo.parcelId);
+      if (wo.machineId && !machineId) setMachineId(wo.machineId);
+      if (wo.attachmentId && !attachmentId) setAttachmentId(wo.attachmentId);
+      if (wo.workTypeId && !workTypeId) setWorkTypeId(wo.workTypeId);
+      if (wo.workerId && !workerId) setWorkerId(wo.workerId);
+      if (wo.plannedAreaHa && !areaDoneHa) setAreaDoneHa(wo.plannedAreaHa);
+    }
+  }, [orderData]);
+
+  useEffect(() => {
+    if (workerIdParam) {
+      setWorkerId(workerIdParam);
+    } else if (!workerId && workersData?.workers?.length > 0) {
       setWorkerId(workersData.workers[0].id);
     }
-  }, [workersData, workerId]);
+  }, [workersData, workerId, workerIdParam]);
 
   useEffect(() => {
-    if (!workTypeId && workTypesData?.workTypes?.length > 0) {
+    if (workTypeIdParam) {
+      setWorkTypeId(workTypeIdParam);
+    } else if (!workTypeId && workTypesData?.workTypes?.length > 0) {
       setWorkTypeId(workTypesData.workTypes[0].id);
     }
-  }, [workTypesData, workTypeId]);
+  }, [workTypesData, workTypeId, workTypeIdParam]);
 
   // Pronađi trenutno izabranu parcelu za kalkulaciju
   const selectedParcelObj = parcelsData?.parcels?.find((p: any) => p.id === parcelId);
+  const selectedMachineObj = machinesData?.machines?.find((m: any) => m.id === machineId);
+  const linkedAssignment = orderData?.workOrder?.machineAssignments?.[0] || userActiveAssignment;
+  const baselineHours = linkedAssignment?.startHours ?? selectedMachineObj?.currentHours;
+  const isEndHoursInvalid =
+    endHours !== '' &&
+    baselineHours !== undefined &&
+    parseFloat(String(endHours)) < baselineHours;
+
   const parcelMaxHa = selectedParcelObj ? Math.round(selectedParcelObj.areaHa * 1.2 * 100) / 100 : 0;
   const currentNumericArea = Number(areaDoneHa) || 0;
 
@@ -208,17 +274,35 @@ const BrziUnosRada: React.FC = () => {
       return;
     }
 
+    if (isEndHoursInvalid) {
+      setErrorMsg(`Krajnji radni sati (${endHours} rh) ne mogu biti manji od početnih (${baselineHours} rh).`);
+      return;
+    }
+
     const payload: any = {
       shift,
       parcelId,
       machineId,
+      attachmentId: attachmentId || null,
       workTypeId,
       areaDoneHa: currentNumericArea,
       startTime: startTime || null,
       endTime: endTime || null,
       notes: notes || null,
       autoAssignMachine: true,
+      workOrderId: orderIdParam || null,
+      isOperational,
     };
+
+    if (endFuelLiters !== '') {
+      payload.endFuelLiters = parseFloat(String(endFuelLiters));
+    }
+    if (endHours !== '') {
+      payload.endHours = parseFloat(String(endHours));
+    }
+    if (!isOperational && returnNotes) {
+      payload.returnNotes = returnNotes;
+    }
 
     if (!isOperator && workerId) {
       payload.workerId = workerId;
@@ -230,6 +314,9 @@ const BrziUnosRada: React.FC = () => {
   const handleResetForNext = () => {
     setSubmittedData(null);
     setAreaDoneHa('');
+    setAttachmentId('');
+    setEndHours('');
+    setEndFuelLiters('');
     setNotes('');
     setErrorMsg('');
   };
@@ -268,6 +355,11 @@ const BrziUnosRada: React.FC = () => {
               <div>
                 <strong>Traktor:</strong> {submittedData.machine?.name}
               </div>
+              {submittedData.attachment && (
+                <div>
+                  <strong>Priključak:</strong> {submittedData.attachment.name}
+                </div>
+              )}
               <div>
                 <strong>Operacija:</strong> {submittedData.workType?.name}
               </div>
@@ -276,24 +368,70 @@ const BrziUnosRada: React.FC = () => {
               </div>
             </div>
 
+            {/* Ako je rad rađen po radnom nalogu ili je mašina automatski razdužena */}
+            {orderIdParam || submittedData.workOrderId || submittedData.isMachineUnassigned ? (
+              <div
+                style={{
+                  background: 'rgba(22, 163, 74, 0.1)',
+                  border: '1.5px solid #16a34a',
+                  borderRadius: '10px',
+                  padding: '0.85rem 1.25rem',
+                  color: '#15803d',
+                  fontWeight: 600,
+                  fontSize: '0.92rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.65rem',
+                  width: '100%',
+                  boxSizing: 'border-box',
+                }}
+              >
+                <CheckCircle2 size={20} color="#16a34a" />
+                <span>
+                  Radni nalog je uspešno završen, a mašina{' '}
+                  <strong>{submittedData.machine?.name || 'traktor'}</strong> je automatski razdužena!
+                </span>
+              </div>
+            ) : null}
+
             <div className={styles.successActions}>
-              {submittedData.machineId && (
+              {/* Prikazuj dugme za ručno razduživanje SAMO ako rad NIJE bio po nalogu i mašina NIJE već razdužena */}
+              {!orderIdParam &&
+                !submittedData.workOrderId &&
+                !submittedData.isMachineUnassigned &&
+                submittedData.machineId && (
+                  <button
+                    onClick={() =>
+                      navigate(
+                        `/masine-kvarovi?checkin=true&machineId=${submittedData.machineId}`
+                      )
+                    }
+                    className={styles.btnFinishDay}
+                  >
+                    <KeyRound size={18} />
+                    <span>
+                      Razduži {submittedData.machine?.name ? submittedData.machine.name : 'Mašinu'} i završi dan
+                    </span>
+                  </button>
+                )}
+
+              {/* Ako je rad bio po radnom nalogu, direktno ponudi taster ka radnim nalozima */}
+              {(orderIdParam || submittedData.workOrderId) && (
                 <button
-                  onClick={() =>
-                    navigate(
-                      `/masine-kvarovi?checkin=true&machineId=${submittedData.machineId}`
-                    )
-                  }
-                  className={styles.btnFinishDay}
+                  onClick={() => navigate('/nalozi')}
+                  className={styles.submitBtn}
+                  style={{ minWidth: 190, backgroundColor: '#0284c7' }}
                 >
-                  <KeyRound size={18} />
-                  <span>
-                    Razduži {submittedData.machine?.name ? submittedData.machine.name : 'Mašinu'} i završi dan
-                  </span>
+                  <ClipboardList size={18} />
+                  <span>Pregledaj Radne Naloge</span>
                 </button>
               )}
 
-              <button onClick={handleResetForNext} className={styles.submitBtn} style={{ minWidth: 190 }}>
+              <button
+                onClick={handleResetForNext}
+                className={styles.submitBtn}
+                style={{ minWidth: 190, backgroundColor: '#16a34a' }}
+              >
                 <Plus size={18} />
                 <span>Unesi Još Jedan Rad</span>
               </button>
@@ -319,6 +457,35 @@ const BrziUnosRada: React.FC = () => {
                 Prilagođeno za brz unos direktno iz kabine traktora ili sa njive
               </div>
             </div>
+
+            {orderIdParam && (
+              <div
+                style={{
+                  background: 'rgba(2, 132, 199, 0.08)',
+                  border: '1.5px solid #0284c7',
+                  borderRadius: '12px',
+                  padding: '0.85rem 1rem',
+                  marginBottom: '1rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.65rem',
+                  color: '#0369a1',
+                }}
+              >
+                <ClipboardList size={22} color="#0284c7" />
+                <div style={{ fontSize: '0.88rem' }}>
+                  <strong>Popunjavanje rada po izdatom Radnom Nalogu</strong>
+                  {orderData?.workOrder && (
+                    <span style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                      Nalog: <strong>{orderData.workOrder.orderNumber}</strong>
+                      {orderData.workOrder.machineAssignments?.[0]?.startFuelLiters !== undefined && (
+                        <> — Zaduženo gorivo: <strong>{orderData.workOrder.machineAssignments[0].startFuelLiters} L</strong></>
+                      )}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
 
             {errorMsg && (
               <div
@@ -381,21 +548,24 @@ const BrziUnosRada: React.FC = () => {
                       className={`${styles.shiftBtn} ${shift === 'PRVA' ? styles.shiftBtnActive : ''}`}
                       onClick={() => setShift('PRVA')}
                     >
-                      <span>☀️ 1. Smena</span>
+                      <Sun size={15} />
+                      <span>1. Smena</span>
                     </button>
                     <button
                       type="button"
                       className={`${styles.shiftBtn} ${shift === 'DRUGA' ? styles.shiftBtnActive : ''}`}
                       onClick={() => setShift('DRUGA')}
                     >
-                      <span>🌤️ 2. Smena</span>
+                      <SunMedium size={15} />
+                      <span>2. Smena</span>
                     </button>
                     <button
                       type="button"
                       className={`${styles.shiftBtn} ${shift === 'TRECA' ? styles.shiftBtnActive : ''}`}
                       onClick={() => setShift('TRECA')}
                     >
-                      <span>🌙 Noćna</span>
+                      <Moon size={15} />
+                      <span>Noćna</span>
                     </button>
                   </div>
                 </div>
@@ -512,8 +682,9 @@ const BrziUnosRada: React.FC = () => {
                   <label className={styles.fieldLabel}>
                     <span>Traktor / Mašina</span>
                     {userActiveAssignment && userActiveAssignment.machineId === machineId && (
-                      <span style={{ fontSize: '0.72rem', color: '#16a34a', fontWeight: 800 }}>
-                        ✓ Preuzeto sa jutarnjeg zaduženja
+                      <span style={{ fontSize: '0.72rem', color: '#16a34a', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        <CheckCircle2 size={13} />
+                        <span>Preuzeto sa jutarnjeg zaduženja</span>
                       </span>
                     )}
                   </label>
@@ -525,9 +696,36 @@ const BrziUnosRada: React.FC = () => {
                   >
                     {machinesData?.machines?.map((m: any) => (
                       <option key={m.id} value={m.id}>
-                        🚜 {m.name} ({m.type})
+                        {m.name} ({m.type})
                       </option>
                     ))}
+                  </select>
+                </div>
+
+                {/* 5.1 PRIKLJUČNA MAŠINA / ORUĐE */}
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>
+                    <span>Priključak / Oruđe (opciono)</span>
+                    {orderData?.workOrder?.attachmentId && orderData?.workOrder?.attachmentId === attachmentId && (
+                      <span style={{ fontSize: '0.72rem', color: '#0284c7', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        <CheckCircle2 size={13} />
+                        <span>Preuzeto sa radnog naloga</span>
+                      </span>
+                    )}
+                  </label>
+                  <select
+                    className={styles.fieldSelect}
+                    value={attachmentId}
+                    onChange={(e) => setAttachmentId(e.target.value)}
+                  >
+                    <option value="">-- Bez priključka / Solo mašina --</option>
+                    {machinesData?.machines
+                      ?.filter((m: any) => m.type === 'PRIKLJUCAK' || m.id === attachmentId)
+                      ?.map((m: any) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} {m.brandModel ? `(${m.brandModel})` : ''}
+                        </option>
+                      ))}
                   </select>
                 </div>
 
@@ -542,7 +740,7 @@ const BrziUnosRada: React.FC = () => {
                     >
                       {workersData?.workers?.map((w: any) => (
                         <option key={w.id} value={w.id}>
-                          👤 {w.name} [{w.type}]
+                          {w.name} [{w.type}]
                         </option>
                       ))}
                     </select>
@@ -600,7 +798,173 @@ const BrziUnosRada: React.FC = () => {
                   </div>
                 )}
 
-                {/* 7. NAPOMENA */}
+                {/* 7. RAZDUŽENJE MAŠINE & STANJE GORIVA */}
+                <div
+                  style={{
+                    background: 'var(--card-bg)',
+                    border: '1.5px solid var(--border-color)',
+                    borderRadius: '12px',
+                    padding: '1rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.85rem',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      fontWeight: 700,
+                      color: 'var(--text-primary)',
+                      fontSize: '0.95rem',
+                    }}
+                  >
+                    <Fuel size={18} color="#0284c7" />
+                    <span>Razduženje Mašine & Stanje Goriva</span>
+                  </div>
+
+                  {(() => {
+                    const linkedAssignment =
+                      orderData?.workOrder?.machineAssignments?.[0] || userActiveAssignment;
+                    const startFuelLiters = linkedAssignment?.startFuelLiters;
+                    const startHours = linkedAssignment?.startHours;
+
+                    const startFuelNum = Number(startFuelLiters) || 0;
+                    const endFuelNum = Number(endFuelLiters) || 0;
+                    const fuelSpent =
+                      startFuelNum > 0 && endFuelNum > 0 && startFuelNum >= endFuelNum
+                        ? Math.round((startFuelNum - endFuelNum) * 10) / 10
+                        : null;
+                    const spentPerHa =
+                      fuelSpent !== null && currentNumericArea > 0
+                        ? Math.round((fuelSpent / currentNumericArea) * 10) / 10
+                        : null;
+                    const selectedWorkTypeObj = workTypesData?.workTypes?.find(
+                      (wt: any) => wt.id === workTypeId
+                    );
+
+                    return (
+                      <>
+                        {startFuelLiters !== undefined && startFuelLiters !== null && (
+                          <div
+                            style={{
+                              fontSize: '0.82rem',
+                              color: '#0369a1',
+                              background: '#e0f2fe',
+                              padding: '0.5rem 0.75rem',
+                              borderRadius: '8px',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              flexWrap: 'wrap',
+                              gap: '0.5rem',
+                            }}
+                          >
+                            <span>
+                              Početno zaduženje: <strong>{startFuelLiters} L</strong>
+                            </span>
+                            {startHours !== undefined && (
+                              <span>
+                                Početni rh: <strong>{startHours}</strong>
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        <div className={styles.fieldGroup}>
+                          <label className={styles.fieldLabel}>
+                            <span>Krajnje stanje goriva nakon rada (litara)</span>
+                            {fuelSpent !== null && (
+                              <span style={{ fontSize: '0.78rem', color: '#16a34a', fontWeight: 700 }}>
+                                Utrošeno: {fuelSpent} L {spentPerHa ? `(${spentPerHa} L/ha)` : ''}
+                              </span>
+                            )}
+                          </label>
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            placeholder="npr. 135"
+                            className={styles.fieldInput}
+                            value={endFuelLiters}
+                            onChange={(e) => setEndFuelLiters(e.target.value)}
+                          />
+                          {selectedWorkTypeObj?.fuelNormLitersPerHa && (
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                              Planirani normativ posla: {selectedWorkTypeObj.fuelNormLitersPerHa} L/ha
+                            </div>
+                          )}
+                        </div>
+
+                        <div className={styles.fieldGroup}>
+                          <label className={styles.fieldLabel}>Krajnji radni sati mašine (rh)</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            placeholder="npr. 1428.5"
+                            className={styles.fieldInput}
+                            value={endHours}
+                            onChange={(e) => setEndHours(e.target.value)}
+                            style={isEndHoursInvalid ? { borderColor: '#dc2626', backgroundColor: '#fef2f2' } : {}}
+                          />
+                          {isEndHoursInvalid && (
+                            <div
+                              style={{
+                                color: '#dc2626',
+                                fontSize: '0.8rem',
+                                fontWeight: 700,
+                                marginTop: '5px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                            >
+                              <AlertTriangle size={15} />
+                              <span>
+                                Krajnji radni sati ({endHours} rh) ne mogu biti manji od početnih ({baselineHours} rh)!
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginTop: '0.2rem' }}>
+                          <input
+                            type="checkbox"
+                            id="operationalCheck"
+                            checked={isOperational}
+                            onChange={(e) => setIsOperational(e.target.checked)}
+                            style={{ width: 18, height: 18, accentColor: '#16a34a', cursor: 'pointer' }}
+                          />
+                          <label
+                            htmlFor="operationalCheck"
+                            style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', cursor: 'pointer' }}
+                          >
+                            Mašina je vraćena potpuno ispravna
+                          </label>
+                        </div>
+
+                        {!isOperational && (
+                          <div className={styles.fieldGroup} style={{ marginTop: '0.35rem' }}>
+                            <label className={styles.fieldLabel} style={{ color: '#dc2626' }}>
+                              Opis uočenog problema / kvara
+                            </label>
+                            <textarea
+                              rows={2}
+                              className={styles.fieldInput}
+                              placeholder="npr. Puklo crevo hidraulike, curi ulje..."
+                              value={returnNotes}
+                              onChange={(e) => setReturnNotes(e.target.value)}
+                              style={{ borderColor: '#fca5a5' }}
+                            />
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {/* 8. NAPOMENA */}
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Napomena sa terena (opciono)</label>
                   <textarea
@@ -617,7 +981,7 @@ const BrziUnosRada: React.FC = () => {
                 <button
                   type="submit"
                   className={styles.submitBtn}
-                  disabled={submitMutation.isPending || (selectedParcelObj && currentNumericArea > parcelMaxHa)}
+                  disabled={submitMutation.isPending || isEndHoursInvalid || (selectedParcelObj && currentNumericArea > parcelMaxHa)}
                 >
                   {submitMutation.isPending ? (
                     <>
@@ -627,7 +991,11 @@ const BrziUnosRada: React.FC = () => {
                   ) : (
                     <>
                       <Send size={20} />
-                      <span>Zabeleži Rad na Njivi</span>
+                      <span>
+                        {orderIdParam
+                          ? 'Zabeleži Rad i Razduži Mašinu'
+                          : 'Zabeleži Rad na Njivi'}
+                      </span>
                     </>
                   )}
                 </button>

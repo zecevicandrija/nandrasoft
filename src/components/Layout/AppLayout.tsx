@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   Tractor,
+  ClipboardList,
   // Fuel,
   Wrench,
   Package,
@@ -40,6 +41,12 @@ const NAV_GROUPS: NavGroup[] = [
   {
     groupName: 'Operativa & Njiva',
     items: [
+      {
+        title: 'Radni nalozi',
+        to: '/nalozi',
+        icon: <ClipboardList size={18} />,
+        allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'OPERATER', 'MEHANICAR'],
+      },
       {
         title: 'Radovi na njivi',
         to: '/radovi',
@@ -159,6 +166,13 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
             <span className={styles.brandName}>NANDRA</span>
             <span className={styles.brandSub}>SOFTWARE</span>
           </div>
+          <button
+            className={styles.mobileCloseSidebarBtn}
+            onClick={() => setMobileOpen(false)}
+            title="Zatvori meni"
+          >
+            <X size={20} />
+          </button>
         </div>
 
         <nav className={styles.sidebarNav}>
@@ -210,7 +224,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
 
           <div className={styles.topbarRight}>
             <div className={styles.userPill}>
-              <span>{currentUser?.name}</span>
+              <span className={styles.userNameText}>{currentUser?.name}</span>
               <span
                 className={`${styles.userRoleBadge} ${styles[`role${userRole}` as keyof typeof styles] || ''
                   }`}
@@ -221,7 +235,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
 
             <button className={styles.logoutBtn} onClick={handleLogout} title="Odjavi se">
               <LogOut size={16} />
-              <span>Odjava</span>
+              <span className={styles.logoutText}>Odjava</span>
             </button>
           </div>
         </header>

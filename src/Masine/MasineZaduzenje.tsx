@@ -748,7 +748,7 @@ const MasineZaduzenje: React.FC = () => {
                   <option value="">-- Izaberite slobodnu mašinu --</option>
                   {freeMachines.map((m: any) => (
                     <option key={m.id} value={m.id}>
-                      🚜 {m.name} ({m.brandModel || m.type}) — Stanje: {m.currentHours} rh
+                      {m.name} ({m.brandModel || m.type}) — Stanje: {m.currentHours} rh
                     </option>
                   ))}
                 </select>
@@ -799,7 +799,7 @@ const MasineZaduzenje: React.FC = () => {
                     <option value="">-- Izaberite radnika --</option>
                     {workersData?.workers?.map((w: any) => (
                       <option key={w.id} value={w.id}>
-                        👤 {w.name} [{w.type}]
+                        {w.name} [{w.type}]
                       </option>
                     ))}
                   </select>
@@ -909,7 +909,7 @@ const MasineZaduzenje: React.FC = () => {
                   <option value="">-- Izaberite radnika --</option>
                   {workersData?.workers?.map((w: any) => (
                     <option key={w.id} value={w.id}>
-                      👤 {w.name} {w.phone ? `(${w.phone})` : ''}
+                      {w.name} {w.phone ? `(${w.phone})` : ''}
                     </option>
                   ))}
                 </select>
@@ -929,7 +929,7 @@ const MasineZaduzenje: React.FC = () => {
                   <option value="">-- Izaberite mašinu --</option>
                   {machinesData?.machines?.map((m: any) => (
                     <option key={m.id} value={m.id}>
-                      🚜 {m.name} ({m.brandModel || m.type}) — Stanje: {m.currentHours} rh
+                      {m.name} ({m.brandModel || m.type}) — Stanje: {m.currentHours} rh
                     </option>
                   ))}
                 </select>
