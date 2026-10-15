@@ -96,6 +96,7 @@ router.get("/stats", async (req, res) => {
         include: {
           parcel: true,
           machine: true,
+          attachment: true,
           worker: true,
           workType: true,
         },
@@ -225,6 +226,7 @@ router.get("/unassigned-warnings", async (req, res) => {
         include: {
           parcel: true,
           machine: true,
+          attachment: true,
           worker: true,
           workType: true,
           createdBy: { select: { id: true, name: true, email: true, role: true } },
@@ -334,6 +336,7 @@ router.get("/", async (req, res) => {
         include: {
           parcel: true,
           machine: true,
+          attachment: true,
           worker: true,
           workType: true,
           createdBy: {
@@ -366,6 +369,7 @@ const fieldWorkSchema = z.object({
   shift: z.enum(["PRVA", "DRUGA", "TRECA"]).default("PRVA"),
   parcelId: z.string().min(1, "Parcela je obavezna"),
   machineId: z.string().min(1, "Mašina je obavezna"),
+  attachmentId: z.string().optional().nullable(),
   workerId: z.string().min(1, "Radnik je obavezan").optional().nullable(),
   workTypeId: z.string().min(1, "Radna operacija je obavezna"),
   areaDoneHa: z.number().positive("Urađena površina mora biti veća od 0"),
@@ -384,6 +388,11 @@ const fieldWorkSchema = z.object({
   notes: z.string().max(1000).optional().nullable(),
   photoUrl: z.string().url("Neispravan URL slike").optional().nullable(),
   autoAssignMachine: z.boolean().optional().default(true),
+  workOrderId: z.string().optional().nullable(),
+  endFuelLiters: z.number().nonnegative().optional().nullable(),
+  endHours: z.number().nonnegative().optional().nullable(),
+  isOperational: z.boolean().optional().default(true),
+  returnNotes: z.string().max(500).optional().nullable(),
 });
 
 router.post("/", async (req, res) => {
@@ -400,6 +409,7 @@ router.post("/", async (req, res) => {
       shift,
       parcelId,
       machineId,
+      attachmentId,
       workerId,
       workTypeId,
       areaDoneHa,
@@ -465,7 +475,42 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // 2. Automatski obračun radnih sati
+    // 2. Provera mašine i validacija radnih sati (endHours ne sme biti manji od početnih)
+    const machineObj = await prisma.machine.findUnique({ where: { id: machineId } });
+    if (!machineObj) {
+      return res.status(404).json({ error: "Izabrana mašina ne postoji." });
+    }
+
+    let activeAssignment = null;
+    if (parsed.data.workOrderId) {
+      activeAssignment = await prisma.machineAssignment.findFirst({
+        where: {
+          workOrderId: parsed.data.workOrderId,
+          status: "ZADUZENA",
+        },
+      });
+    }
+
+    if (!activeAssignment) {
+      activeAssignment = await prisma.machineAssignment.findFirst({
+        where: {
+          machineId,
+          status: "ZADUZENA",
+        },
+        orderBy: { assignedAt: "desc" },
+      });
+    }
+
+    const baselineHours = activeAssignment?.startHours ?? machineObj.currentHours ?? 0;
+    if (parsed.data.endHours !== undefined && parsed.data.endHours !== null) {
+      if (parsed.data.endHours < baselineHours) {
+        return res.status(400).json({
+          error: `Krajnji radni sati (${parsed.data.endHours} rh) ne mogu biti manji od početnih (${baselineHours} rh).`,
+        });
+      }
+    }
+
+    // 3. Automatski obračun radnih sati
     let finalWorkHours = manualHours;
     if (startTime && endTime) {
       const calculated = calculateWorkHours(startTime, endTime);
@@ -474,13 +519,14 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // 3. Kreiranje zapisa (labava veza - nikada ne blokira radnika na njivi)
+    // 4. Kreiranje zapisa (labava veza - nikada ne blokira radnika na njivi)
     const work = await prisma.fieldWork.create({
       data: {
         date: date ? new Date(date) : new Date(),
         shift,
         parcelId,
         machineId,
+        attachmentId: attachmentId || null,
         workerId: finalWorkerId,
         workTypeId,
         areaDoneHa,
@@ -495,60 +541,109 @@ router.post("/", async (req, res) => {
       include: {
         parcel: true,
         machine: true,
+        attachment: true,
         worker: true,
         workType: true,
       },
     });
 
-    // 4. Pametno povezivanje zaduženja mašine (Rešenje A)
-    // Ako za ovu mašinu na dan rada ne postoji zaduženje, a autoAssignMachine je uključen,
-    // sistem automatski kreira uredno zaduženje kako bi se sprečile neusklađenosti.
+    // 5. Pametno razduživanje ili povezivanje zaduženja mašine
     try {
       const workDate = date ? new Date(date) : new Date();
-      const startOfDay = new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 0, 0, 0);
-      const endOfDay = new Date(workDate.getFullYear(), workDate.getMonth(), workDate.getDate(), 23, 59, 59, 999);
+      const currentH = machineObj.currentHours || 0;
+      const hoursToAdd = finalWorkHours || 0;
+      const finalEndHours =
+        parsed.data.endHours !== undefined && parsed.data.endHours !== null
+          ? parsed.data.endHours
+          : currentH + hoursToAdd;
 
-      const existingAssignment = await prisma.machineAssignment.findFirst({
-        where: {
-          machineId,
-          assignedAt: { gte: startOfDay, lte: endOfDay },
-        },
-      });
+      const isOperational = parsed.data.isOperational !== false;
+      const endFuel =
+        parsed.data.endFuelLiters !== undefined && parsed.data.endFuelLiters !== null
+          ? parsed.data.endFuelLiters
+          : null;
 
-      if (!existingAssignment && autoAssignMachine !== false) {
-        const machineObj = await prisma.machine.findUnique({ where: { id: machineId } });
-        const currentH = machineObj?.currentHours || 0;
-        const hoursToAdd = finalWorkHours || 0;
+      if (activeAssignment && status === "ZAVRSENO") {
+        // Postojeće zaduženje: RAZDUŽI MAŠINU
+        await prisma.machineAssignment.update({
+          where: { id: activeAssignment.id },
+          data: {
+            returnedAt: workDate,
+            endHours: finalEndHours,
+            endFuelLiters: endFuel,
+            isOperational,
+            returnNotes: parsed.data.returnNotes || null,
+            status: isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM",
+          },
+        });
 
+        // Ažuriraj stanje mašine (vraća se u SLOBODNA ili U_KVARU)
+        await prisma.machine.update({
+          where: { id: machineId },
+          data: {
+            status: isOperational ? "SLOBODNA" : "U_KVARU",
+            currentHours: finalEndHours,
+            ...(endFuel !== null ? { currentFuelLiters: endFuel } : {}),
+          },
+        });
+      } else if (!activeAssignment && autoAssignMachine !== false) {
+        // Ako nije bilo prethodnog jutarnjeg zaduženja, automatski evidentiraj zaduženje/razduženje
         await prisma.machineAssignment.create({
           data: {
             machineId,
             workerId: finalWorkerId,
             parcelId: null,
+            workOrderId: parsed.data.workOrderId || null,
             assignedAt: workDate,
             returnedAt: status === "ZAVRSENO" ? workDate : null,
             startHours: currentH,
-            endHours: status === "ZAVRSENO" ? currentH + hoursToAdd : null,
-            status: status === "ZAVRSENO" ? "RAZDUZENA" : "ZADUZENA",
+            endHours: status === "ZAVRSENO" ? finalEndHours : null,
+            endFuelLiters: endFuel,
+            isOperational,
+            returnNotes: parsed.data.returnNotes || null,
+            status: status === "ZAVRSENO" ? (isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM") : "ZADUZENA",
             assignNotes: `Automatski evidentirano uz rad na njivi`,
             createdById: req.user.id,
           },
         });
 
-        if (status === "ZAVRSENO" && hoursToAdd > 0) {
+        if (status === "ZAVRSENO") {
           await prisma.machine.update({
             where: { id: machineId },
-            data: { currentHours: currentH + hoursToAdd },
+            data: {
+              status: isOperational ? "SLOBODNA" : "U_KVARU",
+              currentHours: finalEndHours,
+              ...(endFuel !== null ? { currentFuelLiters: endFuel } : {}),
+            },
           });
         }
       }
     } catch (assignErr) {
-      console.warn("Greška pri automatskom zaduživanju mašine uz rad:", assignErr);
+      console.warn("Greška pri razduživanju / zaduživanju mašine uz rad:", assignErr);
+    }
+
+    // 5. Automatsko zatvaranje radnog naloga ako je prosleđen workOrderId
+    if (parsed.data.workOrderId) {
+      try {
+        await prisma.workOrder.update({
+          where: { id: parsed.data.workOrderId },
+          data: {
+            status: "ZAVRSEN",
+            fieldWorkId: work.id,
+          },
+        });
+      } catch (woErr) {
+        console.warn("Greška pri zatvaranju radnog naloga:", woErr);
+      }
     }
 
     res.status(201).json({
       message: `Uspešno evidentiran rad na parceli "${parcel.name}".`,
-      work,
+      work: {
+        ...work,
+        workOrderId: parsed.data.workOrderId || null,
+        isMachineUnassigned: true,
+      },
     });
   } catch (error) {
     console.error("Greška pri unosu rada na njivi:", error);
@@ -567,7 +662,7 @@ router.put("/:id", async (req, res) => {
     const { id } = req.params;
     const existing = await prisma.fieldWork.findUnique({
       where: { id },
-      include: { parcel: true, worker: true, machine: true, workType: true },
+      include: { parcel: true, worker: true, machine: true, attachment: true, workType: true },
     });
 
     if (!existing) {
@@ -711,12 +806,20 @@ router.put("/:id", async (req, res) => {
       newValues.status = updateData.status;
     }
 
+    if (updateData.attachmentId !== undefined && updateData.attachmentId !== existing.attachmentId) {
+      const newAtt = updateData.attachmentId ? await prisma.machine.findUnique({ where: { id: updateData.attachmentId } }) : null;
+      changes.push(`Priključak: ${existing.attachment?.name || 'Bez priključka'} → ${newAtt ? newAtt.name : 'Bez priključka'}`);
+      oldValues.attachment = existing.attachment?.name || null;
+      newValues.attachment = newAtt ? newAtt.name : null;
+    }
+
     const updated = await prisma.fieldWork.update({
       where: { id },
       data: updateData,
       include: {
         parcel: true,
         machine: true,
+        attachment: true,
         worker: true,
         workType: true,
       },

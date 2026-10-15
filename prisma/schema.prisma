@@ -34,6 +34,11 @@ model User {
   machineAssignments MachineAssignment[]
   auditLogs          AuditLog[]
 
+  // Faza 3 relacije
+  issuedWorkOrders   WorkOrder[]        @relation("IssuedWorkOrders")
+  fuelEntries        FuelEntry[]
+  maintenanceIssues  MaintenanceIssue[]
+
   @@map("user")
 }
 
@@ -60,6 +65,12 @@ model Worker {
   fieldWorks         FieldWork[]
   machineAssignments MachineAssignment[]
 
+  // Faza 3 relacije
+  workOrders         WorkOrder[]
+  fuelEntries        FuelEntry[]
+  reportedIssues     MaintenanceIssue[]  @relation("ReportedIssues")
+  mechanicIssues     MaintenanceIssue[]  @relation("MechanicIssues")
+
   @@map("worker")
 }
 
@@ -77,6 +88,11 @@ model Parcel {
 
   fieldWorks         FieldWork[]
   machineAssignments MachineAssignment[]
+
+  // Faza 3 relacije
+  workOrders         WorkOrder[]
+  fuelEntries        FuelEntry[]
+  maintenanceIssues  MaintenanceIssue[]
 
   @@map("parcel")
 }
@@ -111,8 +127,19 @@ model Machine {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
-  fieldWorks  FieldWork[]
-  assignments MachineAssignment[]
+  // Faza 3: Rezervoar goriva u litrima
+  tankCapacityLiters Float?  @default(200)
+  currentFuelLiters  Float?  @default(0)
+
+  fieldWorksAsMachine    FieldWork[]        @relation("FieldWorkMachine")
+  fieldWorksAsAttachment FieldWork[]        @relation("FieldWorkAttachment")
+  assignments            MachineAssignment[]
+
+  // Faza 3 relacije
+  workOrdersAsMachine    WorkOrder[]        @relation("OrderMachine")
+  workOrdersAsAttachment WorkOrder[]        @relation("OrderAttachment")
+  fuelEntries            FuelEntry[]
+  maintenanceIssues      MaintenanceIssue[]
 
   @@map("machine")
 }
@@ -127,15 +154,22 @@ enum WorkCategory {
 }
 
 model WorkType {
-  id        String       @id @default(cuid())
-  name      String       @unique
-  category  WorkCategory @default(OBRADA)
-  unit      String       @default("ha")
-  isActive  Boolean      @default(true)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  id                 String       @id @default(cuid())
+  name               String       @unique
+  category           WorkCategory @default(OBRADA)
+  unit               String       @default("ha")
+  isActive           Boolean      @default(true)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  // Faza 3: Normativi i cene iz Cenovnika (Rukovodilac i Direktor)
+  fuelNormLitersPerHa Float?      // Normativ goriva u lit/ha (npr. 21 za oranje)
+  laborPricePerHa     Float?      // Fiksni dinarski deo rada/amortizacije
+  totalPricePerHa     Float?      // Ukupna kalkulativna cena bez PDV-a
+  referenceFuelPrice  Float?      @default(171.66) // Referentna cena goriva
 
   fieldWorks FieldWork[]
+  workOrders WorkOrder[]
 
   @@map("work_type")
 }
@@ -171,6 +205,9 @@ model Partner {
   isActive  Boolean     @default(true)
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
+
+  // Faza 3 relacije ka eksternom servisu / nabavci delova
+  maintenanceIssues MaintenanceIssue[]
 
   @@map("partner")
 }
@@ -243,7 +280,10 @@ model FieldWork {
   parcel       Parcel      @relation(fields: [parcelId], references: [id])
   
   machineId    String
-  machine      Machine     @relation(fields: [machineId], references: [id])
+  machine      Machine     @relation("FieldWorkMachine", fields: [machineId], references: [id])
+  
+  attachmentId String?
+  attachment   Machine?    @relation("FieldWorkAttachment", fields: [attachmentId], references: [id])
   
   workerId     String
   worker       Worker      @relation(fields: [workerId], references: [id])
@@ -261,6 +301,10 @@ model FieldWork {
   notes        String?
   photoUrl     String?     // Slika sa njive po potrebi
   
+  // Faza 3: Veza sa radnim nalogom i sipanim gorivom
+  workOrder    WorkOrder?
+  fuelEntries  FuelEntry[]
+
   // Audit trag (Ko je uneo zapis)
   createdById  String
   createdBy    User        @relation(fields: [createdById], references: [id])
@@ -272,6 +316,7 @@ model FieldWork {
   @@index([parcelId, date])
   @@index([workerId, date])
   @@index([machineId, date])
+  @@index([attachmentId, date])
   @@map("field_work")
 }
 
@@ -294,18 +339,24 @@ model MachineAssignment {
   
   // Podaci o zaduženju
   assignedAt      DateTime         @default(now())
-  startFuelLevel  Float?           // Procenat ili litara
+  startFuelLevel  Float?           // Procenat (backward compat)
+  startFuelLiters Float?           // Faza 3: Tačan nivo u litrima
   startHours      Float            // Automatski preuzeto iz Machine.currentHours
   assignNotes     String?
   
   // Podaci o razduženju
   returnedAt      DateTime?
-  endFuelLevel    Float?           // Krajnje gorivo
+  endFuelLevel    Float?           // Procenat (backward compat)
+  endFuelLiters   Float?           // Faza 3: Tačan nivo u litrima
   endHours        Float?           // Krajnji radni sati (rh) -> ažurira Machine.currentHours
   isOperational   Boolean          @default(true) // Da li je vraćena ispravna
   returnNotes     String?          // Opis problema ako nije ispravna
   
   status          AssignmentStatus @default(ZADUZENA)
+  
+  // Povezanost sa radnim nalogom (kada radnik zadužuje mašinu preko naloga)
+  workOrderId     String?
+  workOrder       WorkOrder?       @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
   
   createdById     String
   createdBy       User             @relation(fields: [createdById], references: [id])
@@ -321,7 +372,7 @@ model MachineAssignment {
 
 model AuditLog {
   id          String   @id @default(cuid())
-  entityType  String   // npr. "FieldWork"
+  entityType  String   // npr. "FieldWork", "WorkOrder"
   entityId    String   // ID unosa koji je menjan
   action      String   // "IZMENA", "STORNO", "KREIRANJE"
   
@@ -340,4 +391,203 @@ model AuditLog {
   @@index([userId])
   @@index([createdAt])
   @@map("audit_log")
+}
+
+// ==========================================
+// ===== FAZA 3: NALOZI, GORIVO, KVAROVI =====
+// ==========================================
+
+enum OrderType {
+  RAD_NJIVA       // Rad na parceli (oranje, prskanje, setva...)
+  REMONT_SERVIS   // Radionica, remont, popravka, zamena ulja
+  OSTALO          // Magacinski rad, manipulacija robom, transport
+}
+
+enum OrderStatus {
+  PLANIRAN        // Kreiran uveče za sutrašnji dan
+  DODELJEN        // Radnik obavešten (iskače na telefonu)
+  U_TOKU          // Radnik započeo rad na njivi / u radionici
+  ZAVRSEN         // Rad uspešno okončan i verifikovan
+  OTKAZAN         // Otkazano zbog kiše / kvara / promene plana
+}
+
+model WorkOrder {
+  id              String       @id @default(cuid())
+  orderNumber     String       @unique // npr. "RN-2026-0001"
+  orderDate       DateTime     // Datum za koji je nalog planiran (npr. sutra)
+  orderType       OrderType    @default(RAD_NJIVA)
+  status          OrderStatus  @default(PLANIRAN)
+  priority        String       @default("NORMALNO") // NORMALNO, HITNO, KRITICNO
+
+  // Kome je nalog izdat
+  workerId        String
+  worker          Worker       @relation(fields: [workerId], references: [id])
+
+  // Koja mašina i opcioni priključak
+  machineId       String?
+  machine         Machine?     @relation("OrderMachine", fields: [machineId], references: [id])
+  attachmentId    String?
+  attachment      Machine?     @relation("OrderAttachment", fields: [attachmentId], references: [id])
+
+  // Gde se radi (za radove na njivi)
+  parcelId        String?
+  parcel          Parcel?      @relation(fields: [parcelId], references: [id])
+
+  // Koji posao
+  workTypeId      String?
+  workType        WorkType?    @relation(fields: [workTypeId], references: [id])
+
+  plannedAreaHa   Float?       // Planirano hektara
+  shift           ShiftType    @default(PRVA)
+  instructions    String?      // Uputstvo poslovođe radniku
+
+  // Povezivanje sa realizacijom kada radnik popuni unos rada
+  fieldWorkId     String?      @unique
+  fieldWork       FieldWork?   @relation(fields: [fieldWorkId], references: [id])
+
+  // Zaduženja mašine vezana za ovaj nalog
+  machineAssignments MachineAssignment[]
+
+  // Povezivanje sa servisnim nalogom (ako je nalog za remont)
+  maintenanceId   String?      @unique
+  maintenance     MaintenanceIssue? @relation(fields: [maintenanceId], references: [id])
+
+  // Ko je izdao nalog (Rukovodilac ili Direktor)
+  issuedById      String
+  issuedBy        User         @relation("IssuedWorkOrders", fields: [issuedById], references: [id])
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([orderDate, status])
+  @@index([workerId, orderDate])
+  @@map("work_order")
+}
+
+enum FuelSource {
+  CISTERNA       // Interna cisterna u krugu gazdinstva
+  PUMPA          // Benzinska pumpa
+  KANISTER       // Kanister na njivi
+}
+
+model FuelEntry {
+  id              String      @id @default(cuid())
+  date            DateTime    @default(now())
+
+  machineId       String
+  machine         Machine     @relation(fields: [machineId], references: [id])
+
+  workerId        String
+  worker          Worker      @relation(fields: [workerId], references: [id])
+
+  parcelId        String?
+  parcel          Parcel?     @relation(fields: [parcelId], references: [id])
+
+  fieldWorkId     String?
+  fieldWork       FieldWork?  @relation(fields: [fieldWorkId], references: [id])
+
+  fuelSource      FuelSource  @default(CISTERNA)
+  fuelType        String      @default("EURODIZEL") // EURODIZEL, EURODIZEL ADITIVNI
+  liters          Float       // Količina u litrima (obavezno)
+
+  odometerValue   Float?      // Radni sati ili km na mašini pri točenju
+
+  // Finansijska polja (vidljiva samo direktoru i rukovodiocu)
+  pricePerLiter   Float?      // Nabavna cena po litru
+  totalCost       Float?      // litara * cenaPoLitru
+
+  // Detekcija prekomerne potrošnje u odnosu na normativ iz cenovnika
+  hasAnomaly      Boolean     @default(false)
+  anomalyReason   String?     // npr. "Potrošnja 34 l/ha prelazi normativ od 21 l/ha"
+
+  receiptNumber   String?     // Broj računa / otpremnice
+  notes           String?
+
+  createdById     String
+  createdBy       User        @relation(fields: [createdById], references: [id])
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([machineId, date])
+  @@index([parcelId, date])
+  @@index([date])
+  @@map("fuel_entry")
+}
+
+enum IssuePriority {
+  NISKA          // Može da sačeka kraj sezone (klima, brisač)
+  SREDNJA        // Servisirati uskoro (redovan servis ulja za 30 rh)
+  VISOKA         // Hitna intervencija (pregrevanje, labav kaiš)
+  KRITICNA       // Mašina stoji na njivi, prekid rada!
+}
+
+enum IssueStatus {
+  OTVOREN        // Prijavljen kvar sa terena
+  U_RADU         // Mehaničar na terenu ili u radionici radi popravku
+  CEKA_DELOVE    // Naručeni delovi od dobavljača (Agro-partneri)
+  POPRAVLJENO    // Popravka završena, mašina testirana i oslobođena
+  OTKAZAN        // Lažna uzbuna / dupli unos
+}
+
+enum ServiceType {
+  KVAR_NJIVA     // Vanredni kvar na terenu
+  REDOVAN_SERVIS // Redovna zamena ulja i filtera
+  GENERALNI_REMONT // Veliki godišnji remont mehanizacije
+}
+
+model MaintenanceIssue {
+  id               String          @id @default(cuid())
+  dateReported     DateTime        @default(now())
+  serviceType      ServiceType     @default(KVAR_NJIVA)
+  priority         IssuePriority   @default(SREDNJA)
+  status           IssueStatus     @default(OTVOREN)
+
+  machineId        String
+  machine          Machine         @relation(fields: [machineId], references: [id])
+
+  parcelId         String?
+  parcel           Parcel?         @relation(fields: [parcelId], references: [id])
+
+  reportedById     String
+  reportedBy       Worker          @relation("ReportedIssues", fields: [reportedById], references: [id])
+
+  mechanicId       String?
+  mechanic         Worker?         @relation("MechanicIssues", fields: [mechanicId], references: [id])
+
+  servicePartnerId String?
+  servicePartner   Partner?        @relation(fields: [servicePartnerId], references: [id])
+
+  isMachineStopped Boolean         @default(false)
+  downtimeHours    Float?          @default(0) // Koliko sati je mašina stajala
+
+  title            String          // Kratak opis kvara/servisa
+  description      String?         // Detalji kvara sa njive
+  photoUrl         String?         // Fotografija problema sa telefona
+
+  repairedAt       DateTime?
+  repairNotes      String?         // Izveštaj mehaničara o urađenoj popravci
+  partsReplaced    String?         // Tekstualni spisak zamenjenih delova
+  
+  // Utrošena ulja i maziva iz šifarnika (Hidrol-46, Total Dynatrans MPV, Motorno 15W-40)
+  lubricantType    String?         // npr. "TOTAL DYNATRANS MPV"
+  lubricantLiters  Float?          // Utrošeno litara maziva
+
+  partsCost        Float?          @default(0) // Trošak delova (RSD)
+  laborCost        Float?          @default(0) // Rad eksternog servisa (RSD)
+  totalCost        Float?          @default(0) // Ukupno ulaganje (delovi + rad)
+  invoicePhotoUrl  String?         // Slika računa / fakture za delove
+
+  workOrder        WorkOrder?
+
+  createdById      String
+  createdBy        User            @relation(fields: [createdById], references: [id])
+
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@index([machineId, status])
+  @@index([parcelId, status])
+  @@index([status])
+  @@map("maintenance_issue")
 }

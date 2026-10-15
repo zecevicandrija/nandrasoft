@@ -43,3 +43,6 @@ export function requireRole(roles) {
     next();
   };
 }
+
+export const requireManager = requireRole(["DIREKTOR", "RUKOVODILAC"]);
+export const requireAdmin = requireRole(["DIREKTOR"]);

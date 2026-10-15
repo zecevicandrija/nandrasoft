@@ -135,6 +135,8 @@ const machineSchema = z.object({
   regNumber: z.string().max(50).optional().nullable(),
   year: z.number().int().min(1950).max(2035).optional().nullable(),
   currentHours: z.number().nonnegative().default(0),
+  tankCapacityLiters: z.number().nonnegative().optional().nullable(),
+  currentFuelLiters: z.number().nonnegative().optional().nullable(),
   status: machineStatusEnum.default("SLOBODNA"),
   notes: z.string().max(500).optional().nullable(),
   isActive: z.boolean().optional(),
@@ -267,6 +269,10 @@ const workTypeSchema = z.object({
   name: z.string().min(2, "Naziv operacije je obavezan").max(100),
   category: workCategoryEnum.default("OBRADA"),
   unit: z.string().max(20).default("ha"),
+  fuelNormLitersPerHa: z.number().nonnegative().optional().nullable(),
+  laborPricePerHa: z.number().nonnegative().optional().nullable(),
+  totalPricePerHa: z.number().nonnegative().optional().nullable(),
+  referenceFuelPrice: z.number().nonnegative().optional().nullable(),
   isActive: z.boolean().optional(),
 });
 
@@ -275,7 +281,16 @@ router.get("/work-types", async (req, res) => {
     const workTypes = await prisma.workType.findMany({
       orderBy: [{ category: "asc" }, { name: "asc" }],
     });
-    res.json({ workTypes });
+
+    // Poverljivost cena: Operateri i Mehaničari vide samo usluge, bez cena i normativa!
+    const canSeePrices = ["DIREKTOR", "RUKOVODILAC"].includes(req.user?.role);
+    const sanitized = workTypes.map((wt) => {
+      if (canSeePrices) return wt;
+      const { fuelNormLitersPerHa, laborPricePerHa, totalPricePerHa, referenceFuelPrice, ...rest } = wt;
+      return rest;
+    });
+
+    res.json({ workTypes: sanitized });
   } catch (error) {
     res.status(500).json({ error: "Greška na serveru." });
   }
