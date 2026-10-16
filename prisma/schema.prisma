@@ -37,6 +37,7 @@ model User {
   // Faza 3 relacije
   issuedWorkOrders   WorkOrder[]        @relation("IssuedWorkOrders")
   fuelEntries        FuelEntry[]
+  fuelSupplies       FuelSupply[]
   maintenanceIssues  MaintenanceIssue[]
 
   @@map("user")
@@ -91,7 +92,6 @@ model Parcel {
 
   // Faza 3 relacije
   workOrders         WorkOrder[]
-  fuelEntries        FuelEntry[]
   maintenanceIssues  MaintenanceIssue[]
 
   @@map("parcel")
@@ -206,8 +206,9 @@ model Partner {
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
 
-  // Faza 3 relacije ka eksternom servisu / nabavci delova
+  // Faza 3 relacije ka eksternom servisu / nabavci delova / gorivu
   maintenanceIssues MaintenanceIssue[]
+  fuelSupplies      FuelSupply[]
 
   @@map("partner")
 }
@@ -480,17 +481,12 @@ model FuelEntry {
   workerId        String
   worker          Worker      @relation(fields: [workerId], references: [id])
 
-  parcelId        String?
-  parcel          Parcel?     @relation(fields: [parcelId], references: [id])
-
   fieldWorkId     String?
   fieldWork       FieldWork?  @relation(fields: [fieldWorkId], references: [id])
 
   fuelSource      FuelSource  @default(CISTERNA)
   fuelType        String      @default("EURODIZEL") // EURODIZEL, EURODIZEL ADITIVNI
   liters          Float       // Količina u litrima (obavezno)
-
-  odometerValue   Float?      // Radni sati ili km na mašini pri točenju
 
   // Finansijska polja (vidljiva samo direktoru i rukovodiocu)
   pricePerLiter   Float?      // Nabavna cena po litru
@@ -510,9 +506,31 @@ model FuelEntry {
   updatedAt       DateTime    @updatedAt
 
   @@index([machineId, date])
-  @@index([parcelId, date])
   @@index([date])
   @@map("fuel_entry")
+}
+
+model FuelSupply {
+  id              String      @id @default(cuid())
+  date            DateTime    @default(now())
+  fuelType        String      @default("EURODIZEL") // EURODIZEL, EURODIZEL ADITIVNI
+  liters          Float       // Količina u litrima (npr. 5000)
+  pricePerLiter   Float       // Nabavna cena po litru (npr. 185 RSD)
+  totalCost       Float       // liters * pricePerLiter
+  supplierId      String?
+  supplier        Partner?    @relation(fields: [supplierId], references: [id])
+  supplierName    String?     // Ime dobavljača ako nije u partnerima
+  receiptNumber   String?     // Broj računa / otpremnice
+  notes           String?
+
+  createdById     String
+  createdBy       User        @relation(fields: [createdById], references: [id])
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([date])
+  @@map("fuel_supply")
 }
 
 enum IssuePriority {
