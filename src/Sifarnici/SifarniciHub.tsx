@@ -153,7 +153,7 @@ const SifarniciHub: React.FC = () => {
   const openAddModal = () => {
     setEditingItem(null);
     if (activeTab === 'parcele') setForm({ code: '', name: '', areaHa: '', location: '', currentCrop: '', notes: '' });
-    if (activeTab === 'masine') setForm({ name: '', type: 'TRAKTOR', brandModel: '', regNumber: '', year: new Date().getFullYear(), currentHours: 0, status: 'SLOBODNA', notes: '' });
+    if (activeTab === 'masine') setForm({ name: '', type: 'TRAKTOR', brandModel: '', regNumber: '', year: new Date().getFullYear(), currentHours: 0, tankCapacityLiters: 250, status: 'SLOBODNA', notes: '' });
     if (activeTab === 'radnici') setForm({ name: '', type: 'STALNI', phone: '', hourlyRate: 500 });
     if (activeTab === 'operacije') setForm({ name: '', category: 'OBRADA', unit: 'ha' });
     if (activeTab === 'kulture') setForm({ name: '', variety: '', notes: '' });
@@ -191,6 +191,11 @@ const SifarniciHub: React.FC = () => {
     if (activeTab === 'masine') {
       if (payload.year) payload.year = parseInt(payload.year, 10);
       if (payload.currentHours !== undefined) payload.currentHours = parseFloat(payload.currentHours);
+      if (payload.tankCapacityLiters !== undefined && payload.tankCapacityLiters !== '') {
+        payload.tankCapacityLiters = parseFloat(payload.tankCapacityLiters);
+      } else {
+        payload.tankCapacityLiters = null;
+      }
     }
     if (activeTab === 'radnici' && payload.hourlyRate !== undefined) payload.hourlyRate = parseFloat(payload.hourlyRate);
 
@@ -410,6 +415,7 @@ const SifarniciHub: React.FC = () => {
                     <th>Mašina</th>
                     <th>Tip</th>
                     <th>Registracija</th>
+                    <th>Kapacitet rezervoara</th>
                     <th>Radni sati (h)</th>
                     <th>Status</th>
                     <th className={styles.thActions}>Akcije</th>
@@ -417,7 +423,7 @@ const SifarniciHub: React.FC = () => {
                 </thead>
                 <tbody>
                   {machines.length === 0 ? (
-                    <tr><td colSpan={6} className={styles.emptyState}>Nema unetih mašina</td></tr>
+                    <tr><td colSpan={7} className={styles.emptyState}>Nema unetih mašina</td></tr>
                   ) : (
                     machines.map((m: any) => (
                       <tr key={m.id}>
@@ -427,6 +433,11 @@ const SifarniciHub: React.FC = () => {
                         </td>
                         <td><span className={`${styles.pill} ${styles.pillBlue}`}>{m.type}</span></td>
                         <td><span className={styles.codeBadge}>{m.regNumber || '—'}</span></td>
+                        <td>
+                          <span className={styles.numberText} style={{ fontWeight: 600, color: '#16a34a' }}>
+                            {m.tankCapacityLiters ? `${m.tankCapacityLiters} L` : '—'}
+                          </span>
+                        </td>
                         <td><span className={styles.numberText}>{m.currentHours} h</span></td>
                         <td>
                           <span className={`${styles.pill} ${m.status === 'SLOBODNA' ? styles.pillGreen :
@@ -682,11 +693,29 @@ const SifarniciHub: React.FC = () => {
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Registracija / Inv. broj</label>
-                      <input className={styles.formInput} value={form.regNumber || ''} onChange={(e) => setForm({ ...form, regNumber: e.target.value })} />
+                      <input className={styles.formInput} value={form.regNumber || ''} onChange={(e) => setForm({ ...form, regNumber: e.target.value })} placeholder="npr. NS-123-AB" />
                     </div>
+                    <div className={styles.formGroup}>
+                      <label className={styles.formLabel}>Kapacitet rezervoara (L)</label>
+                      <input
+                        className={styles.formInput}
+                        type="number"
+                        step="1"
+                        min="0"
+                        value={form.tankCapacityLiters ?? ''}
+                        onChange={(e) => setForm({ ...form, tankCapacityLiters: e.target.value })}
+                        placeholder="npr. 250 (max litara goriva)"
+                      />
+                    </div>
+                  </div>
+                  <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Trenutni radni sati (h)</label>
                       <input className={styles.formInput} type="number" step="1" value={form.currentHours ?? 0} onChange={(e) => setForm({ ...form, currentHours: e.target.value })} />
+                    </div>
+                    <div className={styles.formGroup}>
+                      <label className={styles.formLabel}>Marka i model (opciono)</label>
+                      <input className={styles.formInput} value={form.brandModel || ''} onChange={(e) => setForm({ ...form, brandModel: e.target.value })} placeholder="npr. 6155M / MTZ 82.1" />
                     </div>
                   </div>
                 </>

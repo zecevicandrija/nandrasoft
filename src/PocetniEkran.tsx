@@ -585,6 +585,11 @@ const PocetniEkran: React.FC = () => {
               Brzi mobilni unos rada
             </Link>
 
+            <Link to="/gorivo" className={styles.adminBtn} style={{ backgroundColor: 'rgba(2, 132, 199, 0.12)', color: '#0284c7' }}>
+              <Fuel size={18} />
+              Evidencija goriva & Cisterna
+            </Link>
+
             <Link to="/masine/zaduzenje" className={styles.adminBtn} style={{ backgroundColor: 'rgba(217, 119, 6, 0.12)', color: '#d97706' }}>
               <KeyRound size={18} />
               Zaduženje / Razduženje mašina
