@@ -119,6 +119,15 @@ router.get("/", async (req, res) => {
 
     const where = {};
 
+    // Filter po statusu za sve uloge (podrška za AKTIVNI i SVE)
+    if (status && status !== "SVE") {
+      if (status === "AKTIVNI") {
+        where.status = { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] };
+      } else {
+        where.status = String(status);
+      }
+    }
+
     // Ako je korisnik OPERATER ili MEHANICAR, vidi samo svoje radne naloge!
     if (["OPERATER", "MEHANICAR"].includes(req.user.role)) {
       const linkedWorker = await prisma.worker.findFirst({
@@ -131,18 +140,12 @@ router.get("/", async (req, res) => {
         return res.json({ workOrders: [] });
       }
 
-      // Za operatere: po defaultu prikazujemo samo aktivne naloge (PLANIRAN, DODELJEN, U_TOKU).
-      // Završeni se prikazuju tek ako operater u filteru eksplicitno izabere 'ZAVRSEN' ili 'SVE'.
-      if (!status || status === "AKTIVNI") {
+      // Za operatere: ako nije prosleđen nikakav status, podrazumevano prikazujemo samo aktivne naloge
+      if (!status) {
         where.status = { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] };
-      } else if (status === "SVE") {
-        // ne filtriramo po statusu, vraća i završene
-      } else {
-        where.status = String(status);
       }
     } else {
       if (workerId) where.workerId = String(workerId);
-      if (status && status !== "SVE") where.status = String(status);
     }
 
     if (machineId) where.machineId = String(machineId);
@@ -362,6 +365,39 @@ router.post("/", requireManager, async (req, res) => {
 
     const orderNumber = await generateOrderNumber();
 
+    let maintenanceId = null;
+    if (parsed.data.orderType === "REMONT_SERVIS" && parsed.data.machineId) {
+      const priorityMap = {
+        KRITICNO: "KRITICNA",
+        HITNO: "VISOKA",
+        NORMALNO: "SREDNJA",
+      };
+      const issuePriority = priorityMap[parsed.data.priority] || "VISOKA";
+
+      const issue = await prisma.maintenanceIssue.create({
+        data: {
+          machineId: parsed.data.machineId,
+          serviceType: "REDOVAN_SERVIS",
+          priority: issuePriority,
+          status: "OTVOREN",
+          reportedById: parsed.data.workerId,
+          mechanicId: parsed.data.workerId,
+          title: `Radni nalog ${orderNumber}: ${
+            parsed.data.instructions ? parsed.data.instructions.slice(0, 50) : "Servis mašine"
+          }`,
+          description: parsed.data.instructions || "Planski remont i servis mehanizacije.",
+          isMachineStopped: true,
+          createdById: req.user.id,
+        },
+      });
+      maintenanceId = issue.id;
+
+      await prisma.machine.update({
+        where: { id: parsed.data.machineId },
+        data: { status: "SERVIS" },
+      });
+    }
+
     const workOrder = await prisma.workOrder.create({
       data: {
         orderNumber,
@@ -377,6 +413,7 @@ router.post("/", requireManager, async (req, res) => {
         shift: parsed.data.shift,
         instructions: parsed.data.instructions || null,
         status: "DODELJEN", // automatski dodeljen radniku
+        maintenanceId,
         issuedById: req.user.id,
       },
       include: {

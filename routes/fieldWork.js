@@ -586,6 +586,23 @@ router.post("/", async (req, res) => {
             ...(endFuel !== null ? { currentFuelLiters: endFuel } : {}),
           },
         });
+
+        if (!isOperational) {
+          await prisma.maintenanceIssue.create({
+            data: {
+              serviceType: "KVAR_NJIVA",
+              priority: "VISOKA",
+              status: "OTVOREN",
+              machineId,
+              parcelId: parsed.data.parcelId || null,
+              reportedById: finalWorkerId,
+              title: `Prijava kvara pri radu na njivi: ${machineObj.name}`,
+              description: parsed.data.returnNotes || "Radnik prijavio neispravnost prilikom završetka rada na njivi.",
+              isMachineStopped: true,
+              createdById: req.user.id,
+            },
+          });
+        }
       } else if (!activeAssignment && autoAssignMachine !== false) {
         // Ako nije bilo prethodnog jutarnjeg zaduženja, automatski evidentiraj zaduženje/razduženje
         await prisma.machineAssignment.create({
@@ -616,6 +633,23 @@ router.post("/", async (req, res) => {
               ...(endFuel !== null ? { currentFuelLiters: endFuel } : {}),
             },
           });
+
+          if (!isOperational) {
+            await prisma.maintenanceIssue.create({
+              data: {
+                serviceType: "KVAR_NJIVA",
+                priority: "VISOKA",
+                status: "OTVOREN",
+                machineId,
+                parcelId: parsed.data.parcelId || null,
+                reportedById: finalWorkerId,
+                title: `Prijava kvara pri radu na njivi: ${machineObj.name}`,
+                description: parsed.data.returnNotes || "Radnik prijavio neispravnost prilikom završetka rada na njivi.",
+                isMachineStopped: true,
+                createdById: req.user.id,
+              },
+            });
+          }
         }
       }
     } catch (assignErr) {

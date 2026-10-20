@@ -12,6 +12,7 @@ import fieldWorkRouter from "./routes/fieldWork.js";
 import auditLogRouter from "./routes/auditLog.js";
 import workOrdersRouter from "./routes/workOrders.js";
 import fuelRouter from "./routes/fuel.js";
+import maintenanceRouter from "./routes/maintenance.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -70,6 +71,7 @@ app.use("/api/field-work", fieldWorkRouter);
 app.use("/api/audit-logs", auditLogRouter);
 app.use("/api/work-orders", workOrdersRouter);
 app.use("/api/fuel", fuelRouter);
+app.use("/api/maintenance", maintenanceRouter);
 
 // Health check
 app.get("/api/health", (req, res) => {

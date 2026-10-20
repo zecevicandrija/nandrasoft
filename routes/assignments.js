@@ -314,10 +314,7 @@ router.post("/checkin", async (req, res) => {
     const newMachineStatus = isOperational ? "SLOBODNA" : "U_KVARU";
     const newAssignmentStatus = isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM";
 
-    // Atomska Prisma transakcija:
-    // 1. Ažuriraj MachineAssignment (status, returnedAt, endHours, endFuelLevel, isOperational, returnNotes)
-    // 2. Ažuriraj Machine (status, currentHours = endHours)
-    const [updatedAssignment] = await prisma.$transaction([
+    const txOperations = [
       prisma.machineAssignment.update({
         where: { id: assignmentId },
         data: {
@@ -340,7 +337,28 @@ router.post("/checkin", async (req, res) => {
           currentHours: endHours,
         },
       }),
-    ]);
+    ];
+
+    if (!isOperational) {
+      txOperations.push(
+        prisma.maintenanceIssue.create({
+          data: {
+            serviceType: "KVAR_NJIVA",
+            priority: "VISOKA",
+            status: "OTVOREN",
+            machineId: assignment.machineId,
+            parcelId: assignment.parcelId || null,
+            reportedById: assignment.workerId,
+            title: `Prijava kvara pri razduživanju: ${assignment.machine.name}`,
+            description: returnNotes || "Radnik prijavio neispravnost prilikom razduživanja mašine.",
+            isMachineStopped: true,
+            createdById: req.user.id,
+          },
+        })
+      );
+    }
+
+    const [updatedAssignment] = await prisma.$transaction(txOperations);
 
     res.json({
       message: isOperational
@@ -423,7 +441,7 @@ router.post("/direct", async (req, res) => {
     const newMachineStatus = isOperational ? (machine.status === "ZADUZENA" ? "SLOBODNA" : machine.status) : "U_KVARU";
     const updatedCurrentHours = Math.max(machine.currentHours || 0, endHours);
 
-    const [assignment] = await prisma.$transaction([
+    const directOps = [
       prisma.machineAssignment.create({
         data: {
           machineId,
@@ -454,7 +472,28 @@ router.post("/direct", async (req, res) => {
           currentHours: updatedCurrentHours,
         },
       }),
-    ]);
+    ];
+
+    if (!isOperational) {
+      directOps.push(
+        prisma.maintenanceIssue.create({
+          data: {
+            serviceType: "KVAR_NJIVA",
+            priority: "VISOKA",
+            status: "OTVOREN",
+            machineId,
+            parcelId: parcelId || null,
+            reportedById: workerId,
+            title: `Prijava kvara (direktno zaduženje): ${machine.name}`,
+            description: notes || "Prijavljena neispravnost mašine prilikom direktnog unosa.",
+            isMachineStopped: true,
+            createdById: req.user.id,
+          },
+        })
+      );
+    }
+
+    const [assignment] = await prisma.$transaction(directOps);
 
     // Audit log zapis
     try {
