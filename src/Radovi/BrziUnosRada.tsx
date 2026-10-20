@@ -245,6 +245,10 @@ const BrziUnosRada: React.FC = () => {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['field-works'] });
       queryClient.invalidateQueries({ queryKey: ['field-work-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
+      queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
+      queryClient.invalidateQueries({ queryKey: ['machines-all'] });
       setSubmittedData(data.work);
       setErrorMsg('');
     },
@@ -403,7 +407,7 @@ const BrziUnosRada: React.FC = () => {
                   <button
                     onClick={() =>
                       navigate(
-                        `/masine-kvarovi?checkin=true&machineId=${submittedData.machineId}`
+                        `/zaduzivanje-masina?checkin=true&machineId=${submittedData.machineId}`
                       )
                     }
                     className={styles.btnFinishDay}

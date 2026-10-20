@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, Navigate } from 'react-router-dom';
 import {
   Building2,
   ShieldCheck,
@@ -89,10 +89,15 @@ const PocetniEkran: React.FC = () => {
     }
   };
 
-  // Dohvati današnji nalog za radnika
+  // Redirekcija za direktora i rukovodioca direktno na naloze / dispečing
   useEffect(() => {
-    fetchTodayOrder();
-  }, [session]);
+    const user = (session as any)?.user;
+    if (user && ['DIREKTOR', 'RUKOVODILAC'].includes(user.role)) {
+      navigate('/nalozi', { replace: true });
+    } else {
+      fetchTodayOrder();
+    }
+  }, [session, navigate]);
 
   const handleOpenAcceptModal = (order: any) => {
     setIsAcceptOpen(true);
@@ -160,6 +165,11 @@ const PocetniEkran: React.FC = () => {
 
       if (result.error) {
         setError(result.error.message || 'Neuspešna prijava. Proverite podatke.');
+      } else if (result.data?.user) {
+        const userRole = (result.data.user as any).role;
+        if (['DIREKTOR', 'RUKOVODILAC'].includes(userRole)) {
+          navigate('/nalozi', { replace: true });
+        }
       }
     } catch (err: any) {
       setError(err?.message || 'Greška prilikom povezivanja sa serverom.');
@@ -175,7 +185,12 @@ const PocetniEkran: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    await signOut({});
+    try {
+      await signOut({});
+    } catch (err) {
+      console.error('Greška pri odjavi:', err);
+    }
+    window.location.href = '/';
   };
 
   // Loading state
@@ -191,6 +206,12 @@ const PocetniEkran: React.FC = () => {
   const user = (session as any)?.user;
   if (user) {
     const role = user.role || 'OPERATER';
+
+    // Rukovodilac i Direktor idu direktno na dashboard radnih naloga / dispečing
+    if (['DIREKTOR', 'RUKOVODILAC'].includes(role)) {
+      return <Navigate to="/nalozi" replace />;
+    }
+
     const initials = user.name
       ? user.name
         .split(' ')
@@ -575,25 +596,36 @@ const PocetniEkran: React.FC = () => {
               Radni nalozi & Dispečing
             </Link>
 
-            <Link to="/radovi" className={styles.adminBtn} style={{ backgroundColor: '#16a34a', color: '#ffffff' }}>
-              <Tractor size={18} />
-              Dnevnik radova na njivi
-            </Link>
+            {role !== 'MEHANICAR' && (
+              <>
+                <Link to="/radovi" className={styles.adminBtn} style={{ backgroundColor: '#16a34a', color: '#ffffff' }}>
+                  <Tractor size={18} />
+                  Dnevnik radova na njivi
+                </Link>
 
-            <Link to="/radovi/novi" className={styles.adminBtn} style={{ backgroundColor: 'rgba(22, 163, 74, 0.12)', color: '#16a34a' }}>
-              <PlusCircle size={18} />
-              Brzi mobilni unos rada
-            </Link>
+                <Link to="/radovi/novi" className={styles.adminBtn} style={{ backgroundColor: 'rgba(22, 163, 74, 0.12)', color: '#16a34a' }}>
+                  <PlusCircle size={18} />
+                  Brzi mobilni unos rada
+                </Link>
+              </>
+            )}
 
             <Link to="/gorivo" className={styles.adminBtn} style={{ backgroundColor: 'rgba(2, 132, 199, 0.12)', color: '#0284c7' }}>
               <Fuel size={18} />
               Evidencija goriva & Cisterna
             </Link>
 
-            <Link to="/masine/zaduzenje" className={styles.adminBtn} style={{ backgroundColor: 'rgba(217, 119, 6, 0.12)', color: '#d97706' }}>
+            <Link to="/zaduzivanje-masina" className={styles.adminBtn} style={{ backgroundColor: 'rgba(217, 119, 6, 0.12)', color: '#d97706' }}>
               <KeyRound size={18} />
               Zaduženje / Razduženje mašina
             </Link>
+
+            {['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR'].includes(role) && (
+              <Link to="/masine-kvarovi" className={styles.adminBtn} style={{ backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#ef4444' }}>
+                <Wrench size={18} />
+                Radionica & Kvarovi
+              </Link>
+            )}
 
             {['DIREKTOR', 'RUKOVODILAC', 'MAGACIN'].includes(role) && (
               <Link to="/sifarnici" className={styles.adminBtn}>

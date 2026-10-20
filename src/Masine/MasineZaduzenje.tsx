@@ -118,6 +118,8 @@ const MasineZaduzenje: React.FC = () => {
       const res = await fetch(`${API}/assignments/stats`, { credentials: 'include' });
       return res.json();
     },
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   // 2. AKTIVNA ZADUŽENJA
@@ -127,6 +129,8 @@ const MasineZaduzenje: React.FC = () => {
       const res = await fetch(`${API}/assignments/active`, { credentials: 'include' });
       return res.json();
     },
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   // 3. SVA ZADUŽENJA (ISTORIJAT)
@@ -136,6 +140,8 @@ const MasineZaduzenje: React.FC = () => {
       const res = await fetch(`${API}/assignments?limit=50`, { credentials: 'include' });
       return res.json();
     },
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   // 4. ŠIFARNICI
@@ -145,6 +151,8 @@ const MasineZaduzenje: React.FC = () => {
       const res = await fetch(`${API}/master/machines`, { credentials: 'include' });
       return res.json();
     },
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   const { data: workersData } = useQuery({
@@ -1185,7 +1193,7 @@ const MasineZaduzenje: React.FC = () => {
                                 ? 'Zadužena'
                                 : a.status === 'RAZDUZENA'
                                   ? 'Razdužena'
-                                  : 'Vraćena s kvarom'}
+                                  : 'Pokvarena'}
                             </span>
                           </td>
                           <td style={{ maxWidth: 220, color: 'var(--text-secondary)' }}>

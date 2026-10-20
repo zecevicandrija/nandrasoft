@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, Navigate } from 'react-router-dom';
 import {
   Tractor,
   ClipboardList,
@@ -15,6 +15,8 @@ import {
   Sprout,
   History,
   ShieldAlert,
+  KeyRound,
+  Loader2,
 } from 'lucide-react';
 import { useSession, signOut } from '../../lib/auth-client';
 import ThemeToggle from '../ThemeToggle';
@@ -59,11 +61,22 @@ const NAV_GROUPS: NavGroup[] = [
         icon: <Fuel size={18} />,
         allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR', 'OPERATER', 'MAGACIN'],
       },
+    ],
+  },
+  {
+    groupName: 'Mašine',
+    items: [
       {
-        title: 'Mašine & Kvarovi',
+        title: 'Zaduživanje mašina',
+        to: '/zaduzivanje-masina',
+        icon: <KeyRound size={18} />,
+        allowedRoles: ['OPERATER', 'MEHANICAR', 'RUKOVODILAC', 'DIREKTOR'],
+      },
+      {
+        title: 'Radionica & Kvarovi',
         to: '/masine-kvarovi',
         icon: <Wrench size={18} />,
-        allowedRoles: ['DIREKTOR', 'RUKOVODILAC', 'MEHANICAR', 'OPERATER'],
+        allowedRoles: ['MEHANICAR', 'RUKOVODILAC', 'DIREKTOR'],
       },
       {
         title: 'Neusklađenosti mašina',
@@ -130,18 +143,58 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
-  const navigate = useNavigate();
   const location = useLocation();
-  const { data: session } = useSession();
+  const { data: session, isPending } = useSession();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const currentUser = (session as any)?.user;
-  const userRole = currentUser?.role || 'OPERATER';
+  const userRole = currentUser?.role || '';
 
   const handleLogout = async () => {
-    await signOut({});
-    navigate('/');
+    try {
+      await signOut({});
+    } catch (err) {
+      console.error('Greška pri odjavi:', err);
+    }
+    window.location.href = '/';
   };
+
+  // 1. Dok se sesija proverava, prikaži loader
+  if (isPending) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: '100vh',
+          backgroundColor: 'var(--bg-secondary, #f8fafc)',
+          color: 'var(--text-muted, #64748b)',
+          gap: '1rem',
+        }}
+      >
+        <Loader2 style={{ animation: 'spin 0.8s linear infinite', color: '#0284c7' }} size={40} />
+        <span style={{ fontSize: '0.95rem', fontWeight: 600 }}>Provera autorizacije...</span>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  // 2. Ako korisnik NIJE ulogovan, ne sme imati pristup nijednom delu sistema - vraćamo ga na login!
+  if (!session || !currentUser) {
+    return <Navigate to="/" replace />;
+  }
+
+  // 3. Proveri da li korisnik ima RBAC dozvolu za trenutnu stranicu
+  const allNavItems = NAV_GROUPS.flatMap((group) => group.items);
+  const matchedItem = allNavItems.find(
+    (item) => item.to === location.pathname || (item.to !== '/' && location.pathname.startsWith(item.to))
+  );
+
+  if (matchedItem && userRole && !matchedItem.allowedRoles.includes(userRole)) {
+    return <Navigate to="/" replace />;
+  }
 
   // Filtriraj grupe i linkove na osnovu RBAC uloge korisnika
   const filteredNavGroups = NAV_GROUPS.map((group) => ({

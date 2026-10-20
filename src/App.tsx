@@ -10,6 +10,7 @@ import AuditLogDashboard from './Administrator/AuditLogDashboard';
 import NeuskladjenostiMasina from './Masine/NeuskladjenostiMasina';
 import RadniNaloziDashboard from './Nalozi/RadniNaloziDashboard';
 import GorivoDashboard from './Gorivo/GorivoDashboard';
+import RadionicaKvarovi from './Masine/RadionicaKvarovi';
 
 function App() {
   return (
@@ -24,8 +25,9 @@ function App() {
           <Route path="/gorivo" element={<GorivoDashboard />} />
           <Route path="/radovi" element={<RadoviDashboard />} />
           <Route path="/radovi/novi" element={<BrziUnosRada />} />
-          <Route path="/masine/zaduzenje" element={<MasineZaduzenje />} />
-          <Route path="/masine-kvarovi" element={<MasineZaduzenje />} />
+          <Route path="/zaduzivanje-masina" element={<MasineZaduzenje />} />
+          <Route path="/masine/zaduzenje" element={<Navigate to="/zaduzivanje-masina" replace />} />
+          <Route path="/masine-kvarovi" element={<RadionicaKvarovi />} />
           <Route path="/masine/neusklađenosti" element={<NeuskladjenostiMasina />} />
           <Route path="/radovi/neusklađenosti" element={<NeuskladjenostiMasina />} />
           <Route path="*" element={<Navigate to="/" replace />} />

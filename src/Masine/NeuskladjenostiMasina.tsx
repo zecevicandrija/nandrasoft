@@ -290,7 +290,7 @@ const NeuskladjenostiMasina: React.FC = () => {
                             <td>
                               {(() => {
                                 const dateOnly = work.date ? new Date(work.date).toISOString().split('T')[0] : '';
-                                const directUrl = `/masine/zaduzenje?direct=true&machineId=${encodeURIComponent(work.machineId)}&workerId=${encodeURIComponent(work.workerId)}&parcelId=${encodeURIComponent(work.parcelId || '')}&date=${encodeURIComponent(dateOnly)}&workHours=${encodeURIComponent(work.workHours || '')}`;
+                                const directUrl = `/zaduzivanje-masina?direct=true&machineId=${encodeURIComponent(work.machineId)}&workerId=${encodeURIComponent(work.workerId)}&parcelId=${encodeURIComponent(work.parcelId || '')}&date=${encodeURIComponent(dateOnly)}&workHours=${encodeURIComponent(work.workHours || '')}`;
                                 return (
                                   <Link
                                     to={directUrl}
