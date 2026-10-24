@@ -303,9 +303,21 @@ router.post("/issues", async (req, res) => {
 // ==========================================
 router.get("/remont-orders", async (req, res) => {
   try {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
     let orders = await prisma.workOrder.findMany({
       where: {
         orderType: "REMONT_SERVIS",
+        OR: [
+          // 1. Svi nalozi koji još uvek nisu završeni ili otkazani
+          { status: { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] } },
+          // 2. Završeni nalozi ali SAMO ONI koji su završeni DANAS (vidljivi do kraja dana do 23:59:59h)
+          {
+            status: "ZAVRSEN",
+            updatedAt: { gte: startOfToday },
+          },
+        ],
       },
       include: {
         machine: true,
@@ -600,10 +612,20 @@ router.post("/issues/:id/resolve", async (req, res) => {
 
     const worker = await getOrCreateWorkerForUser(req.user);
 
-    const issue = await prisma.maintenanceIssue.findUnique({
+    let issue = await prisma.maintenanceIssue.findUnique({
       where: { id: req.params.id },
       include: { machine: true, workOrder: true },
     });
+
+    if (!issue) {
+      const wo = await prisma.workOrder.findUnique({
+        where: { id: req.params.id },
+        include: { maintenance: { include: { machine: true, workOrder: true } } },
+      });
+      if (wo && wo.maintenance) {
+        issue = wo.maintenance;
+      }
+    }
 
     if (!issue) {
       return res.status(404).json({ error: "Zapis o kvaru nije pronađen." });
@@ -680,6 +702,190 @@ router.post("/issues/:id/resolve", async (req, res) => {
     });
   } catch (error) {
     console.error("Greška pri evidentiranju popravke:", error);
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+});
+
+// ==========================================
+// 7.1 PONIŠTAVANJE ZAVRŠETKA (VRATI U RAD) — DO KRAJA ISTOG DANA
+// ==========================================
+router.post("/issues/:id/reopen", async (req, res) => {
+  try {
+    let issue = await prisma.maintenanceIssue.findUnique({
+      where: { id: req.params.id },
+      include: { machine: true, workOrder: true },
+    });
+
+    if (!issue) {
+      const wo = await prisma.workOrder.findUnique({
+        where: { id: req.params.id },
+        include: { maintenance: { include: { machine: true, workOrder: true } } },
+      });
+      if (wo && wo.maintenance) {
+        issue = wo.maintenance;
+      }
+    }
+
+    if (!issue) {
+      return res.status(404).json({ error: "Zapis o servisu nije pronađen." });
+    }
+
+    // Provera da li je završeno danas
+    const finishDate = new Date(issue.repairedAt || issue.updatedAt);
+    const now = new Date();
+    const isSameDay =
+      now.getFullYear() === finishDate.getFullYear() &&
+      now.getMonth() === finishDate.getMonth() &&
+      now.getDate() === finishDate.getDate();
+
+    if (!isSameDay && !["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
+      return res.status(403).json({
+        error: "Završeni remont možete vratiti u rad samo do kraja istog dana (do 23:59h). Nakon toga je zaključan.",
+      });
+    }
+
+    const [updatedIssue, updatedMachine] = await prisma.$transaction([
+      prisma.maintenanceIssue.update({
+        where: { id: issue.id },
+        data: {
+          status: "U_RADU",
+          repairedAt: null,
+        },
+        include: {
+          machine: true,
+          mechanic: true,
+          reportedBy: true,
+        },
+      }),
+      prisma.machine.update({
+        where: { id: issue.machineId },
+        data: { status: "SERVIS" },
+      }),
+    ]);
+
+    if (issue.workOrder) {
+      await prisma.workOrder.update({
+        where: { id: issue.workOrder.id },
+        data: { status: "U_TOKU" },
+      });
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        entityType: "MaintenanceIssue",
+        entityId: issue.id,
+        action: "IZMENA",
+        userId: req.user.id,
+        userName: req.user.name,
+        userRole: req.user.role,
+        description: `Mehaničar poništio završetak i vratio servis mašine "${issue.machine.name}" u rad. Mašina je ponovo u statusu SERVIS.`,
+        newValues: { status: "U_RADU", machineStatus: "SERVIS" },
+      },
+    });
+
+    res.json({
+      message: `Nalog za mašinu "${issue.machine.name}" je uspešno vraćen u rad! Mašina je ponovo u servisu.`,
+      issue: updatedIssue,
+      machine: updatedMachine,
+    });
+  } catch (error) {
+    console.error("Greška pri vraćanju naloga u rad:", error);
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+});
+
+// ==========================================
+// 7.2 IZMENA IZVEŠTAJA ZAVRŠENE POPRAVKE — DO KRAJA ISTOG DANA
+// ==========================================
+router.put("/issues/:id/resolve", async (req, res) => {
+  try {
+    const parsed = resolveIssueSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: parsed.error.issues.map((i) => i.message).join(". "),
+      });
+    }
+
+    let issue = await prisma.maintenanceIssue.findUnique({
+      where: { id: req.params.id },
+      include: { machine: true, workOrder: true },
+    });
+
+    if (!issue) {
+      const wo = await prisma.workOrder.findUnique({
+        where: { id: req.params.id },
+        include: { maintenance: { include: { machine: true, workOrder: true } } },
+      });
+      if (wo && wo.maintenance) {
+        issue = wo.maintenance;
+      }
+    }
+
+    if (!issue) {
+      return res.status(404).json({ error: "Zapis o servisu nije pronađen." });
+    }
+
+    const finishDate = new Date(issue.repairedAt || issue.updatedAt);
+    const now = new Date();
+    const isSameDay =
+      now.getFullYear() === finishDate.getFullYear() &&
+      now.getMonth() === finishDate.getMonth() &&
+      now.getDate() === finishDate.getDate();
+
+    if (!isSameDay && !["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
+      return res.status(403).json({
+        error: "Izveštaj o popravci možete menjati samo do kraja istog dana (do 23:59h).",
+      });
+    }
+
+    const {
+      repairNotes,
+      partsReplaced,
+      lubricantType,
+      lubricantLiters,
+      partsCost = 0,
+      laborCost = 0,
+    } = parsed.data;
+
+    const totalCost = (partsCost || 0) + (laborCost || 0);
+
+    const updatedIssue = await prisma.maintenanceIssue.update({
+      where: { id: issue.id },
+      data: {
+        repairNotes,
+        partsReplaced: partsReplaced || null,
+        lubricantType: lubricantType || null,
+        lubricantLiters: lubricantLiters || null,
+        partsCost: partsCost || 0,
+        laborCost: laborCost || 0,
+        totalCost,
+      },
+      include: {
+        machine: true,
+        mechanic: true,
+        reportedBy: true,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        entityType: "MaintenanceIssue",
+        entityId: issue.id,
+        action: "IZMENA",
+        userId: req.user.id,
+        userName: req.user.name,
+        userRole: req.user.role,
+        description: `Izmenjen izveštaj popravke za mašinu "${issue.machine.name}".`,
+        newValues: { repairNotes, partsReplaced, lubricantType, lubricantLiters, totalCost },
+      },
+    });
+
+    res.json({
+      message: `Izveštaj popravke za mašinu "${issue.machine.name}" je uspešno ažuriran!`,
+      issue: updatedIssue,
+    });
+  } catch (error) {
+    console.error("Greška pri izmeni izveštaja popravke:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
 });

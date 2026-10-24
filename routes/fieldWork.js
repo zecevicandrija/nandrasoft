@@ -501,6 +501,24 @@ router.post("/", async (req, res) => {
       });
     }
 
+    if (!activeAssignment && !parsed.data.workOrderId) {
+      if (machineObj.status === "SERVIS") {
+        return res.status(400).json({
+          error: `Mašina "${machineObj.name}" je na servisu/remontu i ne može se koristiti za rad na njivi.`,
+        });
+      }
+      if (machineObj.status === "U_KVARU") {
+        return res.status(400).json({
+          error: `Mašina "${machineObj.name}" je u kvaru i ne može se koristiti za rad na njivi.`,
+        });
+      }
+      if (machineObj.status === "ZADUZENA") {
+        return res.status(400).json({
+          error: `Mašina "${machineObj.name}" je već zadužena i ne može se uneti bez prethodnog razduženja.`,
+        });
+      }
+    }
+
     const baselineHours = activeAssignment?.startHours ?? machineObj.currentHours ?? 0;
     if (parsed.data.endHours !== undefined && parsed.data.endHours !== null) {
       if (parsed.data.endHours < baselineHours) {
@@ -609,12 +627,13 @@ router.post("/", async (req, res) => {
           data: {
             machineId,
             workerId: finalWorkerId,
-            parcelId: null,
+            parcelId: parsed.data.parcelId || null,
             workOrderId: parsed.data.workOrderId || null,
             assignedAt: workDate,
             returnedAt: status === "ZAVRSENO" ? workDate : null,
             startHours: currentH,
             endHours: status === "ZAVRSENO" ? finalEndHours : null,
+            startFuelLiters: machineObj.currentFuelLiters !== undefined && machineObj.currentFuelLiters !== null ? machineObj.currentFuelLiters : null,
             endFuelLiters: endFuel,
             isOperational,
             returnNotes: parsed.data.returnNotes || null,
@@ -847,9 +866,39 @@ router.put("/:id", async (req, res) => {
       newValues.attachment = newAtt ? newAtt.name : null;
     }
 
+    const prismaUpdateData = {};
+
+    if (updateData.date !== undefined) prismaUpdateData.date = updateData.date;
+    if (updateData.shift !== undefined) prismaUpdateData.shift = updateData.shift;
+    if (updateData.areaDoneHa !== undefined) prismaUpdateData.areaDoneHa = updateData.areaDoneHa;
+    if (updateData.startTime !== undefined) prismaUpdateData.startTime = updateData.startTime;
+    if (updateData.endTime !== undefined) prismaUpdateData.endTime = updateData.endTime;
+    if (updateData.workHours !== undefined) prismaUpdateData.workHours = updateData.workHours;
+    if (updateData.status !== undefined) prismaUpdateData.status = updateData.status;
+    if (updateData.notes !== undefined) prismaUpdateData.notes = updateData.notes;
+    if (updateData.photoUrl !== undefined) prismaUpdateData.photoUrl = updateData.photoUrl;
+
+    if (updateData.parcelId) {
+      prismaUpdateData.parcel = { connect: { id: updateData.parcelId } };
+    }
+    if (updateData.machineId) {
+      prismaUpdateData.machine = { connect: { id: updateData.machineId } };
+    }
+    if (updateData.workerId) {
+      prismaUpdateData.worker = { connect: { id: updateData.workerId } };
+    }
+    if (updateData.workTypeId) {
+      prismaUpdateData.workType = { connect: { id: updateData.workTypeId } };
+    }
+    if (updateData.attachmentId !== undefined) {
+      prismaUpdateData.attachment = updateData.attachmentId
+        ? { connect: { id: updateData.attachmentId } }
+        : { disconnect: true };
+    }
+
     const updated = await prisma.fieldWork.update({
       where: { id },
-      data: updateData,
+      data: prismaUpdateData,
       include: {
         parcel: true,
         machine: true,

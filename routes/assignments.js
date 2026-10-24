@@ -154,6 +154,7 @@ const checkoutSchema = z.object({
   workerId: z.string().min(1, "Radnik je obavezan").optional().nullable(),
   parcelId: z.string().optional().nullable(),
   startFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  startFuelLiters: z.number().nonnegative("Početno gorivo ne može biti negativno").optional().nullable(),
   startHours: z.number().nonnegative("Početni radni sati ne mogu biti negativni").optional().nullable(),
   assignNotes: z.string().max(500).optional().nullable(),
 });
@@ -167,7 +168,7 @@ router.post("/checkout", async (req, res) => {
       });
     }
 
-    const { machineId, workerId, parcelId, startFuelLevel, startHours, assignNotes } = parsed.data;
+    const { machineId, workerId, parcelId, startFuelLevel, startFuelLiters, startHours, assignNotes } = parsed.data;
 
     // Automatsko prepoznavanje / vezivanje radnika za operatera
     let finalWorkerId = workerId;
@@ -217,6 +218,14 @@ router.post("/checkout", async (req, res) => {
       });
     }
 
+    // Provera kapaciteta rezervoara
+    const tankCapacity = machine.tankCapacityLiters || 200;
+    if (startFuelLiters !== undefined && startFuelLiters !== null && startFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Nije moguće uneti više od maksimalnog kapaciteta rezervoara mašine "${machine.name}" (${tankCapacity} L). Pokušano zaduženje: ${startFuelLiters} L.`,
+      });
+    }
+
     // Dodatna provera da li već postoji otvoreno zaduženje
     const existingActive = await prisma.machineAssignment.findFirst({
       where: {
@@ -234,6 +243,20 @@ router.post("/checkout", async (req, res) => {
     // 2. Početni sati: uzmi unete, ili automatski sa mašine
     const initialHours = startHours !== undefined && startHours !== null ? startHours : machine.currentHours;
 
+    const calculatedFuelLevel =
+      startFuelLiters !== undefined && startFuelLiters !== null && tankCapacity > 0
+        ? Math.round((startFuelLiters / tankCapacity) * 100)
+        : startFuelLevel !== undefined
+        ? startFuelLevel
+        : null;
+
+    const calculatedFuelLiters =
+      startFuelLiters !== undefined && startFuelLiters !== null
+        ? startFuelLiters
+        : startFuelLevel !== undefined && startFuelLevel !== null && tankCapacity > 0
+        ? Math.round((startFuelLevel / 100) * tankCapacity)
+        : null;
+
     // 3. Atomska Prisma transakcija: kreiraj zaduženje i postavi status mašine na ZADUZENA
     const [assignment] = await prisma.$transaction([
       prisma.machineAssignment.create({
@@ -241,7 +264,8 @@ router.post("/checkout", async (req, res) => {
           machineId,
           workerId: finalWorkerId,
           parcelId: parcelId || null,
-          startFuelLevel: startFuelLevel !== undefined ? startFuelLevel : null,
+          startFuelLevel: calculatedFuelLevel,
+          startFuelLiters: calculatedFuelLiters,
           startHours: initialHours,
           assignNotes: assignNotes || null,
           status: "ZADUZENA",
@@ -255,7 +279,10 @@ router.post("/checkout", async (req, res) => {
       }),
       prisma.machine.update({
         where: { id: machineId },
-        data: { status: "ZADUZENA" },
+        data: {
+          status: "ZADUZENA",
+          ...(calculatedFuelLiters !== null ? { currentFuelLiters: calculatedFuelLiters } : {}),
+        },
       }),
     ]);
 
@@ -276,6 +303,7 @@ const checkinSchema = z.object({
   assignmentId: z.string().min(1, "ID zaduženja je obavezan"),
   endHours: z.number().nonnegative("Krajnji radni sati moraju biti pozitivan broj"),
   endFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  endFuelLiters: z.number().nonnegative("Krajnje gorivo ne može biti negativno").optional().nullable(),
   isOperational: z.boolean().default(true),
   returnNotes: z.string().max(500).optional().nullable(),
 });
@@ -289,7 +317,7 @@ router.post("/checkin", async (req, res) => {
       });
     }
 
-    const { assignmentId, endHours, endFuelLevel, isOperational, returnNotes } = parsed.data;
+    const { assignmentId, endHours, endFuelLevel, endFuelLiters, isOperational, returnNotes } = parsed.data;
 
     const assignment = await prisma.machineAssignment.findUnique({
       where: { id: assignmentId },
@@ -311,6 +339,28 @@ router.post("/checkin", async (req, res) => {
       });
     }
 
+    // Provera kapaciteta rezervoara
+    const tankCapacity = assignment.machine?.tankCapacityLiters || 200;
+    if (endFuelLiters !== undefined && endFuelLiters !== null && endFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Količina goriva na povratku (${endFuelLiters} L) ne može biti veća od kapaciteta rezervoara mašine "${assignment.machine.name}" (${tankCapacity} L).`,
+      });
+    }
+
+    const calculatedEndFuelLevel =
+      endFuelLiters !== undefined && endFuelLiters !== null && tankCapacity > 0
+        ? Math.round((endFuelLiters / tankCapacity) * 100)
+        : endFuelLevel !== undefined
+        ? endFuelLevel
+        : null;
+
+    const calculatedEndFuelLiters =
+      endFuelLiters !== undefined && endFuelLiters !== null
+        ? endFuelLiters
+        : endFuelLevel !== undefined && endFuelLevel !== null && tankCapacity > 0
+        ? Math.round((endFuelLevel / 100) * tankCapacity)
+        : null;
+
     const newMachineStatus = isOperational ? "SLOBODNA" : "U_KVARU";
     const newAssignmentStatus = isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM";
 
@@ -321,7 +371,8 @@ router.post("/checkin", async (req, res) => {
           status: newAssignmentStatus,
           returnedAt: new Date(),
           endHours,
-          endFuelLevel: endFuelLevel !== undefined ? endFuelLevel : null,
+          endFuelLevel: calculatedEndFuelLevel,
+          endFuelLiters: calculatedEndFuelLiters,
           isOperational,
           returnNotes: returnNotes || null,
         },
@@ -335,6 +386,7 @@ router.post("/checkin", async (req, res) => {
         data: {
           status: newMachineStatus,
           currentHours: endHours,
+          ...(calculatedEndFuelLiters !== null ? { currentFuelLiters: calculatedEndFuelLiters } : {}),
         },
       }),
     ];
@@ -384,6 +436,8 @@ const directAssignSchema = z.object({
   endHours: z.number().nonnegative("Krajnji radni sati moraju biti pozitivan broj"),
   startFuelLevel: z.number().min(0).max(100).optional().nullable(),
   endFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  startFuelLiters: z.number().nonnegative("Početno gorivo ne može biti negativno").optional().nullable(),
+  endFuelLiters: z.number().nonnegative("Krajnje gorivo ne može biti negativno").optional().nullable(),
   isOperational: z.boolean().default(true),
   notes: z.string().max(500).optional().nullable(),
 });
@@ -411,6 +465,8 @@ router.post("/direct", async (req, res) => {
       endHours,
       startFuelLevel,
       endFuelLevel,
+      startFuelLiters,
+      endFuelLiters,
       isOperational,
       notes,
     } = parsed.data;
@@ -428,6 +484,46 @@ router.post("/direct", async (req, res) => {
     if (!machine) {
       return res.status(404).json({ error: "Izabrana mašina ne postoji u sistemu." });
     }
+
+    const tankCapacity = machine.tankCapacityLiters || 200;
+    if (startFuelLiters !== undefined && startFuelLiters !== null && startFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Početno gorivo (${startFuelLiters} L) ne može biti veće od kapaciteta rezervoara mašine "${machine.name}" (${tankCapacity} L).`,
+      });
+    }
+    if (endFuelLiters !== undefined && endFuelLiters !== null && endFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Krajnje gorivo (${endFuelLiters} L) ne može biti veće od kapaciteta rezervoara mašine "${machine.name}" (${tankCapacity} L).`,
+      });
+    }
+
+    const calcStartLevel =
+      startFuelLiters !== undefined && startFuelLiters !== null && tankCapacity > 0
+        ? Math.round((startFuelLiters / tankCapacity) * 100)
+        : startFuelLevel !== undefined
+        ? startFuelLevel
+        : null;
+
+    const calcStartLiters =
+      startFuelLiters !== undefined && startFuelLiters !== null
+        ? startFuelLiters
+        : startFuelLevel !== undefined && startFuelLevel !== null && tankCapacity > 0
+        ? Math.round((startFuelLevel / 100) * tankCapacity)
+        : null;
+
+    const calcEndLevel =
+      endFuelLiters !== undefined && endFuelLiters !== null && tankCapacity > 0
+        ? Math.round((endFuelLiters / tankCapacity) * 100)
+        : endFuelLevel !== undefined
+        ? endFuelLevel
+        : null;
+
+    const calcEndLiters =
+      endFuelLiters !== undefined && endFuelLiters !== null
+        ? endFuelLiters
+        : endFuelLevel !== undefined && endFuelLevel !== null && tankCapacity > 0
+        ? Math.round((endFuelLevel / 100) * tankCapacity)
+        : null;
 
     let assignDate = new Date();
     if (date) {
@@ -451,8 +547,10 @@ router.post("/direct", async (req, res) => {
           returnedAt: assignDate,
           startHours,
           endHours,
-          startFuelLevel: startFuelLevel !== undefined ? startFuelLevel : null,
-          endFuelLevel: endFuelLevel !== undefined ? endFuelLevel : null,
+          startFuelLevel: calcStartLevel,
+          startFuelLiters: calcStartLiters,
+          endFuelLevel: calcEndLevel,
+          endFuelLiters: calcEndLiters,
           isOperational,
           assignNotes: notes || "Direktno evidentirano zaduženje (rešena neusklađenost)",
           returnNotes: notes || null,
@@ -470,6 +568,11 @@ router.post("/direct", async (req, res) => {
         data: {
           status: newMachineStatus,
           currentHours: updatedCurrentHours,
+          ...(calcEndLiters !== null
+            ? { currentFuelLiters: calcEndLiters }
+            : calcStartLiters !== null
+            ? { currentFuelLiters: calcStartLiters }
+            : {}),
         },
       }),
     ];
@@ -540,6 +643,8 @@ const updateAssignmentSchema = z.object({
   endHours: z.number().nonnegative("Krajnji radni sati ne mogu biti negativni").optional().nullable(),
   startFuelLevel: z.number().min(0).max(100).optional().nullable(),
   endFuelLevel: z.number().min(0).max(100).optional().nullable(),
+  startFuelLiters: z.number().nonnegative("Početno gorivo ne može biti negativno").optional().nullable(),
+  endFuelLiters: z.number().nonnegative("Krajnje gorivo ne može biti negativno").optional().nullable(),
   isOperational: z.boolean().optional(),
   assignNotes: z.string().max(500).optional().nullable(),
   returnNotes: z.string().max(500).optional().nullable(),
@@ -601,6 +706,25 @@ router.put("/:id", async (req, res) => {
     }
 
     const updateData = { ...parsed.data };
+
+    const tankCapacity = existing.machine?.tankCapacityLiters || 200;
+    if (updateData.startFuelLiters !== undefined && updateData.startFuelLiters !== null && updateData.startFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Početno gorivo (${updateData.startFuelLiters} L) ne može biti veće od kapaciteta rezervoara mašine "${existing.machine?.name}" (${tankCapacity} L).`,
+      });
+    }
+    if (updateData.endFuelLiters !== undefined && updateData.endFuelLiters !== null && updateData.endFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Krajnje gorivo (${updateData.endFuelLiters} L) ne može biti veće od kapaciteta rezervoara mašine "${existing.machine?.name}" (${tankCapacity} L).`,
+      });
+    }
+
+    if (updateData.startFuelLiters !== undefined && updateData.startFuelLiters !== null && tankCapacity > 0) {
+      updateData.startFuelLevel = Math.round((updateData.startFuelLiters / tankCapacity) * 100);
+    }
+    if (updateData.endFuelLiters !== undefined && updateData.endFuelLiters !== null && tankCapacity > 0) {
+      updateData.endFuelLevel = Math.round((updateData.endFuelLiters / tankCapacity) * 100);
+    }
 
     // Validacija radnih sati
     const targetStartHours =

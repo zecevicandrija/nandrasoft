@@ -270,6 +270,17 @@ router.post("/:id/accept", async (req, res) => {
       });
     }
 
+    // Provera kapaciteta rezervoara mašine
+    const tankCapacity = order.machine?.tankCapacityLiters || 200;
+    if (startFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Nije moguće uneti više od maksimalnog kapaciteta rezervoara mašine "${order.machine?.name}" (${tankCapacity} L). Pokušano zaduženje: ${startFuelLiters} L.`,
+      });
+    }
+
+    const calculatedStartFuelLevel =
+      tankCapacity > 0 ? Math.round((startFuelLiters / tankCapacity) * 100) : null;
+
     const initialHours =
       startHours !== undefined && startHours !== null
         ? startHours
@@ -284,6 +295,7 @@ router.post("/:id/accept", async (req, res) => {
           parcelId: order.parcelId || null,
           workOrderId: order.id,
           startFuelLiters,
+          startFuelLevel: calculatedStartFuelLevel,
           startHours: initialHours,
           assignNotes: notes || `Zaduženo prihvatanjem radnog naloga ${order.orderNumber}`,
           status: "ZADUZENA",
@@ -464,9 +476,66 @@ router.patch("/:id/status", async (req, res) => {
       return res.status(404).json({ error: "Radni nalog nije pronađen." });
     }
 
-    // Samo rukovodilac/direktor može otkazati, a radnik može označiti U_TOKU
-    if (status === "OTKAZAN" && !["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
-      return res.status(403).json({ error: "Samo rukovodilac može otkazati nalog." });
+    // Samo rukovodilac/direktor može otkazati ili ponovo aktivirati nalog
+    if (
+      (status === "OTKAZAN" || order.status === "OTKAZAN") &&
+      !["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)
+    ) {
+      return res.status(403).json({ error: "Samo rukovodilac ili direktor može otkazati ili ponovo aktivirati nalog." });
+    }
+
+    // Ako se nalog otkazuje:
+    if (status === "OTKAZAN") {
+      // 1. Ako postoji aktivno zaduženje mašine za ovaj nalog, automatski ga razdužujemo i oslobađamo mašinu
+      const activeAssignment = await prisma.machineAssignment.findFirst({
+        where: { workOrderId: order.id, status: "ZADUZENA" },
+      });
+      if (activeAssignment) {
+        await prisma.machineAssignment.update({
+          where: { id: activeAssignment.id },
+          data: {
+            status: "RAZDUZENA",
+            returnedAt: new Date(),
+            returnNotes: "Nalog otkazan od strane rukovodioca.",
+          },
+        });
+        if (order.machineId) {
+          await prisma.machine.update({
+            where: { id: order.machineId },
+            data: { status: "SLOBODNA" },
+          });
+        }
+      }
+
+      // 2. Ako je vezano za servis mehanizacije, otkazujemo i maintenance zapis i oslobađamo mašinu
+      if (order.maintenanceId) {
+        await prisma.maintenanceIssue.update({
+          where: { id: order.maintenanceId },
+          data: { status: "OTKAZAN" },
+        });
+        if (order.machineId) {
+          await prisma.machine.update({
+            where: { id: order.machineId },
+            data: { status: "SLOBODNA" },
+          });
+        }
+      }
+    }
+
+    // Ako se nalog ponovo aktivira iz statusa OTKAZAN:
+    if (order.status === "OTKAZAN" && status !== "OTKAZAN") {
+      if (order.maintenanceId) {
+        await prisma.maintenanceIssue.update({
+          where: { id: order.maintenanceId },
+          data: { status: "OTVOREN" },
+        });
+        if (order.machineId) {
+          await prisma.machine.update({
+            where: { id: order.machineId },
+            data: { status: "SERVIS" },
+          });
+        }
+      }
     }
 
     const updated = await prisma.workOrder.update({
@@ -478,6 +547,26 @@ router.patch("/:id/status", async (req, res) => {
         attachment: true,
         parcel: true,
         workType: true,
+      },
+    });
+
+    // Zapiši u revizorski trag (AuditLog)
+    await prisma.auditLog.create({
+      data: {
+        entityType: "WorkOrder",
+        entityId: order.id,
+        action: status === "OTKAZAN" ? "STORNO" : "IZMENA",
+        userId: req.user.id,
+        userName: req.user.name,
+        userRole: req.user.role,
+        description:
+          status === "OTKAZAN"
+            ? `Otkazan radni nalog ${order.orderNumber}`
+            : order.status === "OTKAZAN"
+            ? `Ponovo aktiviran radni nalog ${order.orderNumber} (prebačen u status ${status})`
+            : `Promenjen status radnog naloga ${order.orderNumber} sa ${order.status} na ${status}`,
+        oldValues: { status: order.status },
+        newValues: { status },
       },
     });
 
