@@ -16,6 +16,8 @@ import {
   X,
   History,
   RefreshCw,
+  RotateCcw,
+  Pencil,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
@@ -93,6 +95,7 @@ const RadionicaKvarovi: React.FC = () => {
   const [resolvePartsCost, setResolvePartsCost] = useState<string | number>('');
   const [resolveLaborCost, setResolveLaborCost] = useState<string | number>('');
   const [submittingResolve, setSubmittingResolve] = useState(false);
+  const [isEditingCompletedReport, setIsEditingCompletedReport] = useState(false);
 
   // New Remont Order Modal State (Manager / Director)
   const [isRemontModalOpen, setIsRemontModalOpen] = useState(false);
@@ -270,6 +273,25 @@ const RadionicaKvarovi: React.FC = () => {
     }
   };
 
+  // Pomoćna funkcija: proverava da li je nalog završen DANAS (isti kalendarski dan)
+  const isFinishedToday = (order: any) => {
+    if (order.status !== 'ZAVRSEN') return false;
+    const dateVal = order.maintenance?.repairedAt || order.updatedAt || order.orderDate;
+    if (!dateVal) return false;
+    const d = new Date(dateVal);
+    const now = new Date();
+    return (
+      now.getFullYear() === d.getFullYear() &&
+      now.getMonth() === d.getMonth() &&
+      now.getDate() === d.getDate()
+    );
+  };
+
+  const displayedRemontOrders = remontOrders.filter((order) => {
+    if (order.status !== 'ZAVRSEN') return true;
+    return isFinishedToday(order);
+  });
+
   // Otvaranje modala za završetak popravke
   const handleOpenResolveModal = (issue: any) => {
     setSelectedIssueToResolve(issue);
@@ -279,9 +301,64 @@ const RadionicaKvarovi: React.FC = () => {
     setResolveLubricantLiters('');
     setResolvePartsCost('');
     setResolveLaborCost('');
+    setIsEditingCompletedReport(false);
   };
 
-  // Slanje završetka popravke
+  // Otvaranje modala za izmenu postojećeg izveštaja završenog servisa
+  const handleOpenEditResolveModal = (order: any) => {
+    const issue = order.maintenance || order;
+    setSelectedIssueToResolve(issue);
+    setResolveRepairNotes(issue.repairNotes || '');
+    setResolvePartsReplaced(issue.partsReplaced || '');
+    setResolveLubricantType(issue.lubricantType || LUBRICANT_OPTIONS[0]);
+    setResolveLubricantLiters(
+      issue.lubricantLiters !== null && issue.lubricantLiters !== undefined
+        ? String(issue.lubricantLiters)
+        : ''
+    );
+    setResolvePartsCost(
+      issue.partsCost !== null && issue.partsCost !== undefined ? String(issue.partsCost) : ''
+    );
+    setResolveLaborCost(
+      issue.laborCost !== null && issue.laborCost !== undefined ? String(issue.laborCost) : ''
+    );
+    setIsEditingCompletedReport(true);
+  };
+
+  // Poništavanje završetka popravke (vrati nalog u rad i mašinu u servis)
+  const handleReopenRemont = async (order: any) => {
+    const issueId = order.maintenance?.id || order.id;
+    if (!issueId) return;
+
+    if (
+      !window.confirm(
+        `Da li ste sigurni da želite da poništite završetak remonta za mašinu "${order.machine?.name}" i vratite nalog u rad? Mašina će se vratiti u status SERVIS.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/maintenance/issues/${issueId}/reopen`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'Nalog je uspešno vraćen u rad!');
+        fetchStats();
+        fetchIssues();
+        fetchRemontOrders();
+        fetchHistory();
+      } else {
+        showToast(data.error || 'Greška pri vraćanju naloga u rad.', 'error');
+      }
+    } catch (err) {
+      showToast('Greška na serveru.', 'error');
+    }
+  };
+
+  // Slanje završetka ili izmene popravke
   const handleResolveSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedIssueToResolve) return;
@@ -299,8 +376,9 @@ const RadionicaKvarovi: React.FC = () => {
 
     setSubmittingResolve(true);
     try {
+      const method = isEditingCompletedReport ? 'PUT' : 'POST';
       const res = await fetch(`${API}/maintenance/issues/${selectedIssueToResolve.id}/resolve`, {
-        method: 'POST',
+        method,
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
@@ -316,15 +394,21 @@ const RadionicaKvarovi: React.FC = () => {
 
       if (res.ok) {
         const data = await res.json();
-        showToast(data.message || 'Popravka uspešno evidentirana!');
+        showToast(
+          data.message ||
+            (isEditingCompletedReport
+              ? 'Izveštaj o servisu je uspešno ažuriran!'
+              : 'Popravka uspešno evidentirana!')
+        );
         setSelectedIssueToResolve(null);
+        setIsEditingCompletedReport(false);
         fetchStats();
         fetchIssues();
         if (activeTab === 'nalozi') fetchRemontOrders();
         if (activeTab === 'istorijat') fetchHistory();
       } else {
         const data = await res.json();
-        showToast(data.error || 'Greška pri završetku popravke.', 'error');
+        showToast(data.error || 'Greška pri obradi popravke.', 'error');
       }
     } catch (err) {
       showToast('Greška na serveru.', 'error');
@@ -827,18 +911,19 @@ const RadionicaKvarovi: React.FC = () => {
               <div className={styles.emptyState}>
                 <p>Učitavanje servisnih radnih naloga...</p>
               </div>
-            ) : remontOrders.length === 0 ? (
+            ) : displayedRemontOrders.length === 0 ? (
               <div className={styles.emptyState}>
                 <div className={styles.emptyStateIcon}>
                   <ClipboardList size={32} />
                 </div>
                 <h4>Nema otvorenih naloga za remont</h4>
-                <p>Rukovodilac trenutno nije izdao nijedan nalog za planski servis ili remont.</p>
+                <p>Trenutno nema aktivnih naloga niti naloga završenih danas. Prethodni završeni servisi nalaze se u Tabu 3: Servisna knjižica.</p>
               </div>
             ) : (
               <div className={styles.cardsGrid}>
-                {remontOrders.map((order) => {
+                {displayedRemontOrders.map((order) => {
                   const isDone = order.status === 'ZAVRSEN';
+                  const isTodayDone = isFinishedToday(order);
 
                   return (
                     <div
@@ -877,7 +962,9 @@ const RadionicaKvarovi: React.FC = () => {
                             }`}
                           >
                             {isDone
-                              ? 'ZAVRŠEN'
+                              ? isTodayDone
+                                ? 'ZAVRŠEN DANAS (DO 23:59h)'
+                                : 'ZAVRŠEN'
                               : order.maintenance?.status === 'CEKA_DELOVE'
                               ? 'ČEKA DELOVE'
                               : order.status === 'U_TOKU' || order.maintenance?.status === 'U_RADU'
@@ -1000,6 +1087,34 @@ const RadionicaKvarovi: React.FC = () => {
                               )}
                             </>
                           )}
+
+                          {isDone && isTodayDone && (
+                            <>
+                              <button
+                                type="button"
+                                className={styles.btnActionWait}
+                                onClick={() => handleReopenRemont(order)}
+                                title="Poništi završetak i vrati mašinu u status SERVIS"
+                                style={{
+                                  backgroundColor: '#fef3c7',
+                                  color: '#b45309',
+                                  border: '1px solid #fde68a',
+                                }}
+                              >
+                                <RotateCcw size={14} />
+                                <span>Vrati u rad (Poništi)</span>
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.btnActionTake}
+                                onClick={() => handleOpenEditResolveModal(order)}
+                                title="Izmeni izveštaj o popravci, utrošeno ulje ili troškove delova"
+                              >
+                                <Pencil size={14} />
+                                <span>Izmeni izveštaj</span>
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1088,7 +1203,7 @@ const RadionicaKvarovi: React.FC = () => {
                                 <strong>{item.lubricantType}</strong>
                                 {item.lubricantLiters && (
                                   <div style={{ color: '#16a34a', fontWeight: 700 }}>
-                                    {item.lubricantLiters} Litara
+                                    {item.lubricantLiters} L
                                   </div>
                                 )}
                               </div>
@@ -1215,8 +1330,17 @@ const RadionicaKvarovi: React.FC = () => {
             <div className={styles.modalCard}>
               <div className={styles.modalHeader}>
                 <h3>
-                  <CheckCircle2 size={22} style={{ color: '#16a34a' }} />
-                  Evidentiraj popravku i oslobodi mašinu
+                  {isEditingCompletedReport ? (
+                    <>
+                      <Pencil size={22} style={{ color: '#0284c7' }} />
+                      <span>Izmeni izveštaj o popravci</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 size={22} style={{ color: '#16a34a' }} />
+                      <span>Evidentiraj popravku i oslobodi mašinu</span>
+                    </>
+                  )}
                 </h3>
                 <button
                   className={styles.modalCloseBtn}
@@ -1324,7 +1448,11 @@ const RadionicaKvarovi: React.FC = () => {
                   >
                     <CheckCircle2 size={18} />
                     <span>
-                      {submittingResolve ? 'Snimanje...' : 'Završi popravku i oslobodi mašinu'}
+                      {submittingResolve
+                        ? 'Snimanje...'
+                        : isEditingCompletedReport
+                        ? 'Sačuvaj izmene izveštaja'
+                        : 'Završi popravku i oslobodi mašinu'}
                     </span>
                   </button>
                 </div>

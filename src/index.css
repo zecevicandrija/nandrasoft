@@ -8,6 +8,8 @@
   --bg-card-secondary: #f1f5f9;
   --bg-hover: #f1f5f9;
   --bg-input: #ffffff;
+  --bg-surface: #ffffff;
+  --card-bg: #ffffff;
   --bg-modal-overlay: rgba(15, 23, 42, 0.5);
 
   --border-color: #e2e8f0;
@@ -79,6 +81,8 @@
   --bg-card-secondary: #1a243b;
   --bg-hover: #1b263e;
   --bg-input: #0c121e;
+  --bg-surface: #131b2c;
+  --card-bg: #131b2c;
   --bg-modal-overlay: rgba(0, 0, 0, 0.75);
 
   --border-color: #243046;

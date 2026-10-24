@@ -494,3 +494,76 @@
   font-size: 0.8rem;
   color: var(--text-secondary);
 }
+
+/* Invalid Input State in Light & Dark Mode */
+.fieldInputError {
+  border-color: #ef4444 !important;
+  background-color: rgba(239, 68, 68, 0.08) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .fieldInputError {
+  border-color: #ef4444 !important;
+  background-color: rgba(239, 68, 68, 0.16) !important;
+  color: #f8fafc !important;
+}
+
+.fieldInputError:focus {
+  border-color: #f87171 !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25) !important;
+}
+
+.fieldErrorText {
+  color: #dc2626;
+  font-size: 0.82rem;
+  font-weight: 700;
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-theme="dark"] .fieldErrorText {
+  color: #f87171;
+}
+
+/* Machine & Fuel Status Cards with Dark Mode Support */
+.machineStatusCardTeal {
+  font-size: 0.85rem;
+  color: var(--role-operater-text);
+  background-color: var(--role-operater-bg);
+  border: 1.5px solid var(--role-operater-border);
+  padding: 0.65rem 0.85rem;
+  border-radius: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.machineStatusCardBlue {
+  font-size: 0.85rem;
+  color: var(--role-rukovodilac-text);
+  background-color: var(--role-rukovodilac-bg);
+  border: 1.5px solid var(--role-rukovodilac-border);
+  padding: 0.65rem 0.85rem;
+  border-radius: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.machineStatusCardPlaceholder {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  background-color: var(--bg-secondary);
+  border: 1px dashed var(--border-color);
+  padding: 0.65rem 0.85rem;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

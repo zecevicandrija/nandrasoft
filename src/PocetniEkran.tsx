@@ -116,6 +116,14 @@ const PocetniEkran: React.FC = () => {
     e.preventDefault();
     if (!todayOrder) return;
     setAcceptError('');
+
+    const maxTank = todayOrder.machine?.tankCapacityLiters;
+    const fuelNum = parseFloat(String(acceptFuelLiters));
+    if (maxTank && fuelNum > maxTank) {
+      setAcceptError(`Količina goriva (${fuelNum} L) ne može biti veća od kapaciteta rezervoara mašine (${maxTank} L).`);
+      return;
+    }
+
     setAcceptLoading(true);
 
     try {
@@ -472,50 +480,50 @@ const PocetniEkran: React.FC = () => {
                   )}
 
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
-                      Početno stanje goriva u rezervoaru (litara) *
-                    </label>
-                    <input
-                      type="number"
-                      step="1"
-                      min="0"
-                      max={todayOrder.machine?.tankCapacityLiters || 1000}
-                      style={{
-                        width: '100%',
-                        padding: '0.65rem 0.85rem',
-                        borderRadius: '6px',
-                        border: '1.5px solid var(--border-color, #e5e7eb)',
-                        fontSize: '0.95rem',
-                        boxSizing: 'border-box',
-                      }}
-                      placeholder="npr. 180"
-                      value={acceptFuelLiters}
-                      onChange={(e) => setAcceptFuelLiters(e.target.value)}
-                      required
-                    />
-                    {todayOrder.machine?.tankCapacityLiters && (
-                      <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
-                        <button
-                          type="button"
-                          onClick={() => setAcceptFuelLiters(todayOrder.machine.tankCapacityLiters)}
-                          style={{ fontSize: '0.75rem', padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
-                        >
-                          Pun (100%)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setAcceptFuelLiters(Math.round(todayOrder.machine.tankCapacityLiters * 0.75))}
-                          style={{ fontSize: '0.75rem', padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
-                        >
-                          3/4 (75%)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setAcceptFuelLiters(Math.round(todayOrder.machine.tankCapacityLiters * 0.5))}
-                          style={{ fontSize: '0.75rem', padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
-                        >
-                          Pola (50%)
-                        </button>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                      <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                        Početno stanje goriva u rezervoaru (litara) *
+                      </label>
+                      {todayOrder.machine?.tankCapacityLiters && (
+                        <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#0284c7' }}>
+                          Maksimalno: {todayOrder.machine.tankCapacityLiters} L
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <input
+                        type="number"
+                        step="1"
+                        min="0"
+                        max={todayOrder.machine?.tankCapacityLiters || 1000}
+                        style={{
+                          width: '100%',
+                          padding: '0.65rem 3rem 0.65rem 0.85rem',
+                          borderRadius: '6px',
+                          border: `1.5px solid ${todayOrder.machine?.tankCapacityLiters && Number(acceptFuelLiters) > todayOrder.machine.tankCapacityLiters ? '#ef4444' : 'var(--border-color, #e5e7eb)'}`,
+                          fontSize: '0.95rem',
+                          boxSizing: 'border-box',
+                        }}
+                        placeholder={`npr. ${Math.min(180, todayOrder.machine?.tankCapacityLiters || 200)}`}
+                        value={acceptFuelLiters}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const maxCap = todayOrder.machine?.tankCapacityLiters;
+                          if (maxCap && val !== '' && Number(val) > maxCap) {
+                            setAcceptFuelLiters(maxCap);
+                            return;
+                          }
+                          setAcceptFuelLiters(val);
+                        }}
+                        required
+                      />
+                      <span style={{ position: 'absolute', right: '10px', fontSize: '0.8rem', fontWeight: 700, color: '#64748b', pointerEvents: 'none' }}>
+                        Litara
+                      </span>
+                    </div>
+                    {todayOrder.machine?.tankCapacityLiters && Number(acceptFuelLiters) > todayOrder.machine.tankCapacityLiters && (
+                      <div style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.25rem', fontWeight: 600 }}>
+                        Količina ne može biti veća od kapaciteta mašine ({todayOrder.machine.tankCapacityLiters} L)!
                       </div>
                     )}
                   </div>

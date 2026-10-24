@@ -18,6 +18,8 @@ import {
   Pencil,
   Lock,
   Info,
+  RotateCcw,
+  AlertTriangle,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
@@ -26,6 +28,12 @@ import styles from './RadniNaloziDashboard.module.css';
 interface Worker {
   id: string;
   name: string;
+  type?: 'STALNI' | 'SEZONAC';
+  user?: {
+    id: string;
+    email: string;
+    role: string;
+  } | null;
 }
 
 interface Machine {
@@ -159,6 +167,16 @@ const RadniNaloziDashboard: React.FC = () => {
   });
   const [editModalLoading, setEditModalLoading] = useState(false);
   const [editModalError, setEditModalError] = useState('');
+
+  // Modal za potvrdu otkazivanja radnog naloga
+  const [orderToCancel, setOrderToCancel] = useState<WorkOrder | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelError, setCancelError] = useState('');
+
+  // Modal za ponovno aktiviranje radnog naloga
+  const [orderToReactivate, setOrderToReactivate] = useState<WorkOrder | null>(null);
+  const [reactivateLoading, setReactivateLoading] = useState(false);
+  const [reactivateError, setReactivateError] = useState('');
 
   // Učitavanje šifarnika
   useEffect(() => {
@@ -312,6 +330,14 @@ const RadniNaloziDashboard: React.FC = () => {
     e.preventDefault();
     if (!selectedOrderToAccept) return;
     setAcceptError('');
+
+    const maxTank = selectedOrderToAccept.machine?.tankCapacityLiters;
+    const fuelNum = parseFloat(String(acceptFuelLiters));
+    if (maxTank && fuelNum > maxTank) {
+      setAcceptError(`Količina goriva (${fuelNum} L) ne može biti veća od kapaciteta rezervoara mašine (${maxTank} L).`);
+      return;
+    }
+
     setAcceptLoading(true);
 
     try {
@@ -340,21 +366,83 @@ const RadniNaloziDashboard: React.FC = () => {
     }
   };
 
-  // Promena statusa naloga
-  const handleStatusChange = async (orderId: string, newStatus: string) => {
+  // Potvrda otkazivanja radnog naloga iz modala
+  const handleConfirmCancel = async () => {
+    if (!orderToCancel) return;
+    setCancelLoading(true);
+    setCancelError('');
     try {
-      const res = await fetch(`${API}/work-orders/${orderId}/status`, {
+      const res = await fetch(`${API}/work-orders/${orderToCancel.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({ status: 'OTKAZAN' }),
       });
-      if (res.ok) {
-        fetchOrders();
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Greška pri otkazivanju radnog naloga.');
       }
-    } catch (err) {
-      console.error('Greška pri izmeni statusa:', err);
+      setOrderToCancel(null);
+      fetchOrders();
+    } catch (err: any) {
+      setCancelError(err.message || 'Greška pri otkazivanju radnog naloga.');
+    } finally {
+      setCancelLoading(false);
     }
+  };
+
+  // Potvrda ponovnog aktiviranja radnog naloga iz modala
+  const handleConfirmReactivate = async () => {
+    if (!orderToReactivate) return;
+    setReactivateLoading(true);
+    setReactivateError('');
+    try {
+      // Ako nalog ima definisanog radnika, prebacujemo ga u DODELJEN, inače PLANIRAN
+      const targetStatus = orderToReactivate.workerId ? 'DODELJEN' : 'PLANIRAN';
+      const res = await fetch(`${API}/work-orders/${orderToReactivate.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ status: targetStatus }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Greška pri ponovnom aktiviranju radnog naloga.');
+      }
+      setOrderToReactivate(null);
+      fetchOrders();
+    } catch (err: any) {
+      setReactivateError(err.message || 'Greška pri ponovnom aktiviranju radnog naloga.');
+    } finally {
+      setReactivateLoading(false);
+    }
+  };
+
+  // Filtriranje radnika na osnovu tipa naloga:
+  // - RAD_NJIVA: samo operateri / traktoristi (isključeni mehaničari i rukovodioci)
+  // - REMONT_SERVIS: samo mehaničari
+  // - OSTALO: svi radnici
+  const getFilteredWorkers = (type: string) => {
+    if (type === 'REMONT_SERVIS') {
+      return workers.filter(
+        (w) =>
+          w.user?.role === 'MEHANICAR' ||
+          w.name.toLowerCase().includes('mehaničar') ||
+          w.name.toLowerCase().includes('mehanicar')
+      );
+    }
+    if (type === 'RAD_NJIVA') {
+      return workers.filter((w) => {
+        const role = w.user?.role;
+        const isMechanic =
+          role === 'MEHANICAR' ||
+          w.name.toLowerCase().includes('mehaničar') ||
+          w.name.toLowerCase().includes('mehanicar');
+        const isManagement = role === 'DIREKTOR' || role === 'RUKOVODILAC';
+        return !isMechanic && !isManagement;
+      });
+    }
+    return workers;
   };
 
   // Helper za proveru mogućnosti izmene radnog naloga
@@ -623,17 +711,29 @@ const RadniNaloziDashboard: React.FC = () => {
                       </div>
 
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
-                        <span className={`${styles.statusBadge} ${styles[`status${order.status}`]}`}>
-                          {order.status === 'DODELJEN'
-                            ? 'Dodeljen'
-                            : order.status === 'U_TOKU'
-                            ? 'U toku'
-                            : order.status === 'ZAVRSEN'
-                            ? 'Završen'
-                            : order.status === 'OTKAZAN'
-                            ? 'Otkazan'
-                            : 'Planiran'}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                          {order.priority === 'KRITICNO' && (
+                            <span className={styles.priorityBadgeKriticno}>
+                              ⚡ Kritično
+                            </span>
+                          )}
+                          {order.priority === 'HITNO' && (
+                            <span className={styles.priorityBadgeHitno}>
+                              ⚠️ Hitno
+                            </span>
+                          )}
+                          <span className={`${styles.statusBadge} ${styles[`status${order.status}`]}`}>
+                            {order.status === 'DODELJEN'
+                              ? 'Dodeljen'
+                              : order.status === 'U_TOKU'
+                              ? 'U toku'
+                              : order.status === 'ZAVRSEN'
+                              ? 'Završen'
+                              : order.status === 'OTKAZAN'
+                              ? 'Otkazan'
+                              : 'Planiran'}
+                          </span>
+                        </div>
                         <span
                           className={isRemont ? styles.typeBadgeRemont : styles.typeBadgeNjiva}
                           style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
@@ -779,11 +879,30 @@ const RadniNaloziDashboard: React.FC = () => {
 
                     {isManager && order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
                       <button
+                        type="button"
                         className={styles.cancelBtn}
-                        onClick={() => handleStatusChange(order.id, 'OTKAZAN')}
+                        onClick={() => {
+                          setCancelError('');
+                          setOrderToCancel(order);
+                        }}
                         title="Otkaži nalog"
                       >
                         Otkaži
+                      </button>
+                    )}
+
+                    {isManager && order.status === 'OTKAZAN' && (
+                      <button
+                        type="button"
+                        className={styles.reactivateBtn}
+                        onClick={() => {
+                          setReactivateError('');
+                          setOrderToReactivate(order);
+                        }}
+                        title="Ponovo aktiviraj nalog"
+                      >
+                        <RotateCcw size={14} />
+                        <span>Ponovo aktiviraj</span>
                       </button>
                     )}
                   </div>
@@ -817,7 +936,16 @@ const RadniNaloziDashboard: React.FC = () => {
                     <select
                       className={styles.modalSelect}
                       value={formData.orderType}
-                      onChange={(e) => setFormData({ ...formData, orderType: e.target.value })}
+                      onChange={(e) => {
+                        const newType = e.target.value;
+                        const filtered = getFilteredWorkers(newType);
+                        const isCurrentValid = filtered.some((w) => w.id === formData.workerId);
+                        setFormData({
+                          ...formData,
+                          orderType: newType,
+                          workerId: isCurrentValid ? formData.workerId : '',
+                        });
+                      }}
                     >
                       <option value="RAD_NJIVA">Rad na njivi</option>
                       <option value="REMONT_SERVIS">Remont & Servis mašine</option>
@@ -825,6 +953,21 @@ const RadniNaloziDashboard: React.FC = () => {
                     </select>
                   </div>
 
+                  <div className={styles.formGroup}>
+                    <label>Prioritet *</label>
+                    <select
+                      className={styles.modalSelect}
+                      value={formData.priority}
+                      onChange={(e) => setFormData({ ...formData, priority: e.target.value })}
+                    >
+                      <option value="NORMALNO">Normalno</option>
+                      <option value="HITNO">Hitno</option>
+                      <option value="KRITICNO">Kritično</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
                     <label>Datum za kada se planira *</label>
                     <input
@@ -835,21 +978,46 @@ const RadniNaloziDashboard: React.FC = () => {
                       required
                     />
                   </div>
+
+                  <div className={styles.formGroup}>
+                    <label>Radna smena</label>
+                    <select
+                      className={styles.modalSelect}
+                      value={formData.shift}
+                      onChange={(e) => setFormData({ ...formData, shift: e.target.value as any })}
+                    >
+                      <option value="PRVA">1. Smena (Jutarnja)</option>
+                      <option value="DRUGA">2. Smena (Popodnevna)</option>
+                      <option value="TRECA">3. Smena (Noćna)</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroupFull}>
-                    <label>Radnik / Mehaničar kome se nalog izdaje *</label>
+                    <label>
+                      {formData.orderType === 'REMONT_SERVIS'
+                        ? 'Dodeljeni mehaničar / serviser *'
+                        : formData.orderType === 'RAD_NJIVA'
+                        ? 'Dodeljeni operater / traktorista *'
+                        : 'Radnik kome se nalog izdaje *'}
+                    </label>
                     <select
                       className={styles.modalSelect}
                       value={formData.workerId}
                       onChange={(e) => setFormData({ ...formData, workerId: e.target.value })}
                       required
                     >
-                      <option value="">Izaberi radnika iz baze...</option>
-                      {workers.map((w) => (
+                      <option value="">
+                        {formData.orderType === 'REMONT_SERVIS'
+                          ? 'Izaberi mehaničara iz baze...'
+                          : formData.orderType === 'RAD_NJIVA'
+                          ? 'Izaberi operatera iz baze...'
+                          : 'Izaberi radnika iz baze...'}
+                      </option>
+                      {getFilteredWorkers(formData.orderType).map((w) => (
                         <option key={w.id} value={w.id}>
-                          {w.name}
+                          {w.name} {w.user?.role ? `(${w.user.role})` : w.type === 'SEZONAC' ? '(Sezonac)' : ''}
                         </option>
                       ))}
                     </select>
@@ -932,7 +1100,7 @@ const RadniNaloziDashboard: React.FC = () => {
 
                 {formData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
-                    <div className={styles.formGroup}>
+                    <div className={styles.formGroupFull}>
                       <label>Planirani obim rada (hektara)</label>
                       <input
                         type="number"
@@ -942,19 +1110,6 @@ const RadniNaloziDashboard: React.FC = () => {
                         value={formData.plannedAreaHa}
                         onChange={(e) => setFormData({ ...formData, plannedAreaHa: e.target.value })}
                       />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>Radna smena</label>
-                      <select
-                        className={styles.modalSelect}
-                        value={formData.shift}
-                        onChange={(e) => setFormData({ ...formData, shift: e.target.value as any })}
-                      >
-                        <option value="PRVA">1. Smena (Jutarnja)</option>
-                        <option value="DRUGA">2. Smena (Popodnevna)</option>
-                        <option value="TRECA">3. Smena (Noćna)</option>
-                      </select>
                     </div>
                   </div>
                 )}
@@ -1048,7 +1203,16 @@ const RadniNaloziDashboard: React.FC = () => {
                     <select
                       className={styles.modalSelect}
                       value={editFormData.orderType}
-                      onChange={(e) => setEditFormData({ ...editFormData, orderType: e.target.value as any })}
+                      onChange={(e) => {
+                        const newType = e.target.value as any;
+                        const filtered = getFilteredWorkers(newType);
+                        const isCurrentValid = filtered.some((w) => w.id === editFormData.workerId);
+                        setEditFormData({
+                          ...editFormData,
+                          orderType: newType,
+                          workerId: isCurrentValid ? editFormData.workerId : '',
+                        });
+                      }}
                     >
                       <option value="RAD_NJIVA">Rad na njivi</option>
                       <option value="REMONT_SERVIS">Remont & Servis mašine</option>
@@ -1070,17 +1234,29 @@ const RadniNaloziDashboard: React.FC = () => {
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroupFull}>
-                    <label>Radnik / Mehaničar kome se nalog izdaje *</label>
+                    <label>
+                      {editFormData.orderType === 'REMONT_SERVIS'
+                        ? 'Dodeljeni mehaničar / serviser *'
+                        : editFormData.orderType === 'RAD_NJIVA'
+                        ? 'Dodeljeni operater / traktorista *'
+                        : 'Radnik kome se nalog izdaje *'}
+                    </label>
                     <select
                       className={styles.modalSelect}
                       value={editFormData.workerId}
                       onChange={(e) => setEditFormData({ ...editFormData, workerId: e.target.value })}
                       required
                     >
-                      <option value="">Izaberi radnika iz baze...</option>
-                      {workers.map((w) => (
+                      <option value="">
+                        {editFormData.orderType === 'REMONT_SERVIS'
+                          ? 'Izaberi mehaničara iz baze...'
+                          : editFormData.orderType === 'RAD_NJIVA'
+                          ? 'Izaberi operatera iz baze...'
+                          : 'Izaberi radnika iz baze...'}
+                      </option>
+                      {getFilteredWorkers(editFormData.orderType).map((w) => (
                         <option key={w.id} value={w.id}>
-                          {w.name}
+                          {w.name} {w.user?.role ? `(${w.user.role})` : w.type === 'SEZONAC' ? '(Sezonac)' : ''}
                         </option>
                       ))}
                     </select>
@@ -1284,7 +1460,12 @@ const RadniNaloziDashboard: React.FC = () => {
 
                 {Boolean(selectedOrderToAccept.machine?.tankCapacityLiters && selectedOrderToAccept.machine.tankCapacityLiters > 0) ? (
                   <div className={styles.formGroup}>
-                    <label>Početno stanje goriva u rezervoaru (litara) *</label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                      <label style={{ margin: 0 }}>Početno stanje goriva u rezervoaru (litara) *</label>
+                      <span style={{ color: '#0284c7', fontWeight: 700, fontSize: '0.85rem' }}>
+                        Kapacitet: {selectedOrderToAccept.machine?.tankCapacityLiters} L
+                      </span>
+                    </div>
                     <div className={styles.fuelInputWrap}>
                       <input
                         type="number"
@@ -1292,78 +1473,33 @@ const RadniNaloziDashboard: React.FC = () => {
                         min="0"
                         max={selectedOrderToAccept.machine?.tankCapacityLiters || 1000}
                         className={styles.modalInput}
-                        placeholder="npr. 180"
+                        placeholder={`npr. ${Math.min(180, selectedOrderToAccept.machine?.tankCapacityLiters || 200)}`}
                         value={acceptFuelLiters}
-                        onChange={(e) => setAcceptFuelLiters(e.target.value)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const maxCap = selectedOrderToAccept.machine?.tankCapacityLiters;
+                          if (maxCap && val !== '' && Number(val) > maxCap) {
+                            setAcceptFuelLiters(maxCap);
+                            return;
+                          }
+                          setAcceptFuelLiters(val);
+                        }}
+                        style={
+                          selectedOrderToAccept.machine?.tankCapacityLiters &&
+                          Number(acceptFuelLiters) > selectedOrderToAccept.machine.tankCapacityLiters
+                            ? { borderColor: '#ef4444' }
+                            : undefined
+                        }
                         required
                       />
                       <span className={styles.fuelUnitBadge}>Litara</span>
                     </div>
-
-                    <div className={styles.fuelPresetsRow}>
-                      <button
-                        type="button"
-                        className={styles.fuelPresetBtn}
-                        onClick={() =>
-                          setAcceptFuelLiters(
-                            selectedOrderToAccept.machine?.tankCapacityLiters || 200
-                          )
-                        }
-                      >
-                        Pun (100% - {selectedOrderToAccept.machine?.tankCapacityLiters} L)
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.fuelPresetBtn}
-                        onClick={() =>
-                          setAcceptFuelLiters(
-                            Math.round(
-                              (selectedOrderToAccept.machine?.tankCapacityLiters || 200) * 0.75
-                            )
-                          )
-                        }
-                      >
-                        3/4 (75% -{' '}
-                        {Math.round(
-                          (selectedOrderToAccept.machine?.tankCapacityLiters || 200) * 0.75
-                        )}{' '}
-                        L)
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.fuelPresetBtn}
-                        onClick={() =>
-                          setAcceptFuelLiters(
-                            Math.round(
-                              (selectedOrderToAccept.machine?.tankCapacityLiters || 200) * 0.5
-                            )
-                          )
-                        }
-                      >
-                        Pola (50% -{' '}
-                        {Math.round(
-                          (selectedOrderToAccept.machine?.tankCapacityLiters || 200) * 0.5
-                        )}{' '}
-                        L)
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.fuelPresetBtn}
-                        onClick={() =>
-                          setAcceptFuelLiters(
-                            Math.round(
-                              (selectedOrderToAccept.machine?.tankCapacityLiters || 200) * 0.25
-                            )
-                          )
-                        }
-                      >
-                        1/4 (25% -{' '}
-                        {Math.round(
-                          (selectedOrderToAccept.machine?.tankCapacityLiters || 200) * 0.25
-                        )}{' '}
-                        L)
-                      </button>
-                    </div>
+                    {selectedOrderToAccept.machine?.tankCapacityLiters &&
+                      Number(acceptFuelLiters) > selectedOrderToAccept.machine.tankCapacityLiters && (
+                        <div style={{ color: '#ef4444', fontSize: '0.82rem', marginTop: '0.3rem', fontWeight: 600 }}>
+                          Količina goriva ne može biti veća od kapaciteta rezervoara ({selectedOrderToAccept.machine.tankCapacityLiters} L)!
+                        </div>
+                      )}
                   </div>
                 ) : (
                   <div
@@ -1437,6 +1573,245 @@ const RadniNaloziDashboard: React.FC = () => {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* Modal za potvrdu otkazivanja naloga */}
+        {orderToCancel && (
+          <div className={styles.modalBackdrop} onClick={() => !cancelLoading && setOrderToCancel(null)}>
+            <div
+              className={styles.modalContent}
+              style={{ maxWidth: '480px' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={styles.modalHeader}>
+                <h3 style={{ color: '#b91c1c' }}>
+                  <AlertTriangle size={22} color="#dc2626" />
+                  <span>Otkazivanje Radnog Naloga</span>
+                </h3>
+                <button
+                  type="button"
+                  className={styles.modalCloseBtn}
+                  onClick={() => !cancelLoading && setOrderToCancel(null)}
+                  disabled={cancelLoading}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className={styles.confirmDialogBody}>
+                <div className={styles.confirmWarningBox}>
+                  <AlertCircle size={22} style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <div>
+                    <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
+                      Da li stvarno želite da otkažete ovaj radni nalog?
+                    </div>
+                    <div style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>
+                      Radni nalog će biti prebačen u status <strong>Otkazan</strong>.
+                      Ukoliko se predomislite, nalog možete u svakom trenutku ponovo aktivirati.
+                    </div>
+                  </div>
+                </div>
+
+                {orderToCancel.status === 'U_TOKU' && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '0.75rem',
+                      background: '#fffbeb',
+                      border: '1px solid #fef3c7',
+                      borderLeft: '4px solid #f59e0b',
+                      padding: '0.85rem 1rem',
+                      borderRadius: '8px',
+                      color: '#92400e',
+                      fontSize: '0.84rem',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    <Info size={20} color="#d97706" style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <div>
+                      <strong style={{ display: 'block', marginBottom: '0.2rem', color: '#b45309' }}>
+                        Napomena: Radnik je već prihvatio ovaj nalog
+                      </strong>
+                      Otkazivanjem se mašina automatski oslobađa, a radni sati ostaju nepromenjeni. Ako je radnik već radio na parceli, preporučuje se da radnik sam prijavi prekid rada kako bi se evidentirali urađeni sati i gorivo.
+                    </div>
+                  </div>
+                )}
+
+                {cancelError && (
+                  <div style={{ padding: '0.75rem 1rem', background: '#fee2e2', color: '#b91c1c', borderRadius: '6px', fontSize: '0.85rem' }}>
+                    {cancelError}
+                  </div>
+                )}
+
+                <div className={styles.orderPreviewBox}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color, #e2e8f0)', paddingBottom: '0.4rem', fontWeight: 700 }}>
+                    <span>Broj naloga:</span>
+                    <span style={{ color: '#16a34a' }}>{orderToCancel.orderNumber}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Trenutni status:</span>
+                    <span style={{ fontWeight: 600 }}>
+                      {orderToCancel.status === 'U_TOKU'
+                        ? 'U toku (Mašina zadužena)'
+                        : orderToCancel.status === 'DODELJEN'
+                        ? 'Dodeljen'
+                        : orderToCancel.status}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Radnik:</span>
+                    <span style={{ fontWeight: 600 }}>{orderToCancel.worker?.name || 'Nije dodeljen'}</span>
+                  </div>
+                  {orderToCancel.parcel && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Parcela:</span>
+                      <span>{orderToCancel.parcel.name}</span>
+                    </div>
+                  )}
+                  {orderToCancel.workType && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Operacija:</span>
+                      <span>{orderToCancel.workType.name}</span>
+                    </div>
+                  )}
+                  {orderToCancel.machine && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Mašina:</span>
+                      <span>{orderToCancel.machine.name}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className={styles.modalFooter}>
+                <button
+                  type="button"
+                  className={styles.cancelModalBtn}
+                  onClick={() => setOrderToCancel(null)}
+                  disabled={cancelLoading}
+                >
+                  Odustani
+                </button>
+                <button
+                  type="button"
+                  className={styles.confirmCancelBtn}
+                  onClick={handleConfirmCancel}
+                  disabled={cancelLoading}
+                >
+                  {cancelLoading ? (
+                    <>
+                      <Loader2 size={16} className={styles.spinnerIcon} />
+                      <span>Otkazivanje...</span>
+                    </>
+                  ) : (
+                    <span>Da, otkaži nalog</span>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal za potvrdu ponovnog aktiviranja naloga */}
+        {orderToReactivate && (
+          <div className={styles.modalBackdrop} onClick={() => !reactivateLoading && setOrderToReactivate(null)}>
+            <div
+              className={styles.modalContent}
+              style={{ maxWidth: '480px' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={styles.modalHeader}>
+                <h3 style={{ color: '#15803d' }}>
+                  <RotateCcw size={20} color="#16a34a" />
+                  <span>Ponovno Aktiviranje Naloga</span>
+                </h3>
+                <button
+                  type="button"
+                  className={styles.modalCloseBtn}
+                  onClick={() => !reactivateLoading && setOrderToReactivate(null)}
+                  disabled={reactivateLoading}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className={styles.confirmDialogBody}>
+                <div className={styles.confirmInfoBox}>
+                  <RotateCcw size={22} style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <div>
+                    <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
+                      Da li želite ponovo da aktivirate ovaj radni nalog?
+                    </div>
+                    <div style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>
+                      Radni nalog <strong>{orderToReactivate.orderNumber}</strong> će biti vraćen u status <strong>Dodeljen</strong> i ponovo će se pojaviti radniku na listi zadataka za izvršenje.
+                    </div>
+                  </div>
+                </div>
+
+                {reactivateError && (
+                  <div style={{ padding: '0.75rem 1rem', background: '#fee2e2', color: '#b91c1c', borderRadius: '6px', fontSize: '0.85rem' }}>
+                    {reactivateError}
+                  </div>
+                )}
+
+                <div className={styles.orderPreviewBox}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color, #e2e8f0)', paddingBottom: '0.4rem', fontWeight: 700 }}>
+                    <span>Broj naloga:</span>
+                    <span style={{ color: '#16a34a' }}>{orderToReactivate.orderNumber}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Radnik:</span>
+                    <span style={{ fontWeight: 600 }}>{orderToReactivate.worker?.name || 'Nije dodeljen'}</span>
+                  </div>
+                  {orderToReactivate.parcel && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Parcela:</span>
+                      <span>{orderToReactivate.parcel.name}</span>
+                    </div>
+                  )}
+                  {orderToReactivate.workType && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Operacija:</span>
+                      <span>{orderToReactivate.workType.name}</span>
+                    </div>
+                  )}
+                  {orderToReactivate.machine && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Mašina:</span>
+                      <span>{orderToReactivate.machine.name}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className={styles.modalFooter}>
+                <button
+                  type="button"
+                  className={styles.cancelModalBtn}
+                  onClick={() => setOrderToReactivate(null)}
+                  disabled={reactivateLoading}
+                >
+                  Odustani
+                </button>
+                <button
+                  type="button"
+                  className={styles.confirmReactivateBtn}
+                  onClick={handleConfirmReactivate}
+                  disabled={reactivateLoading}
+                >
+                  {reactivateLoading ? (
+                    <>
+                      <Loader2 size={16} className={styles.spinnerIcon} />
+                      <span>Aktiviranje...</span>
+                    </>
+                  ) : (
+                    <span>Ponovo aktiviraj nalog</span>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}

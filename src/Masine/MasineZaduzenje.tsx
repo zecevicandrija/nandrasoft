@@ -54,14 +54,14 @@ const MasineZaduzenje: React.FC = () => {
   const [checkoutMachineId, setCheckoutMachineId] = useState('');
   const [checkoutWorkerId, setCheckoutWorkerId] = useState('');
   const [checkoutStartHours, setCheckoutStartHours] = useState<number | string>('');
-  const [checkoutFuel, setCheckoutFuel] = useState<number>(100);
+  const [checkoutFuelLiters, setCheckoutFuelLiters] = useState<number | string>('');
   const [checkoutNotes, setCheckoutNotes] = useState('');
 
   // Checkin Modal states
   const [checkinModalOpen, setCheckinModalOpen] = useState(false);
   const [selectedAssignment, setSelectedAssignment] = useState<any | null>(null);
   const [checkinEndHours, setCheckinEndHours] = useState<number | string>('');
-  const [checkinFuel, setCheckinFuel] = useState<number>(75);
+  const [checkinFuelLiters, setCheckinFuelLiters] = useState<number | string>('');
   const [checkinOperational, setCheckinOperational] = useState(true);
   const [checkinNotes, setCheckinNotes] = useState('');
 
@@ -81,15 +81,6 @@ const MasineZaduzenje: React.FC = () => {
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(currentUser?.role || '');
   const isOperator = currentUser?.role === 'OPERATER';
 
-  // Brzi podeoci za nivo goriva bazirani na kazaljki
-  const FUEL_GAUGE_PRESETS = [
-    { label: 'Pun (100%)', value: 100 },
-    { label: '3/4 (75%)', value: 75 },
-    { label: 'Pola (50%)', value: 50 },
-    { label: '1/4 (25%)', value: 25 },
-    { label: 'Rezerva (10%)', value: 10 },
-  ];
-
   // Search parametri (za direktno rešavanje neusklađenosti ili brzi završetak dana)
   const [searchParams] = useSearchParams();
   const isDirectParam = searchParams.get('direct') === 'true';
@@ -106,8 +97,8 @@ const MasineZaduzenje: React.FC = () => {
   const [directDate, setDirectDate] = useState(paramDate || new Date().toISOString().split('T')[0]);
   const [directStartHours, setDirectStartHours] = useState<number | string>('');
   const [directEndHours, setDirectEndHours] = useState<number | string>('');
-  const [directStartFuel, setDirectStartFuel] = useState<number>(100);
-  const [directEndFuel, setDirectEndFuel] = useState<number>(75);
+  const [directStartFuelLiters, setDirectStartFuelLiters] = useState<number | string>('');
+  const [directEndFuelLiters, setDirectEndFuelLiters] = useState<number | string>('');
   const [directOperational, setDirectOperational] = useState<boolean>(true);
   const [directNotes, setDirectNotes] = useState<string>('Direktno evidentirano zaduženje (rešena neusklađenost)');
 
@@ -166,12 +157,17 @@ const MasineZaduzenje: React.FC = () => {
   // Slobodne mašine za zaduženje
   const freeMachines = machinesData?.machines?.filter((m: any) => m.status === 'SLOBODNA') || [];
 
-  // Prilikom izbora mašine, automatski preuzmi njene trenutne radne sate
+  // Prilikom izbora mašine, automatski preuzmi njene trenutne radne sate i kapacitet goriva
   const handleSelectMachine = (machineId: string) => {
     setCheckoutMachineId(machineId);
     const m = machinesData?.machines?.find((item: any) => item.id === machineId);
     if (m) {
       setCheckoutStartHours(m.currentHours || 0);
+      setCheckoutFuelLiters(
+        m.currentFuelLiters !== undefined && m.currentFuelLiters !== null && m.currentFuelLiters > 0
+          ? m.currentFuelLiters
+          : m.tankCapacityLiters || ''
+      );
     }
   };
 
@@ -200,6 +196,7 @@ const MasineZaduzenje: React.FC = () => {
       setCheckoutMachineId('');
       setCheckoutWorkerId('');
       setCheckoutStartHours('');
+      setCheckoutFuelLiters('');
       setCheckoutNotes('');
 
       setActiveTab('active');
@@ -243,7 +240,13 @@ const MasineZaduzenje: React.FC = () => {
   const handleOpenCheckin = (assignment: any) => {
     setSelectedAssignment(assignment);
     setCheckinEndHours(assignment.startHours);
-    setCheckinFuel(assignment.startFuelLevel || 75);
+    setCheckinFuelLiters(
+      assignment.endFuelLiters !== null && assignment.endFuelLiters !== undefined
+        ? assignment.endFuelLiters
+        : assignment.startFuelLiters !== null && assignment.startFuelLiters !== undefined
+        ? assignment.startFuelLiters
+        : ''
+    );
     setCheckinOperational(true);
     setCheckinNotes('');
     setCheckinModalOpen(true);
@@ -261,11 +264,23 @@ const MasineZaduzenje: React.FC = () => {
       return;
     }
 
+    const selectedM = machinesData?.machines?.find((item: any) => item.id === checkoutMachineId);
+    const maxTank = selectedM?.tankCapacityLiters;
+    const fuelVal = Number(checkoutFuelLiters);
+
+    if (maxTank && fuelVal > maxTank) {
+      showToast(
+        `Količina goriva (${fuelVal} L) ne može biti veća od kapaciteta rezervoara mašine (${maxTank} L)!`,
+        'error'
+      );
+      return;
+    }
+
     checkoutMutation.mutate({
       machineId: checkoutMachineId,
       workerId: isOperator ? null : checkoutWorkerId,
       startHours: Number(checkoutStartHours),
-      startFuelLevel: checkoutFuel,
+      startFuelLiters: checkoutFuelLiters !== '' ? fuelVal : null,
       assignNotes: checkoutNotes || null,
     });
   };
@@ -283,10 +298,21 @@ const MasineZaduzenje: React.FC = () => {
       return;
     }
 
+    const maxTank = selectedAssignment.machine?.tankCapacityLiters;
+    const endFuelVal = Number(checkinFuelLiters);
+
+    if (maxTank && endFuelVal > maxTank) {
+      showToast(
+        `Količina goriva (${endFuelVal} L) ne može biti veća od kapaciteta rezervoara mašine (${maxTank} L)!`,
+        'error'
+      );
+      return;
+    }
+
     checkinMutation.mutate({
       assignmentId: selectedAssignment.id,
       endHours: endH,
-      endFuelLevel: checkinFuel,
+      endFuelLiters: checkinFuelLiters !== '' ? endFuelVal : null,
       isOperational: checkinOperational,
       returnNotes: checkinNotes || null,
     });
@@ -298,8 +324,14 @@ const MasineZaduzenje: React.FC = () => {
     setEditForm({
       startHours: assignment.startHours,
       endHours: assignment.endHours !== null && assignment.endHours !== undefined ? assignment.endHours : '',
-      startFuelLevel: assignment.startFuelLevel !== null && assignment.startFuelLevel !== undefined ? assignment.startFuelLevel : 100,
-      endFuelLevel: assignment.endFuelLevel !== null && assignment.endFuelLevel !== undefined ? assignment.endFuelLevel : 75,
+      startFuelLiters:
+        assignment.startFuelLiters !== null && assignment.startFuelLiters !== undefined
+          ? assignment.startFuelLiters
+          : '',
+      endFuelLiters:
+        assignment.endFuelLiters !== null && assignment.endFuelLiters !== undefined
+          ? assignment.endFuelLiters
+          : '',
       isOperational: assignment.isOperational ?? true,
       assignNotes: assignment.assignNotes || '',
       returnNotes: assignment.returnNotes || '',
@@ -345,9 +377,35 @@ const MasineZaduzenje: React.FC = () => {
       return;
     }
 
+    const maxTank = editingAssignment.machine?.tankCapacityLiters;
+    const startLiters =
+      editForm.startFuelLiters !== '' && editForm.startFuelLiters !== null
+        ? Number(editForm.startFuelLiters)
+        : null;
+    const endLiters =
+      editForm.endFuelLiters !== '' && editForm.endFuelLiters !== null
+        ? Number(editForm.endFuelLiters)
+        : null;
+
+    if (maxTank && startLiters !== null && startLiters > maxTank) {
+      showToast(
+        `Početno gorivo (${startLiters} L) ne može biti veće od kapaciteta rezervoara (${maxTank} L).`,
+        'error'
+      );
+      return;
+    }
+
+    if (maxTank && endLiters !== null && endLiters > maxTank) {
+      showToast(
+        `Krajnje gorivo (${endLiters} L) ne može biti veće od kapaciteta rezervoara (${maxTank} L).`,
+        'error'
+      );
+      return;
+    }
+
     const payload: any = {
       startHours: startH,
-      startFuelLevel: editForm.startFuelLevel !== '' ? Number(editForm.startFuelLevel) : null,
+      startFuelLiters: startLiters,
       assignNotes: editForm.assignNotes || null,
     };
 
@@ -360,7 +418,7 @@ const MasineZaduzenje: React.FC = () => {
         }
         payload.endHours = endH;
       }
-      payload.endFuelLevel = editForm.endFuelLevel !== '' ? Number(editForm.endFuelLevel) : null;
+      payload.endFuelLiters = endLiters;
       payload.isOperational = Boolean(editForm.isOperational);
       payload.returnNotes = editForm.returnNotes || null;
     }
@@ -482,14 +540,28 @@ const MasineZaduzenje: React.FC = () => {
       return;
     }
 
+    const selectedDirectM = machinesData?.machines?.find((m: any) => m.id === directMachineId);
+    const maxTank = selectedDirectM?.tankCapacityLiters;
+    const startFuelVal = Number(directStartFuelLiters);
+    const endFuelVal = Number(directEndFuelLiters);
+
+    if (maxTank && startFuelVal > maxTank) {
+      showToast(`Početno gorivo (${startFuelVal} L) ne može biti veće od kapaciteta rezervoara (${maxTank} L).`, 'error');
+      return;
+    }
+    if (maxTank && endFuelVal > maxTank) {
+      showToast(`Krajnje gorivo (${endFuelVal} L) ne može biti veće od kapaciteta rezervoara (${maxTank} L).`, 'error');
+      return;
+    }
+
     directMutation.mutate({
       machineId: directMachineId,
       workerId: directWorkerId,
       date: directDate,
       startHours: startH,
       endHours: endH,
-      startFuelLevel: Number(directStartFuel),
-      endFuelLevel: Number(directEndFuel),
+      startFuelLiters: directStartFuelLiters !== '' ? startFuelVal : null,
+      endFuelLiters: directEndFuelLiters !== '' ? endFuelVal : null,
       isOperational: directOperational,
       notes: directNotes,
     });
@@ -498,8 +570,8 @@ const MasineZaduzenje: React.FC = () => {
   const activeAssignments = activeData?.assignments || [];
   const historyList = historyData?.assignments || [];
   const hoursWorkedLive =
-    selectedAssignment && checkinEndHours
-      ? Math.round((Number(checkinEndHours) - selectedAssignment.startHours) * 10) / 10
+    selectedAssignment && checkinEndHours !== '' && checkinEndHours !== null && checkinEndHours !== undefined
+      ? Math.round((Number(checkinEndHours) - Number(selectedAssignment.startHours ?? 0)) * 10) / 10
       : 0;
 
   return (
@@ -562,8 +634,8 @@ const MasineZaduzenje: React.FC = () => {
             className={`${styles.tabBtn} ${activeTab === 'active' ? styles.tabBtnActive : ''}`}
             onClick={() => setActiveTab('active')}
           >
-            <Tractor size={16} />
-            <span>Aktivna Zaduženja (Na Njivi)</span>
+            <Tractor size={18} />
+            <span className={styles.tabBtnText}>Aktivna Zaduženja (Na Njivi)</span>
             <span className={styles.tabBadge}>{activeAssignments.length}</span>
           </button>
 
@@ -571,16 +643,16 @@ const MasineZaduzenje: React.FC = () => {
             className={`${styles.tabBtn} ${activeTab === 'checkout' ? styles.tabBtnActive : ''}`}
             onClick={() => setActiveTab('checkout')}
           >
-            <Plus size={16} />
-            <span>Novo Zaduženje</span>
+            <Plus size={18} />
+            <span className={styles.tabBtnText}>Novo Zaduženje</span>
           </button>
 
           <button
             className={`${styles.tabBtn} ${activeTab === 'history' ? styles.tabBtnActive : ''}`}
             onClick={() => setActiveTab('history')}
           >
-            <Clock size={16} />
-            <span>Dnevnik Zaduženja (Istorijat)</span>
+            <Clock size={18} />
+            <span className={styles.tabBtnText}>Dnevnik Zaduženja (Istorijat)</span>
           </button>
 
           {isManager && (
@@ -589,8 +661,8 @@ const MasineZaduzenje: React.FC = () => {
               onClick={() => setActiveTab('direct')}
               style={activeTab === 'direct' ? { backgroundColor: '#d97706', borderColor: '#d97706', color: '#ffffff' } : {}}
             >
-              <Zap size={16} />
-              <span>Direktno Zaduženje (Jedan Korak)</span>
+              <Zap size={18} />
+              <span className={styles.tabBtnText}>Direktno Zaduženje (Jedan Korak)</span>
             </button>
           )}
         </div>
@@ -678,7 +750,16 @@ const MasineZaduzenje: React.FC = () => {
                           </span>
                         </div>
 
-                        {a.startFuelLevel !== null && (
+                        {(a.startFuelLiters !== null && a.startFuelLiters !== undefined) ? (
+                          <div className={styles.detailRow}>
+                            <span className={styles.detailLabel}>
+                              <Fuel size={14} /> Gorivo na polasku:
+                            </span>
+                            <span className={`${styles.detailValue} ${styles.fuelBadge}`}>
+                              {a.startFuelLiters} L
+                            </span>
+                          </div>
+                        ) : a.startFuelLevel !== null && (
                           <div className={styles.detailRow}>
                             <span className={styles.detailLabel}>
                               <Fuel size={14} /> Gorivo na polasku:
@@ -694,14 +775,7 @@ const MasineZaduzenje: React.FC = () => {
                             <span className={styles.detailLabel}>
                               <FileText size={14} /> Napomena:
                             </span>
-                            <span
-                              style={{
-                                fontSize: '0.8rem',
-                                color: 'var(--text-secondary)',
-                                maxWidth: 170,
-                                textAlign: 'right',
-                              }}
-                            >
+                            <span className={styles.notesValue}>
                               {a.assignNotes}
                             </span>
                           </div>
@@ -770,16 +844,19 @@ const MasineZaduzenje: React.FC = () => {
                     Automatski popunjeno
                   </span>
                 </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  className={styles.inputField}
-                  value={checkoutStartHours}
-                  onChange={(e) => setCheckoutStartHours(e.target.value)}
-                  placeholder="0.0"
-                  required
-                />
+                <div className={styles.inputWrapper}>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    className={`${styles.inputField} ${styles.inputWithBadge}`}
+                    value={checkoutStartHours}
+                    onChange={(e) => setCheckoutStartHours(e.target.value)}
+                    placeholder="0.0"
+                    required
+                  />
+                  <span className={styles.inputBadge}>rh</span>
+                </div>
               </div>
 
               {/* Radnik koji zadužuje - Za Operatera automatski bedž, za rukovodioce izbor */}
@@ -814,29 +891,56 @@ const MasineZaduzenje: React.FC = () => {
                 </div>
               )}
 
+              {/* Početno stanje goriva u litrima */}
+              {(() => {
+                const selectedM = machinesData?.machines?.find((m: any) => m.id === checkoutMachineId);
+                const tankCap = selectedM?.tankCapacityLiters || 200;
+                const isOverCap = Boolean(tankCap && Number(checkoutFuelLiters) > tankCap);
 
-
-              {/* Početni nivo goriva (kazaljka podeoci) */}
-              <div className={styles.formGroup}>
-                <label className={styles.formLabel}>
-                  <span>Nivo goriva na polasku (stanje na kazaljki)</span>
-                  <span style={{ color: '#16a34a', fontWeight: 800 }}>
-                    {FUEL_GAUGE_PRESETS.find((p) => p.value === checkoutFuel)?.label || `${checkoutFuel}%`}
-                  </span>
-                </label>
-                <div className={styles.fuelPresetRow}>
-                  {FUEL_GAUGE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.value}
-                      type="button"
-                      className={`${styles.fuelBtn} ${checkoutFuel === preset.value ? styles.fuelBtnActive : ''}`}
-                      onClick={() => setCheckoutFuel(preset.value)}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+                return (
+                  <div className={styles.formGroup}>
+                    <div className={styles.labelRow}>
+                      <label className={styles.formLabel} style={{ margin: 0 }}>
+                        Početno stanje goriva u rezervoaru (litara) *
+                      </label>
+                      {selectedM && (
+                        <span className={styles.capacityHint}>
+                          Kapacitet: {tankCap} L
+                        </span>
+                      )}
+                    </div>
+                    <div className={styles.inputWrapper}>
+                      <input
+                        type="number"
+                        step="1"
+                        min="0"
+                        max={tankCap}
+                        className={`${styles.inputField} ${styles.inputWithBadge} ${isOverCap ? styles.inputError : ''}`}
+                        value={checkoutFuelLiters}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val !== '' && Number(val) > tankCap) {
+                            setCheckoutFuelLiters(tankCap);
+                            return;
+                          }
+                          setCheckoutFuelLiters(val);
+                        }}
+                        placeholder={`npr. ${Math.min(180, tankCap)}`}
+                        required
+                      />
+                      <span className={styles.inputBadge}>
+                        Litara
+                      </span>
+                    </div>
+                    {isOverCap && (
+                      <div className={styles.errorMessage}>
+                        <AlertCircle size={14} />
+                        <span>Količina goriva ne može biti veća od kapaciteta mašine ({tankCap} L)!</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Napomena */}
               <div className={styles.formGroup}>
@@ -963,81 +1067,122 @@ const MasineZaduzenje: React.FC = () => {
                   <label className={styles.formLabel}>
                     <span>Početni radni sati (rh)</span>
                   </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    className={styles.inputField}
-                    value={directStartHours}
-                    onChange={(e) => setDirectStartHours(e.target.value)}
-                    placeholder="0.0"
-                    required
-                  />
+                  <div className={styles.inputWrapper}>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      className={`${styles.inputField} ${styles.inputWithBadge}`}
+                      value={directStartHours}
+                      onChange={(e) => setDirectStartHours(e.target.value)}
+                      placeholder="0.0"
+                      required
+                    />
+                    <span className={styles.inputBadge}>rh</span>
+                  </div>
                 </div>
 
                 <div className={styles.formGroup}>
                   <label className={styles.formLabel}>
                     <span>Krajnji radni sati (rh)</span>
                   </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    className={styles.inputField}
-                    value={directEndHours}
-                    onChange={(e) => setDirectEndHours(e.target.value)}
-                    placeholder="0.0"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* Nivoi goriva (kazaljka podeoci) */}
-              <div className={styles.twoColRow}>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    <span>Gorivo na početku</span>
-                    <span style={{ color: '#2563eb', fontWeight: 800 }}>
-                      {FUEL_GAUGE_PRESETS.find((p) => p.value === directStartFuel)?.label || `${directStartFuel}%`}
-                    </span>
-                  </label>
-                  <div className={styles.fuelPresetRow}>
-                    {FUEL_GAUGE_PRESETS.map((preset) => (
-                      <button
-                        key={preset.value}
-                        type="button"
-                        className={`${styles.fuelBtn} ${directStartFuel === preset.value ? styles.fuelBtnActive : ''}`}
-                        onClick={() => setDirectStartFuel(preset.value)}
-                        style={{ fontSize: '0.72rem', padding: '0.2rem' }}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    <span>Gorivo na kraju</span>
-                    <span style={{ color: '#16a34a', fontWeight: 800 }}>
-                      {FUEL_GAUGE_PRESETS.find((p) => p.value === directEndFuel)?.label || `${directEndFuel}%`}
-                    </span>
-                  </label>
-                  <div className={styles.fuelPresetRow}>
-                    {FUEL_GAUGE_PRESETS.map((preset) => (
-                      <button
-                        key={preset.value}
-                        type="button"
-                        className={`${styles.fuelBtn} ${directEndFuel === preset.value ? styles.fuelBtnActive : ''}`}
-                        onClick={() => setDirectEndFuel(preset.value)}
-                        style={{ fontSize: '0.72rem', padding: '0.2rem' }}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
+                  <div className={styles.inputWrapper}>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      className={`${styles.inputField} ${styles.inputWithBadge}`}
+                      value={directEndHours}
+                      onChange={(e) => setDirectEndHours(e.target.value)}
+                      placeholder="0.0"
+                      required
+                    />
+                    <span className={styles.inputBadge}>rh</span>
                   </div>
                 </div>
               </div>
+
+              {/* Nivoi goriva u litrima */}
+              {(() => {
+                const selectedDirectM = machinesData?.machines?.find((m: any) => m.id === directMachineId);
+                const tankCap = selectedDirectM?.tankCapacityLiters || 200;
+
+                return (
+                  <div className={styles.twoColRow}>
+                    <div className={styles.formGroup}>
+                      <div className={styles.labelRow}>
+                        <label className={styles.formLabel} style={{ margin: 0 }}>
+                          Gorivo na početku (L) *
+                        </label>
+                        {selectedDirectM && (
+                          <span className={styles.capacityHint}>
+                            Maks: {tankCap} L
+                          </span>
+                        )}
+                      </div>
+                      <div className={styles.inputWrapper}>
+                        <input
+                          type="number"
+                          step="1"
+                          min="0"
+                          max={tankCap}
+                          className={`${styles.inputField} ${styles.inputWithBadge}`}
+                          value={directStartFuelLiters}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val !== '' && Number(val) > tankCap) {
+                              setDirectStartFuelLiters(tankCap);
+                              return;
+                            }
+                            setDirectStartFuelLiters(val);
+                          }}
+                          placeholder={`npr. ${tankCap}`}
+                          required
+                        />
+                        <span className={styles.inputBadge}>
+                          Litara
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className={styles.formGroup}>
+                      <div className={styles.labelRow}>
+                        <label className={styles.formLabel} style={{ margin: 0 }}>
+                          Gorivo na kraju (L) *
+                        </label>
+                        {selectedDirectM && (
+                          <span className={styles.capacityHint}>
+                            Maks: {tankCap} L
+                          </span>
+                        )}
+                      </div>
+                      <div className={styles.inputWrapper}>
+                        <input
+                          type="number"
+                          step="1"
+                          min="0"
+                          max={tankCap}
+                          className={`${styles.inputField} ${styles.inputWithBadge}`}
+                          value={directEndFuelLiters}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val !== '' && Number(val) > tankCap) {
+                              setDirectEndFuelLiters(tankCap);
+                              return;
+                            }
+                            setDirectEndFuelLiters(val);
+                          }}
+                          placeholder={`npr. ${Math.round(tankCap * 0.75)}`}
+                          required
+                        />
+                        <span className={styles.inputBadge}>
+                          Litara
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Ispravnost mašine */}
               <div className={styles.formGroup}>
@@ -1104,132 +1249,248 @@ const MasineZaduzenje: React.FC = () => {
         {/* TAB 3: ISTORIJAT ZADUŽENJA */}
         {activeTab === 'history' && (
           <div className={styles.tableCard}>
-            <div className={styles.tableWrapper}>
-              {loadingHistory ? (
-                <div style={{ textAlign: 'center', padding: '3rem' }}>
-                  <Loader2 size={32} className="spin" />
-                </div>
-              ) : historyList.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                  Nema zabeleženih zaduženja u istorijatu.
-                </div>
-              ) : (
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th>Datum i Vreme</th>
-                      <th>Mašina</th>
-                      <th>Radnik</th>
-                      <th>Početni rh</th>
-                      <th>Krajnji rh</th>
-                      <th>Napravljeno rh</th>
-                      <th>Stanje Goriva</th>
-                      <th>Status</th>
-                      <th>Beleške</th>
-                      <th style={{ textAlign: 'right' }}>Akcije</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {historyList.map((a: any) => {
-                      const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
-                      const hoursDiff =
-                        a.endHours && a.startHours
-                          ? Math.round((a.endHours - a.startHours) * 10) / 10
-                          : null;
-
-                      return (
-                        <tr key={a.id}>
-                          <td>
-                            <strong>{dateStr}</strong>
-                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                              {new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </div>
-                          </td>
-                          <td>
-                            <strong>{a.machine?.name}</strong>
-                          </td>
-                          <td>{a.worker?.name}</td>
-                          <td>{a.startHours} rh</td>
-                          <td>{a.endHours ? `${a.endHours} rh` : '-'}</td>
-                          <td>
-                            {hoursDiff !== null ? (
-                              <strong style={{ color: '#2563eb' }}>+{hoursDiff} rh</strong>
-                            ) : (
-                              <span style={{ color: '#d97706' }}>U toku</span>
-                            )}
-                          </td>
-                          <td>
-                            {a.startFuelLevel !== null && (
-                              <span>
-                                {a.startFuelLevel}% {a.endFuelLevel !== null ? `-> ${a.endFuelLevel}%` : ''}
-                              </span>
-                            )}
-                          </td>
-                          <td>
-                            <span
-                              style={{
-                                padding: '0.2rem 0.5rem',
-                                borderRadius: 6,
-                                fontSize: '0.72rem',
-                                fontWeight: 700,
-                                backgroundColor:
-                                  a.status === 'ZADUZENA'
-                                    ? 'rgba(217, 119, 6, 0.15)'
-                                    : a.status === 'RAZDUZENA'
-                                      ? 'rgba(22, 163, 74, 0.15)'
-                                      : 'rgba(239, 68, 68, 0.15)',
-                                color:
-                                  a.status === 'ZADUZENA'
-                                    ? '#d97706'
-                                    : a.status === 'RAZDUZENA'
-                                      ? '#16a34a'
-                                      : '#ef4444',
-                              }}
-                            >
-                              {a.status === 'ZADUZENA'
-                                ? 'Zadužena'
-                                : a.status === 'RAZDUZENA'
-                                  ? 'Razdužena'
-                                  : 'Pokvarena'}
-                            </span>
-                          </td>
-                          <td style={{ maxWidth: 220, color: 'var(--text-secondary)' }}>
-                            {a.returnNotes || a.assignNotes || '-'}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
-                              {isManager || (isOperator && isSameCalendarDay(a.assignedAt)) ? (
-                                <button
-                                  className={styles.btnIcon}
-                                  title="Izmeni unos zaduženja"
-                                  onClick={() => handleOpenEdit(a)}
-                                >
-                                  <Pencil size={14} />
-                                </button>
-                              ) : isOperator ? (
-                                <span
-                                  style={{
-                                    fontSize: '0.72rem',
-                                    color: 'var(--text-muted)',
-                                    fontStyle: 'italic',
-                                  }}
-                                  title="Istekao rok za izmenu (dozvoljeno samo na dan zaduženja)"
-                                >
-                                  Zaključano
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
+            {loadingHistory ? (
+              <div style={{ textAlign: 'center', padding: '3rem' }}>
+                <Loader2 size={32} className="spin" />
+              </div>
+            ) : historyList.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                Nema zabeleženih zaduženja u istorijatu.
+              </div>
+            ) : (
+              <>
+                {/* Desktop View: Full Table */}
+                <div className={styles.desktopTableView}>
+                  <div className={styles.tableWrapper}>
+                    <table className={styles.table}>
+                      <thead>
+                        <tr>
+                          <th>Datum i Vreme</th>
+                          <th>Mašina</th>
+                          <th>Radnik</th>
+                          <th>Početni rh</th>
+                          <th>Krajnji rh</th>
+                          <th>Napravljeno rh</th>
+                          <th>Stanje Goriva</th>
+                          <th>Status</th>
+                          <th>Beleške</th>
+                          <th style={{ textAlign: 'right' }}>Akcije</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
+                      </thead>
+                      <tbody>
+                        {historyList.map((a: any) => {
+                          const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
+                          const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
+                          const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
+                          const hoursDiff =
+                            hasEndHours && hasStartHours
+                              ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
+                              : null;
+
+                          return (
+                            <tr key={a.id}>
+                              <td>
+                                <strong>{dateStr}</strong>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                  {new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </div>
+                              </td>
+                              <td>
+                                <strong>{a.machine?.name}</strong>
+                              </td>
+                              <td>{a.worker?.name}</td>
+                              <td>{hasStartHours ? `${a.startHours} rh` : '-'}</td>
+                              <td>{hasEndHours ? `${a.endHours} rh` : '-'}</td>
+                              <td>
+                                {hoursDiff !== null ? (
+                                  <strong style={{ color: '#2563eb' }}>+{hoursDiff} rh</strong>
+                                ) : a.status === 'ZADUZENA' ? (
+                                  <span style={{ color: '#d97706' }}>U toku</span>
+                                ) : (
+                                  <span style={{ color: 'var(--text-muted)' }}>-</span>
+                                )}
+                              </td>
+                              <td>
+                                {a.startFuelLiters !== null && a.startFuelLiters !== undefined ? (
+                                  <span>
+                                    {a.startFuelLiters} L {a.endFuelLiters !== null && a.endFuelLiters !== undefined ? `→ ${a.endFuelLiters} L` : ''}
+                                    {a.endFuelLiters !== null && a.endFuelLiters !== undefined && Number(a.startFuelLiters) >= Number(a.endFuelLiters) ? (
+                                      <span style={{ fontSize: '0.75rem', color: '#16a34a', marginLeft: '5px', fontWeight: 600 }}>
+                                        (-{Math.round((Number(a.startFuelLiters) - Number(a.endFuelLiters)) * 10) / 10} L)
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                ) : a.endFuelLiters !== null && a.endFuelLiters !== undefined ? (
+                                  <span>
+                                    {a.endFuelLiters} L
+                                  </span>
+                                ) : a.startFuelLevel !== null && a.startFuelLevel !== undefined ? (
+                                  <span>
+                                    {a.startFuelLevel}% {a.endFuelLevel !== null ? `→ ${a.endFuelLevel}%` : ''}
+                                  </span>
+                                ) : (
+                                  '-'
+                                )}
+                              </td>
+                              <td>
+                                <span
+                                  className={`${styles.statusBadge} ${
+                                    a.status === 'ZADUZENA'
+                                      ? styles.statusBadgeActive
+                                      : a.status === 'RAZDUZENA'
+                                        ? styles.statusBadgeReturned
+                                        : styles.statusBadgeBroken
+                                  }`}
+                                >
+                                  {a.status === 'ZADUZENA'
+                                    ? 'Zadužena'
+                                    : a.status === 'RAZDUZENA'
+                                      ? 'Razdužena'
+                                      : 'Pokvarena'}
+                                </span>
+                              </td>
+                              <td style={{ maxWidth: 220, color: 'var(--text-secondary)' }}>
+                                {a.returnNotes || a.assignNotes || '-'}
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
+                                  {isManager || (isOperator && isSameCalendarDay(a.assignedAt)) ? (
+                                    <button
+                                      className={styles.btnIcon}
+                                      title="Izmeni unos zaduženja"
+                                      onClick={() => handleOpenEdit(a)}
+                                    >
+                                      <Pencil size={14} />
+                                    </button>
+                                  ) : isOperator ? (
+                                    <span
+                                      style={{
+                                        fontSize: '0.72rem',
+                                        color: 'var(--text-muted)',
+                                        fontStyle: 'italic',
+                                      }}
+                                      title="Istekao rok za izmenu (dozvoljeno samo na dan zaduženja)"
+                                    >
+                                      Zaključano
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Mobile View: Responsive Cards */}
+                <div className={styles.mobileCardsView}>
+                  {historyList.map((a: any) => {
+                    const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
+                    const timeStr = new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
+                    const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
+                    const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
+                    const hoursDiff =
+                      hasEndHours && hasStartHours
+                        ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
+                        : null;
+
+                    const canEdit = isManager || (isOperator && isSameCalendarDay(a.assignedAt));
+
+                    return (
+                      <div key={a.id} className={styles.historyCard}>
+                        <div className={styles.historyCardHeader}>
+                          <div>
+                            <div className={styles.historyCardTitle}>
+                              <Tractor size={18} color="#d97706" />
+                              <span>{a.machine?.name}</span>
+                            </div>
+                            <div className={styles.historyCardSub}>
+                              <User size={12} /> {a.worker?.name} &bull; <Clock size={12} /> {dateStr} u {timeStr}
+                            </div>
+                          </div>
+                          <span
+                            className={`${styles.statusBadge} ${
+                              a.status === 'ZADUZENA'
+                                ? styles.statusBadgeActive
+                                : a.status === 'RAZDUZENA'
+                                  ? styles.statusBadgeReturned
+                                  : styles.statusBadgeBroken
+                            }`}
+                          >
+                            {a.status === 'ZADUZENA'
+                              ? 'Zadužena'
+                              : a.status === 'RAZDUZENA'
+                                ? 'Razdužena'
+                                : 'Pokvarena'}
+                          </span>
+                        </div>
+
+                        <div className={styles.historyCardStats}>
+                          <div className={styles.historyStatBox}>
+                            <span className={styles.historyStatLabel}>Radni sati</span>
+                            <div className={styles.historyStatValue}>
+                              {hasStartHours ? `${a.startHours} rh` : '-'}
+                              {hasEndHours ? ` → ${a.endHours} rh` : ''}
+                              {hoursDiff !== null && (
+                                <span className={styles.hoursDiffBadge}>+{hoursDiff} rh</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className={styles.historyStatBox}>
+                            <span className={styles.historyStatLabel}>Gorivo</span>
+                            <div className={styles.historyStatValue}>
+                              {a.startFuelLiters !== null && a.startFuelLiters !== undefined ? (
+                                <span>
+                                  {a.startFuelLiters} L {a.endFuelLiters !== null && a.endFuelLiters !== undefined ? `→ ${a.endFuelLiters} L` : ''}
+                                  {a.endFuelLiters !== null && a.endFuelLiters !== undefined && Number(a.startFuelLiters) >= Number(a.endFuelLiters) ? (
+                                    <span className={styles.fuelDiffBadge}>
+                                      (-{Math.round((Number(a.startFuelLiters) - Number(a.endFuelLiters)) * 10) / 10} L)
+                                    </span>
+                                  ) : null}
+                                </span>
+                              ) : a.endFuelLiters !== null && a.endFuelLiters !== undefined ? (
+                                <span>{a.endFuelLiters} L</span>
+                              ) : (
+                                '-'
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {(a.returnNotes || a.assignNotes) && (
+                          <div className={styles.historyCardNotes}>
+                            <FileText size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
+                            <span>{a.returnNotes || a.assignNotes}</span>
+                          </div>
+                        )}
+
+                        {canEdit && (
+                          <div className={styles.historyCardFooter}>
+                            <button
+                              type="button"
+                              className={styles.btnEditMobile}
+                              onClick={() => handleOpenEdit(a)}
+                            >
+                              <Pencil size={14} />
+                              <span>Izmeni unos zaduženja</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1277,39 +1538,68 @@ const MasineZaduzenje: React.FC = () => {
                         </span>
                       )}
                     </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min={selectedAssignment.startHours}
-                      className={styles.inputField}
-                      value={checkinEndHours}
-                      onChange={(e) => setCheckinEndHours(e.target.value)}
-                      placeholder={String(selectedAssignment.startHours)}
-                      required
-                    />
-                  </div>
-
-                  {/* Nivo goriva na povratku (kazaljka podeoci) */}
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>
-                      <span>Nivo goriva na povratku (stanje na kazaljki)</span>
-                      <span style={{ color: '#16a34a', fontWeight: 800 }}>
-                        {FUEL_GAUGE_PRESETS.find((p) => p.value === checkinFuel)?.label || `${checkinFuel}%`}
-                      </span>
-                    </label>
-                    <div className={styles.fuelPresetRow}>
-                      {FUEL_GAUGE_PRESETS.map((preset) => (
-                        <button
-                          key={preset.value}
-                          type="button"
-                          className={`${styles.fuelBtn} ${checkinFuel === preset.value ? styles.fuelBtnActive : ''}`}
-                          onClick={() => setCheckinFuel(preset.value)}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
+                    <div className={styles.inputWrapper}>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min={selectedAssignment.startHours}
+                        className={`${styles.inputField} ${styles.inputWithBadge}`}
+                        value={checkinEndHours}
+                        onChange={(e) => setCheckinEndHours(e.target.value)}
+                        placeholder={String(selectedAssignment.startHours)}
+                        required
+                      />
+                      <span className={styles.inputBadge}>rh</span>
                     </div>
                   </div>
+
+                  {/* Nivo goriva na povratku (litara) */}
+                  {(() => {
+                    const tankCap = selectedAssignment.machine?.tankCapacityLiters || 200;
+                    const isOverCap = Boolean(tankCap && Number(checkinFuelLiters) > tankCap);
+
+                    return (
+                      <div className={styles.formGroup}>
+                        <div className={styles.labelRow}>
+                          <label className={styles.formLabel} style={{ margin: 0 }}>
+                            Stanje goriva na povratku (litara) *
+                          </label>
+                          <span className={styles.capacityHint}>
+                            Kapacitet: {tankCap} L
+                          </span>
+                        </div>
+                        <div className={styles.inputWrapper}>
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            max={tankCap}
+                            className={`${styles.inputField} ${styles.inputWithBadge} ${isOverCap ? styles.inputError : ''}`}
+                            value={checkinFuelLiters}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val !== '' && Number(val) > tankCap) {
+                                setCheckinFuelLiters(tankCap);
+                                return;
+                              }
+                              setCheckinFuelLiters(val);
+                            }}
+                            placeholder={`npr. ${Math.min(120, tankCap)}`}
+                            required
+                          />
+                          <span className={styles.inputBadge}>
+                            Litara
+                          </span>
+                        </div>
+                        {isOverCap && (
+                          <div className={styles.errorMessage}>
+                            <AlertCircle size={14} />
+                            <span>Količina goriva ne može biti veća od kapaciteta mašine ({tankCap} L)!</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Prekidač ispravnosti mašine */}
                   <div
@@ -1413,79 +1703,115 @@ const MasineZaduzenje: React.FC = () => {
                   <div className={styles.twoColRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Početni radni sati (rh)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        className={styles.inputField}
-                        value={editForm.startHours}
-                        onChange={(e) => setEditForm({ ...editForm, startHours: e.target.value })}
-                        required
-                      />
+                      <div className={styles.inputWrapper}>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          className={`${styles.inputField} ${styles.inputWithBadge}`}
+                          value={editForm.startHours}
+                          onChange={(e) => setEditForm({ ...editForm, startHours: e.target.value })}
+                          required
+                        />
+                        <span className={styles.inputBadge}>rh</span>
+                      </div>
                     </div>
 
                     {editingAssignment.status !== 'ZADUZENA' && (
                       <div className={styles.formGroup}>
                         <label className={styles.formLabel}>Krajnji radni sati (rh)</label>
-                        <input
-                          type="number"
-                          step="0.1"
-                          min="0"
-                          className={styles.inputField}
-                          value={editForm.endHours}
-                          onChange={(e) => setEditForm({ ...editForm, endHours: e.target.value })}
-                        />
+                        <div className={styles.inputWrapper}>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            className={`${styles.inputField} ${styles.inputWithBadge}`}
+                            value={editForm.endHours}
+                            onChange={(e) => setEditForm({ ...editForm, endHours: e.target.value })}
+                          />
+                          <span className={styles.inputBadge}>rh</span>
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  {/* Gorivo na polasku */}
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>
-                      <span>Gorivo na polasku (kazaljka)</span>
-                      <span style={{ color: '#2563eb', fontWeight: 800 }}>
-                        {FUEL_GAUGE_PRESETS.find((p) => p.value === editForm.startFuelLevel)?.label || `${editForm.startFuelLevel}%`}
-                      </span>
-                    </label>
-                    <div className={styles.fuelPresetRow}>
-                      {FUEL_GAUGE_PRESETS.map((preset) => (
-                        <button
-                          key={preset.value}
-                          type="button"
-                          className={`${styles.fuelBtn} ${editForm.startFuelLevel === preset.value ? styles.fuelBtnActive : ''}`}
-                          onClick={() => setEditForm({ ...editForm, startFuelLevel: preset.value })}
-                          style={{ fontSize: '0.72rem', padding: '0.25rem' }}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  {/* Gorivo na polasku (litara) */}
+                  {(() => {
+                    const tankCap = editingAssignment.machine?.tankCapacityLiters || 200;
+                    return (
+                      <div className={styles.formGroup}>
+                        <div className={styles.labelRow}>
+                          <label className={styles.formLabel} style={{ margin: 0 }}>
+                            Gorivo na polasku (L)
+                          </label>
+                          <span className={styles.capacityHint}>
+                            Maks: {tankCap} L
+                          </span>
+                        </div>
+                        <div className={styles.inputWrapper}>
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            max={tankCap}
+                            className={`${styles.inputField} ${styles.inputWithBadge}`}
+                            value={editForm.startFuelLiters}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val !== '' && Number(val) > tankCap) {
+                                setEditForm({ ...editForm, startFuelLiters: tankCap });
+                                return;
+                              }
+                              setEditForm({ ...editForm, startFuelLiters: val });
+                            }}
+                            placeholder={`npr. ${tankCap}`}
+                          />
+                          <span className={styles.inputBadge}>
+                            Litara
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Gorivo na povratku (ako je razdužena) */}
-                  {editingAssignment.status !== 'ZADUZENA' && (
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>
-                        <span>Gorivo na povratku (kazaljka)</span>
-                        <span style={{ color: '#16a34a', fontWeight: 800 }}>
-                          {FUEL_GAUGE_PRESETS.find((p) => p.value === editForm.endFuelLevel)?.label || `${editForm.endFuelLevel}%`}
-                        </span>
-                      </label>
-                      <div className={styles.fuelPresetRow}>
-                        {FUEL_GAUGE_PRESETS.map((preset) => (
-                          <button
-                            key={preset.value}
-                            type="button"
-                            className={`${styles.fuelBtn} ${editForm.endFuelLevel === preset.value ? styles.fuelBtnActive : ''}`}
-                            onClick={() => setEditForm({ ...editForm, endFuelLevel: preset.value })}
-                            style={{ fontSize: '0.72rem', padding: '0.25rem' }}
-                          >
-                            {preset.label}
-                          </button>
-                        ))}
+                  {editingAssignment.status !== 'ZADUZENA' && (() => {
+                    const tankCap = editingAssignment.machine?.tankCapacityLiters || 200;
+                    return (
+                      <div className={styles.formGroup}>
+                        <div className={styles.labelRow}>
+                          <label className={styles.formLabel} style={{ margin: 0 }}>
+                            Gorivo na povratku (L)
+                          </label>
+                          <span className={styles.capacityHint}>
+                            Maks: {tankCap} L
+                          </span>
+                        </div>
+                        <div className={styles.inputWrapper}>
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            max={tankCap}
+                            className={`${styles.inputField} ${styles.inputWithBadge}`}
+                            value={editForm.endFuelLiters}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val !== '' && Number(val) > tankCap) {
+                                setEditForm({ ...editForm, endFuelLiters: tankCap });
+                                return;
+                              }
+                              setEditForm({ ...editForm, endFuelLiters: val });
+                            }}
+                            placeholder={`npr. ${Math.round(tankCap * 0.75)}`}
+                          />
+                          <span className={styles.inputBadge}>
+                            Litara
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {/* Ispravnost mašine (ako je razdužena) */}
                   {editingAssignment.status !== 'ZADUZENA' && (
