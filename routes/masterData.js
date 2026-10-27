@@ -137,6 +137,8 @@ const machineSchema = z.object({
   currentHours: z.number().nonnegative().default(0),
   tankCapacityLiters: z.number().nonnegative().optional().nullable(),
   currentFuelLiters: z.number().nonnegative().optional().nullable(),
+  enpTagNumber: z.string().max(80).optional().nullable(),
+  enpTagBalance: z.number().optional().nullable(),
   status: machineStatusEnum.default("SLOBODNA"),
   notes: z.string().max(500).optional().nullable(),
   isActive: z.boolean().optional(),

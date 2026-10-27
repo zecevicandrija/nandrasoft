@@ -134,6 +134,36 @@ router.post("/", async (req, res) => {
       },
     });
 
+    // Automatski poveži ili kreiraj profil u tabeli Worker kako bi korisnik mogao da prima radne naloge i notifikacije
+    if (result?.user?.id) {
+      const existingWorkerByName = await prisma.worker.findFirst({
+        where: {
+          name: { equals: name.trim(), mode: "insensitive" },
+          userId: null,
+        },
+      });
+      if (existingWorkerByName) {
+        await prisma.worker
+          .update({
+            where: { id: existingWorkerByName.id },
+            data: { userId: result.user.id },
+          })
+          .catch(() => {});
+      } else {
+        await prisma.worker
+          .create({
+            data: {
+              name: name.trim(),
+              type: "STALNI",
+              phone: phone || null,
+              isActive: true,
+              userId: result.user.id,
+            },
+          })
+          .catch(() => {});
+      }
+    }
+
     res.status(201).json({
       user: {
         id: result.user.id,

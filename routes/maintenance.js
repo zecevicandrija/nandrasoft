@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole, requireManager } from "../middlewares/auth.js";
+import { sendWorkOrderPushNotification } from "../lib/pushNotification.js";
 
 const router = Router();
 
@@ -480,6 +481,9 @@ router.post("/remont-order", requireManager, async (req, res) => {
         newValues: workOrder,
       },
     });
+
+    // Pošalji Web Push notifikaciju mehaničaru/radniku na telefon
+    await sendWorkOrderPushNotification(workOrder.workerId, workOrder);
 
     res.status(201).json({
       message: `Radni nalog ${orderNumber} za remont je uspešno izdat.`,

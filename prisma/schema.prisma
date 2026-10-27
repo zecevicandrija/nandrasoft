@@ -35,10 +35,16 @@ model User {
   auditLogs          AuditLog[]
 
   // Faza 3 relacije
-  issuedWorkOrders   WorkOrder[]        @relation("IssuedWorkOrders")
-  fuelEntries        FuelEntry[]
-  fuelSupplies       FuelSupply[]
-  maintenanceIssues  MaintenanceIssue[]
+  issuedWorkOrders    WorkOrder[]          @relation("IssuedWorkOrders")
+  fuelEntries         FuelEntry[]
+  fuelSupplies        FuelSupply[]
+  maintenanceIssues   MaintenanceIssue[]
+  tollEntries         TollEntry[]
+  tollTopUps          TollTopUp[]
+  pushSubscriptions   PushSubscription[]
+
+  // Faza 4 relacije
+  fertilizerMovements FertilizerMovement[]
 
   @@map("user")
 }
@@ -67,10 +73,14 @@ model Worker {
   machineAssignments MachineAssignment[]
 
   // Faza 3 relacije
-  workOrders         WorkOrder[]
-  fuelEntries        FuelEntry[]
-  reportedIssues     MaintenanceIssue[]  @relation("ReportedIssues")
-  mechanicIssues     MaintenanceIssue[]  @relation("MechanicIssues")
+  workOrders          WorkOrder[]
+  fuelEntries         FuelEntry[]
+  reportedIssues      MaintenanceIssue[]   @relation("ReportedIssues")
+  mechanicIssues      MaintenanceIssue[]   @relation("MechanicIssues")
+  tollEntries         TollEntry[]
+
+  // Faza 4 relacije
+  fertilizerMovements FertilizerMovement[]
 
   @@map("worker")
 }
@@ -91,8 +101,11 @@ model Parcel {
   machineAssignments MachineAssignment[]
 
   // Faza 3 relacije
-  workOrders         WorkOrder[]
-  maintenanceIssues  MaintenanceIssue[]
+  workOrders          WorkOrder[]
+  maintenanceIssues   MaintenanceIssue[]
+
+  // Faza 4 relacije
+  fertilizerMovements FertilizerMovement[]
 
   @@map("parcel")
 }
@@ -131,6 +144,10 @@ model Machine {
   tankCapacityLiters Float?  @default(200)
   currentFuelLiters  Float?  @default(0)
 
+  // ENP Tag za putarine (kamioni i prevozna sredstva)
+  enpTagNumber       String?
+  enpTagBalance      Float?  @default(0)
+
   fieldWorksAsMachine    FieldWork[]        @relation("FieldWorkMachine")
   fieldWorksAsAttachment FieldWork[]        @relation("FieldWorkAttachment")
   assignments            MachineAssignment[]
@@ -140,6 +157,8 @@ model Machine {
   workOrdersAsAttachment WorkOrder[]        @relation("OrderAttachment")
   fuelEntries            FuelEntry[]
   maintenanceIssues      MaintenanceIssue[]
+  tollEntries            TollEntry[]
+  tollTopUps             TollTopUp[]
 
   @@map("machine")
 }
@@ -207,8 +226,11 @@ model Partner {
   updatedAt DateTime    @updatedAt
 
   // Faza 3 relacije ka eksternom servisu / nabavci delova / gorivu
-  maintenanceIssues MaintenanceIssue[]
-  fuelSupplies      FuelSupply[]
+  maintenanceIssues   MaintenanceIssue[]
+  fuelSupplies        FuelSupply[]
+
+  // Faza 4 relacije
+  fertilizerMovements FertilizerMovement[]
 
   @@map("partner")
 }
@@ -485,12 +507,14 @@ model FuelEntry {
   fieldWork       FieldWork?  @relation(fields: [fieldWorkId], references: [id])
 
   fuelSource      FuelSource  @default(CISTERNA)
+  gasStation      String?     // Za javne pumpe: "PETROL", "EUROPETROL"
   fuelType        String      @default("EURODIZEL") // EURODIZEL, EURODIZEL ADITIVNI
   liters          Float       // Količina u litrima (obavezno)
 
   // Finansijska polja (vidljiva samo direktoru i rukovodiocu)
   pricePerLiter   Float?      // Nabavna cena po litru
   totalCost       Float?      // litara * cenaPoLitru
+  receiptImageUrl String?     // Link ka slici računa na Bunny.net CDN-u
 
   // Detekcija prekomerne potrošnje u odnosu na normativ iz cenovnika
   hasAnomaly      Boolean     @default(false)
@@ -507,6 +531,7 @@ model FuelEntry {
 
   @@index([machineId, date])
   @@index([date])
+  @@index([gasStation])
   @@map("fuel_entry")
 }
 
@@ -608,4 +633,173 @@ model MaintenanceIssue {
   @@index([parcelId, status])
   @@index([status])
   @@map("maintenance_issue")
+}
+
+// ==========================================
+// ===== PUTARINE I ENP TAGOVI (KAMIONI) ====
+// ==========================================
+
+model TollEntry {
+  id              String   @id @default(cuid())
+  date            DateTime @default(now())
+
+  machineId       String
+  machine         Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  workerId        String
+  worker          Worker   @relation(fields: [workerId], references: [id])
+
+  amount          Float    // Iznos putarine u RSD
+  paymentMethod   String   @default("ENP_TAG") // ENP_TAG, GOTOVINA, KARTICA
+  tagNumber       String?  // Broj ENP taga (npr. sa kamiona)
+
+  entryStation    String?  // Ulazna rampa (npr. Novi Sad)
+  exitStation     String?  // Izlazna rampa (npr. Beograd)
+  routeRelation   String?  // Relacija / deonica (npr. Novi Sad - Beograd)
+  receiptNumber   String?  // Broj priznanice / računa
+  notes           String?
+
+  createdById     String
+  createdBy       User     @relation(fields: [createdById], references: [id])
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([machineId, date])
+  @@index([workerId, date])
+  @@index([date])
+  @@map("toll_entry")
+}
+
+model TollTopUp {
+  id               String   @id @default(cuid())
+  date             DateTime @default(now())
+
+  machineId        String
+  machine          Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  tagNumber        String?  // Broj ENP taga
+  amount           Float    // Uplaćeni iznos dopune u RSD
+  paymentReference String?  // Broj fakture / predračuna / uplatnice
+  notes            String?
+
+  createdById      String
+  createdBy        User     @relation(fields: [createdById], references: [id])
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([machineId, date])
+  @@index([date])
+  @@map("toll_top_up")
+}
+
+// ==========================================
+// WEB PUSH NOTIFIKACIJE
+// ==========================================
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("push_subscription")
+}
+
+// ==========================================
+// FAZA 4: MAGACIN ĐUBRIVA & ZALIHE
+// ==========================================
+
+enum FertilizerType {
+  MINERALNO_GRANULISANO    // NPK, UREA, KAN, AN, MAP
+  VODOTOPIVO_FERTIRIGACIJA // Kristaloni za kap-po-kap
+  TECNI_BIOSTIMULATOR      // Folijarna prihrana, aminokiseline
+  ORGANSKO_PELETIRANO      // Stajnjak, organska đubriva
+}
+
+enum FertilizerUnit {
+  KG
+  L
+  TONA
+}
+
+enum StockMovementType {
+  PRIJEM_NABAVKA           // Ulaz od dobavljača
+  IZDAVANJE_NJIVA          // Izlaz na parcelu
+  POVRAT_SA_NJIVE          // Višak vraćen u magacin
+  OTPIS_KOREKCIJA          // Kalo, oštećena ambalaža
+}
+
+model FertilizerProduct {
+  id                  String               @id @default(cuid())
+  name                String               @unique // npr. "YaraMila Complex 12-11-18"
+  type                FertilizerType       @default(MINERALNO_GRANULISANO)
+  unit                FertilizerUnit       @default(KG)
+
+  // Zalihe
+  currentStock        Float                @default(0)   // Trenutno na stanju u magacinu
+  minStockWarning     Float                @default(500) // Prag za crveni alarm (npr. 500 kg)
+
+  // Finansije
+  defaultPricePerUnit Float?               @default(0)   // Prosečna nabavna cena po kg/L (RSD)
+
+  // Skladište
+  defaultLocation     String?              // npr. "Sektor A - Boks 3"
+  description         String?              // N-P-K sastav, namena
+  isActive            Boolean              @default(true)
+
+  movements           FertilizerMovement[]
+
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@map("fertilizer_product")
+}
+
+model FertilizerMovement {
+  id                String            @id @default(cuid())
+  date              DateTime          @default(now())
+  movementType      StockMovementType @default(IZDAVANJE_NJIVA)
+
+  productId         String
+  product           FertilizerProduct @relation(fields: [productId], references: [id])
+
+  quantity          Float             // Količina (uvek pozitivna vrednost)
+  unitPrice         Float?            // Nabavna cena po jedinici u momentu transakcije
+  totalCost         Float?            // quantity * unitPrice
+
+  // Podaci za prijem (Nabavka)
+  supplierId        String?
+  supplier          Partner?          @relation(fields: [supplierId], references: [id])
+  receiptNumber     String?           // Broj otpremnice / računa dobavljača
+  warehouseLocation String?           // Lokacija gde je roba spakovana
+
+  // Podaci za izdavanje na njivu
+  parcelId          String?
+  parcel            Parcel?           @relation(fields: [parcelId], references: [id])
+  cropName          String?           // Kultura koja se đubri (npr. "Žuti luk")
+  areaHa            Float?            // Površina na koju se baca
+  kgPerHa           Float?            // Automatski: quantity (u kg/L) / areaHa
+
+  // Lica
+  issuedById        String            // Korisnik koji izdaje/prima robu u magacinu
+  issuedBy          User              @relation(fields: [issuedById], references: [id])
+
+  receivedWorkerId  String?           // Traktorista / radnik koji je preuzeo/vratio đubrivo
+  receivedWorker    Worker?           @relation(fields: [receivedWorkerId], references: [id])
+
+  notes             String?           // Dodatna napomena
+  createdAt         DateTime          @default(now())
+
+  @@index([productId, date])
+  @@index([parcelId, date])
+  @@index([movementType])
+  @@map("fertilizer_movement")
 }

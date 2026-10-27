@@ -13,9 +13,15 @@ import auditLogRouter from "./routes/auditLog.js";
 import workOrdersRouter from "./routes/workOrders.js";
 import fuelRouter from "./routes/fuel.js";
 import maintenanceRouter from "./routes/maintenance.js";
+import tollsRouter from "./routes/tolls.js";
+import notificationsRouter from "./routes/notifications.js";
+import fertilizerRouter from "./routes/fertilizer.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Dozvoli rad iza proksija (ngrok, localtunnel, Cloudflare, Nginx)
+app.set("trust proxy", 1);
 
 // Sigurnosna HTTP zaglavlja (Helmet - štiti od XSS, clickjacking, MIME sniffing itd.)
 app.use(
@@ -24,10 +30,22 @@ app.use(
   })
 );
 
-// CORS - dozvoli frontend na localhost:5173
+// CORS - dozvoli frontend na localhost i preko tunela (ngrok, localtunnel)
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: (origin, callback) => {
+      // Dozvoli ako nema origin-a (server-to-server, curl) ili ako je localhost / ngrok / localtunnel
+      if (
+        !origin ||
+        origin.includes("localhost") ||
+        origin.includes("ngrok") ||
+        origin.includes("loca.lt")
+      ) {
+        callback(null, true);
+      } else {
+        callback(null, true);
+      }
+    },
     credentials: true,
   })
 );
@@ -72,6 +90,9 @@ app.use("/api/audit-logs", auditLogRouter);
 app.use("/api/work-orders", workOrdersRouter);
 app.use("/api/fuel", fuelRouter);
 app.use("/api/maintenance", maintenanceRouter);
+app.use("/api/tolls", tollsRouter);
+app.use("/api/notifications", notificationsRouter);
+app.use("/api/fertilizer", fertilizerRouter);
 
 // Health check
 app.get("/api/health", (req, res) => {

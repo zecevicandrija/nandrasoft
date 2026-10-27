@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireManager } from "../middlewares/auth.js";
+import { sendWorkOrderPushNotification } from "../lib/pushNotification.js";
 
 const router = Router();
 
@@ -61,11 +62,30 @@ router.get("/my-today", async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Pronađi radnika povezanog sa ovim nalogom
-    const linkedWorker = await prisma.worker.findFirst({
+    // Pronađi radnika povezanog sa ovim nalogom (ili automatski poveži po imenu ako još nije)
+    let linkedWorker = await prisma.worker.findFirst({
       where: { userId },
       select: { id: true, name: true },
     });
+
+    if (!linkedWorker && req.user.name) {
+      const workerByName = await prisma.worker.findFirst({
+        where: {
+          name: { equals: req.user.name.trim(), mode: "insensitive" },
+          userId: null,
+        },
+        select: { id: true, name: true },
+      });
+      if (workerByName) {
+        linkedWorker = workerByName;
+        await prisma.worker
+          .update({
+            where: { id: workerByName.id },
+            data: { userId },
+          })
+          .catch(() => {});
+      }
+    }
 
     if (!linkedWorker) {
       return res.json({ todayOrder: null });
@@ -77,7 +97,23 @@ router.get("/my-today", async (req, res) => {
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
 
-    const todayOrder = await prisma.workOrder.findFirst({
+    const orderInclude = {
+      machine: true,
+      attachment: true,
+      parcel: true,
+      workType: true,
+      machineAssignments: {
+        where: { status: "ZADUZENA" },
+        orderBy: { assignedAt: "desc" },
+        take: 1,
+      },
+      issuedBy: {
+        select: { id: true, name: true, role: true },
+      },
+    };
+
+    // Prvo potraži aktivan nalog za današnji dan
+    let todayOrder = await prisma.workOrder.findFirst({
       where: {
         workerId: linkedWorker.id,
         orderDate: {
@@ -86,22 +122,21 @@ router.get("/my-today", async (req, res) => {
         },
         status: { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] },
       },
-      include: {
-        machine: true,
-        attachment: true,
-        parcel: true,
-        workType: true,
-        machineAssignments: {
-          where: { status: "ZADUZENA" },
-          orderBy: { assignedAt: "desc" },
-          take: 1,
-        },
-        issuedBy: {
-          select: { id: true, name: true, role: true },
-        },
-      },
+      include: orderInclude,
       orderBy: { createdAt: "desc" },
     });
+
+    // Ako nema naloga tačno za današnji datum, vrati najnoviji aktivan dodeljen nalog (npr. za sutra)
+    if (!todayOrder) {
+      todayOrder = await prisma.workOrder.findFirst({
+        where: {
+          workerId: linkedWorker.id,
+          status: { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] },
+        },
+        include: orderInclude,
+        orderBy: { createdAt: "desc" },
+      });
+    }
 
     res.json({ todayOrder });
   } catch (error) {
@@ -451,6 +486,9 @@ router.post("/", requireManager, async (req, res) => {
       },
     });
 
+    // Pošalji Web Push notifikaciju radniku na telefon/uređaj
+    await sendWorkOrderPushNotification(workOrder.workerId, workOrder);
+
     res.status(201).json({ workOrder });
   } catch (error) {
     console.error("Greška pri kreiranju radnog naloga:", error);
@@ -570,6 +608,10 @@ router.patch("/:id/status", async (req, res) => {
       },
     });
 
+    if (order.status === "OTKAZAN" && status !== "OTKAZAN") {
+      await sendWorkOrderPushNotification(updated.workerId, updated);
+    }
+
     res.json({ workOrder: updated });
   } catch (error) {
     console.error("Greška pri izmeni statusa naloga:", error);
@@ -671,6 +713,13 @@ router.put("/:id", requireManager, async (req, res) => {
         newValues: updated,
       },
     });
+
+    if (
+      updated.workerId !== existing.workerId ||
+      (existing.status === "OTKAZAN" && updated.status !== "OTKAZAN")
+    ) {
+      await sendWorkOrderPushNotification(updated.workerId, updated);
+    }
 
     res.json({ workOrder: updated });
   } catch (error) {

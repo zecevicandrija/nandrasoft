@@ -1,12 +1,49 @@
 import { Router } from "express";
+import multer from "multer";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireManager } from "../middlewares/auth.js";
+import { generateBunnyUploadConfig, uploadBufferToBunny } from "../lib/bunnyStorage.js";
 
 const router = Router();
+const uploadMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB max za fallback
+});
 
 // Svi endpointi zahtevaju prijavljenog korisnika
 router.use(requireAuth);
+
+// ==========================================
+// 0. BUNNY.NET DIREKTAN UPLOAD SLIKE RAČUNA
+// ==========================================
+router.post("/upload-url", async (req, res) => {
+  try {
+    const { fileType } = req.body || {};
+    const config = generateBunnyUploadConfig(fileType || "image/webp");
+    res.json(config);
+  } catch (error) {
+    console.error("Greška pri generisanju Bunny upload linka:", error);
+    res.status(500).json({ error: error.message || "Greška pri pripremi otpremanja slike računa." });
+  }
+});
+
+router.post("/upload-fallback", uploadMemory.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Slika računa nije prosleđena." });
+    }
+    const result = await uploadBufferToBunny(
+      req.file.buffer,
+      req.file.mimetype || "image/webp",
+      req.body?.filePath || null
+    );
+    res.json(result);
+  } catch (error) {
+    console.error("Greška pri fallback uploadu slike na Bunny.net:", error);
+    res.status(500).json({ error: error.message || "Greška pri otpremanju slike računa na CDN." });
+  }
+});
 
 // Kapacitet glavne cisterne gazdinstva u litrima (npr. 10.000 L)
 const CISTERNA_KAPACITET_LITARA = 10000;
@@ -118,6 +155,7 @@ router.get("/entries", async (req, res) => {
       machineId,
       workerId,
       fuelSource,
+      gasStation,
       hasAnomaly,
       dateFrom,
       dateTo,
@@ -132,6 +170,7 @@ router.get("/entries", async (req, res) => {
     if (machineId) where.machineId = String(machineId);
     if (workerId) where.workerId = String(workerId);
     if (fuelSource) where.fuelSource = String(fuelSource);
+    if (gasStation) where.gasStation = String(gasStation).toUpperCase();
     if (hasAnomaly === "true") where.hasAnomaly = true;
 
     // Ako je korisnik radnik/operater, automatski ograniči SAMO na njegova točenja!
@@ -249,7 +288,7 @@ router.get("/entries", async (req, res) => {
       const isToday = entryDayStr === todayStr;
       const canEdit = isManager || isToday;
 
-      if (isManager) {
+      if (isManager || entry.fuelSource === "PUMPA") {
         return { ...entry, calculatedLPerHa: lPerHa, fuelNorm: norm, isToday, canEdit };
       }
 
@@ -281,10 +320,13 @@ const createFuelEntrySchema = z.object({
   machineId: z.string().min(1, "Mašina je obavezna"),
   workerId: z.string().optional().nullable(),
   fuelSource: fuelSourceEnum.default("CISTERNA"),
+  gasStation: z.string().max(100).optional().nullable(),
   fuelType: z.string().default("EURODIZEL"),
   liters: z.number().positive("Količina mora biti veća od 0 litara"),
   fieldWorkId: z.string().optional().nullable(),
   pricePerLiter: z.number().nonnegative().optional().nullable(),
+  totalCost: z.number().positive("Iznos računa mora biti veći od 0 RSD").optional().nullable(),
+  receiptImageUrl: z.string().url("Neispravan link slike računa").max(1000).optional().nullable(),
   receiptNumber: z.string().max(100).optional().nullable(),
   notes: z.string().max(500).optional().nullable(),
   date: z.string().optional().nullable(),
@@ -351,7 +393,53 @@ router.post("/entries", async (req, res) => {
       return res.status(404).json({ error: "Izabrani radnik ne postoji." });
     }
 
-    // 3. Proveri stanje cisterne ako se toči iz interne cisterne
+    // 3. Poslovno pravilo: U kanister i cisternu za firmu mogu da sipaju samo direktor i rukovodilac
+    if (["CISTERNA", "KANISTER"].includes(data.fuelSource)) {
+      if (!isManager) {
+        return res.status(403).json({
+          error: "Nemate ovlašćenje za točenje iz cisterne firme ili kanistera. U kanister i cisternu za firmu mogu sipati isključivo direktor i rukovodilac.",
+        });
+      }
+    }
+
+    // Poslovno pravilo za radnike: mogu da sipaju SAMO na javnoj petrol i europetrol pumpi
+    let effectiveGasStation = null;
+    if (data.fuelSource === "PUMPA") {
+      const stationNormalized = (data.gasStation || "").trim().toUpperCase();
+      if (!isManager) {
+        if (!["PETROL", "EUROPETROL"].includes(stationNormalized)) {
+          return res.status(400).json({
+            error: "Radnici mogu sipati gorivo isključivo na javnoj Petrol ili Europetrol pumpi. Molimo izaberite ovlašćenu pumpu (Petrol ili Europetrol).",
+          });
+        }
+        effectiveGasStation = stationNormalized;
+      } else {
+        effectiveGasStation = stationNormalized || "PETROL";
+      }
+    } else {
+      if (!isManager) {
+        return res.status(403).json({
+          error: "Radnici mogu sipati gorivo isključivo na javnoj Petrol ili Europetrol pumpi.",
+        });
+      }
+    }
+
+    // Poslovno pravilo za radnike na pumpi (Petrol / Europetrol):
+    // Ako je slikao račun, ne mora da unosi cenu (uneće rukovodilac/direktor sa slike računa).
+    // Ako NIJE slikao račun, mora da unese cenu!
+    const hasReceiptImage = Boolean(data.receiptImageUrl && data.receiptImageUrl.trim().length > 0);
+    const hasEnteredPrice = Boolean(
+      (data.totalCost !== undefined && data.totalCost !== null && data.totalCost > 0) ||
+      (data.pricePerLiter !== undefined && data.pricePerLiter !== null && data.pricePerLiter > 0)
+    );
+
+    if (!isManager && data.fuelSource === "PUMPA" && !hasReceiptImage && !hasEnteredPrice) {
+      return res.status(400).json({
+        error: "Ukoliko niste slikali račun sa pumpe (Petrol / Europetrol), obavezno je da unesete ukupan iznos (cenu) računa.",
+      });
+    }
+
+    // 4. Proveri stanje cisterne ako se toči iz interne cisterne
     let effectivePricePerLiter = data.pricePerLiter;
     if (data.fuelSource === "CISTERNA") {
       const suppliesAgg = await prisma.fuelSupply.aggregate({
@@ -371,7 +459,7 @@ router.post("/entries", async (req, res) => {
       }
 
       // Ako nije uneta cena, preuzmi prosečnu ponderisanu cenu cisterne
-      if (!effectivePricePerLiter) {
+      if (!effectivePricePerLiter && !data.totalCost) {
         effectivePricePerLiter = (suppliesAgg._sum.liters || 0) > 0
           ? Number(((suppliesAgg._sum.totalCost || 0) / suppliesAgg._sum.liters).toFixed(2))
           : 171.66;
@@ -457,12 +545,28 @@ router.post("/entries", async (req, res) => {
       }
     }
 
-    // Izračunaj finansije - ako radnik nije uneo cenu (ili toči sa pumpe/kanistera), uzima se automatski
-    // ponderisana cena cisterne ili referentna cena evrodizela iz Cenovnika (171.66 RSD/L)
-    if (!effectivePricePerLiter) {
+    // Izračunaj finansije:
+    // - Ako je prosleđen totalCost, pricePerLiter se računa kao totalCost / liters
+    // - Ako je prosleđen pricePerLiter, totalCost se računa kao liters * pricePerLiter
+    // - Za PUMPA sa slikom računa bez unete cene: ostavlja se null da rukovodilac/direktor unese cenu sa slike računa!
+    let calculatedTotalCost = null;
+    if (data.totalCost !== undefined && data.totalCost !== null && data.totalCost > 0) {
+      calculatedTotalCost = Number(data.totalCost.toFixed(2));
+      effectivePricePerLiter = Number((data.totalCost / data.liters).toFixed(2));
+    } else if (effectivePricePerLiter !== undefined && effectivePricePerLiter !== null && effectivePricePerLiter > 0) {
+      effectivePricePerLiter = Number(effectivePricePerLiter.toFixed(2));
+      calculatedTotalCost = Number((data.liters * effectivePricePerLiter).toFixed(2));
+    } else if (data.fuelSource === "CISTERNA") {
       effectivePricePerLiter = 171.66;
+      calculatedTotalCost = Number((data.liters * effectivePricePerLiter).toFixed(2));
+    } else {
+      effectivePricePerLiter = null;
+      calculatedTotalCost = null;
     }
-    const calculatedTotalCost = Number((data.liters * effectivePricePerLiter).toFixed(2));
+
+    const createStationTag = effectiveGasStation ? ` (${effectiveGasStation})` : "";
+    const anomalyTag = hasAnomaly ? " [UPITNA POTROŠNJA]" : "";
+    const createAuditDesc = `Natočeno ${data.liters} L goriva (${data.fuelType}) u mašinu "${machine.name}" [Izvor: ${data.fuelSource}${createStationTag}]${anomalyTag}`;
 
     // 5. TRANSAKCIJA: Upis točenja + ažuriranje nivoa goriva u mašini + revizorski trag
     const [entry] = await prisma.$transaction([
@@ -473,10 +577,12 @@ router.post("/entries", async (req, res) => {
           workerId: targetWorkerId,
           fieldWorkId: data.fieldWorkId || (linkedFieldWork ? linkedFieldWork.id : null),
           fuelSource: data.fuelSource,
+          gasStation: effectiveGasStation,
           fuelType: data.fuelType,
           liters: data.liters,
           pricePerLiter: effectivePricePerLiter,
           totalCost: calculatedTotalCost,
+          receiptImageUrl: data.receiptImageUrl || null,
           hasAnomaly,
           anomalyReason: anomalyReasons.length > 0 ? anomalyReasons.join(". ") : null,
           receiptNumber: data.receiptNumber,
@@ -507,14 +613,16 @@ router.post("/entries", async (req, res) => {
           userId: req.user.id,
           userName: req.user.name,
           userRole: req.user.role,
-          description: `Natočeno ${data.liters} L goriva (${data.fuelType}) u mašinu "${machine.name}" [Izvor: ${data.fuelSource}]${
-            hasAnomaly ? " [UPITNA POTROŠNJA]" : ""
-          }`,
+          description: createAuditDesc,
           newValues: {
             machineId: data.machineId,
             machineName: machine.name,
             liters: data.liters,
             fuelSource: data.fuelSource,
+            gasStation: effectiveGasStation,
+            totalCost: calculatedTotalCost,
+            pricePerLiter: effectivePricePerLiter,
+            receiptImageUrl: data.receiptImageUrl || null,
             hasAnomaly,
             anomalyReason: anomalyReasons.join(". "),
           },
@@ -523,7 +631,7 @@ router.post("/entries", async (req, res) => {
     ]);
 
     // Formatiraj odgovor u zavisnosti od uloge
-    if (!isManager) {
+    if (!isManager && entry.fuelSource !== "PUMPA") {
       delete entry.pricePerLiter;
       delete entry.totalCost;
     }
@@ -546,11 +654,14 @@ router.post("/entries", async (req, res) => {
 const updateFuelEntrySchema = z.object({
   liters: z.number().positive("Količina mora biti veća od 0 litara").optional(),
   fuelSource: fuelSourceEnum.optional(),
+  gasStation: z.string().max(100).optional().nullable(),
   fuelType: z.string().optional(),
   fieldWorkId: z.string().optional().nullable(),
   notes: z.string().max(500).optional().nullable(),
   receiptNumber: z.string().max(100).optional().nullable(),
   pricePerLiter: z.number().nonnegative().optional().nullable(),
+  totalCost: z.number().positive("Iznos računa mora biti veći od 0 RSD").optional().nullable(),
+  receiptImageUrl: z.string().url("Neispravan link slike računa").max(1000).optional().nullable(),
 });
 
 router.put("/entries/:id", async (req, res) => {
@@ -609,6 +720,30 @@ router.put("/entries/:id", async (req, res) => {
     const diffLiters = newLiters - existing.liters;
     const newSource = data.fuelSource || existing.fuelSource;
 
+    // Poslovno pravilo: u kanister i cisternu za firmu mogu sipati samo direktor i rukovodilac
+    if (["CISTERNA", "KANISTER"].includes(newSource) && !isManager) {
+      return res.status(403).json({
+        error: "Nemate ovlašćenje za točenje iz cisterne firme ili kanistera. U kanister i cisternu za firmu mogu sipati isključivo direktor i rukovodilac.",
+      });
+    }
+
+    let effectiveGasStation = data.gasStation !== undefined
+      ? (data.gasStation ? data.gasStation.trim().toUpperCase() : null)
+      : existing.gasStation;
+
+    if (!isManager) {
+      if (newSource !== "PUMPA") {
+        return res.status(403).json({
+          error: "Radnici mogu sipati gorivo isključivo na javnoj pumpi (Petrol ili Europetrol).",
+        });
+      }
+      if (!["PETROL", "EUROPETROL"].includes(effectiveGasStation)) {
+        return res.status(400).json({
+          error: "Radnici mogu sipati gorivo isključivo na javnoj Petrol ili Europetrol pumpi. Molimo izaberite ovlašćenu pumpu (Petrol ili Europetrol).",
+        });
+      }
+    }
+
     // Ako je točenje iz cisterne i povećava se količina, proveri stanje u cisterni
     if (newSource === "CISTERNA" && diffLiters > 0) {
       const suppliesAgg = await prisma.fuelSupply.aggregate({
@@ -639,12 +774,51 @@ router.put("/entries/:id", async (req, res) => {
       });
     }
 
-    // Proračun cene
-    let effectivePrice = existing.pricePerLiter || 171.66;
-    if (isManager && data.pricePerLiter !== undefined) {
-      effectivePrice = data.pricePerLiter;
+    const newReceiptImageUrl = data.receiptImageUrl !== undefined ? (data.receiptImageUrl || null) : existing.receiptImageUrl;
+
+    // Proračun cene i ukupnog iznosa (totalCost)
+    let effectivePrice = existing.pricePerLiter;
+    let newTotalCost = existing.totalCost;
+
+    if (data.totalCost !== undefined) {
+      if (data.totalCost !== null && data.totalCost > 0) {
+        newTotalCost = Number(data.totalCost.toFixed(2));
+        effectivePrice = Number((newTotalCost / newLiters).toFixed(2));
+      } else {
+        newTotalCost = null;
+        effectivePrice = null;
+      }
+    } else if (data.pricePerLiter !== undefined) {
+      if (data.pricePerLiter !== null && data.pricePerLiter > 0) {
+        effectivePrice = Number(data.pricePerLiter.toFixed(2));
+        newTotalCost = Number((newLiters * effectivePrice).toFixed(2));
+      } else {
+        effectivePrice = null;
+        newTotalCost = null;
+      }
+    } else if (data.liters !== undefined) {
+      if (newSource === "PUMPA" && existing.totalCost && existing.totalCost > 0) {
+        newTotalCost = existing.totalCost;
+        effectivePrice = Number((existing.totalCost / newLiters).toFixed(2));
+      } else if (existing.pricePerLiter && existing.pricePerLiter > 0) {
+        effectivePrice = existing.pricePerLiter;
+        newTotalCost = Number((newLiters * effectivePrice).toFixed(2));
+      }
     }
-    const newTotalCost = effectivePrice ? Number((newLiters * effectivePrice).toFixed(2)) : null;
+
+    // Poslovno pravilo za radnike na pumpi (Petrol / Europetrol):
+    // Ako je slikao račun, ne mora da unosi cenu. Ako nije slikao račun, mora da unese cenu!
+    const hasReceipt = Boolean(newReceiptImageUrl && newReceiptImageUrl.trim().length > 0);
+    const hasPrice = Boolean(newTotalCost && newTotalCost > 0);
+
+    if (!isManager && newSource === "PUMPA" && !hasReceipt && !hasPrice) {
+      return res.status(400).json({
+        error: "Ukoliko niste slikali račun sa pumpe (Petrol / Europetrol), obavezno je da unesete ukupan iznos (cenu) računa.",
+      });
+    }
+
+    const editStationTag = effectiveGasStation ? ` (${effectiveGasStation})` : "";
+    const editAuditDesc = `Izmenjeno točenje u mašinu "${existing.machine.name}": sa ${existing.liters} L na ${newLiters} L [Izvor: ${newSource}${editStationTag}]`;
 
     const [updatedEntry] = await prisma.$transaction([
       prisma.fuelEntry.update({
@@ -652,14 +826,14 @@ router.put("/entries/:id", async (req, res) => {
         data: {
           ...(data.liters !== undefined && { liters: data.liters }),
           ...(data.fuelSource && { fuelSource: data.fuelSource }),
+          ...(effectiveGasStation !== undefined && { gasStation: effectiveGasStation }),
           ...(data.fuelType && { fuelType: data.fuelType }),
           ...(data.fieldWorkId !== undefined && { fieldWorkId: data.fieldWorkId }),
           ...(data.notes !== undefined && { notes: data.notes }),
           ...(data.receiptNumber !== undefined && { receiptNumber: data.receiptNumber }),
-          ...(isManager && data.pricePerLiter !== undefined && {
-            pricePerLiter: data.pricePerLiter,
-            totalCost: newTotalCost,
-          }),
+          pricePerLiter: effectivePrice,
+          totalCost: newTotalCost,
+          receiptImageUrl: newReceiptImageUrl,
           hasAnomaly,
           anomalyReason: anomalyReasons.length > 0 ? anomalyReasons.join(". ") : null,
         },
@@ -688,9 +862,16 @@ router.put("/entries/:id", async (req, res) => {
           userId: req.user.id,
           userName: req.user.name,
           userRole: req.user.role,
-          description: `Izmenjeno točenje u mašinu "${existing.machine.name}": sa ${existing.liters} L na ${newLiters} L`,
+          description: editAuditDesc,
           oldValues: existing,
-          newValues: { liters: newLiters, fuelSource: newSource },
+          newValues: {
+            liters: newLiters,
+            fuelSource: newSource,
+            gasStation: effectiveGasStation,
+            totalCost: newTotalCost,
+            pricePerLiter: effectivePrice,
+            receiptImageUrl: newReceiptImageUrl,
+          },
         },
       }),
     ]);
@@ -764,9 +945,9 @@ const createFuelSupplySchema = z.object({
 
 router.get("/supplies", async (req, res) => {
   try {
-    const canAccess = ["DIREKTOR", "RUKOVODILAC", "MAGACIN"].includes(req.user.role);
+    const canAccess = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
     if (!canAccess) {
-      return res.status(403).json({ error: "Nemate pristup evidenciji prijema cisterne." });
+      return res.status(403).json({ error: "Nemate pristup evidenciji prijema cisterne. Prijem cisterne je rezervisan za direktora i rukovodioca." });
     }
 
     const supplies = await prisma.fuelSupply.findMany({
@@ -797,9 +978,9 @@ router.get("/supplies", async (req, res) => {
 
 router.post("/supplies", async (req, res) => {
   try {
-    // Samo Rukovodilac, Direktor ili Magacioner mogu uneti prijem cisterne
-    if (!["DIREKTOR", "RUKOVODILAC", "MAGACIN"].includes(req.user.role)) {
-      return res.status(403).json({ error: "Nemate ovlašćenje za prijem goriva u cisternu." });
+    // Samo Rukovodilac ili Direktor mogu uneti prijem cisterne
+    if (!["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
+      return res.status(403).json({ error: "Nemate ovlašćenje za prijem goriva u cisternu. Prijem cisterne mogu uneti isključivo direktor i rukovodilac." });
     }
 
     const parsed = createFuelSupplySchema.safeParse(req.body);
