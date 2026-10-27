@@ -718,6 +718,10 @@ const SifarniciHub: React.FC = () => {
                       <input className={styles.formInput} value={form.brandModel || ''} onChange={(e) => setForm({ ...form, brandModel: e.target.value })} placeholder="npr. 6155M / MTZ 82.1" />
                     </div>
                   </div>
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Broj ENP taga za putarine (opciono, za kamione/vozila)</label>
+                    <input className={styles.formInput} value={form.enpTagNumber || ''} onChange={(e) => setForm({ ...form, enpTagNumber: e.target.value })} placeholder="npr. ENP-104288" />
+                  </div>
                 </>
               )}
 

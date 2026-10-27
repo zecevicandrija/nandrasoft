@@ -25,6 +25,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
+import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
 import { useSession } from '../lib/auth-client';
 import styles from './Radovi.module.css';
 
@@ -97,6 +98,11 @@ const RadoviDashboard: React.FC = () => {
   const [editingWork, setEditingWork] = useState<any | null>(null);
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [toast, setToast] = useState<Toast | null>(null);
+
+  // Brzo dodavanje / izmena parcele
+  const [parcelQuickModalOpen, setParcelQuickModalOpen] = useState(false);
+  const [parcelToEdit, setParcelToEdit] = useState<ParcelItem | null>(null);
+  const [parcelQuickTarget, setParcelQuickTarget] = useState<'edit-work' | 'filter'>('edit-work');
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -655,18 +661,35 @@ const RadoviDashboard: React.FC = () => {
               />
             </div>
 
-            <select
-              className={styles.selectInput}
-              value={selectedParcel}
-              onChange={(e) => setSelectedParcel(e.target.value)}
-            >
-              <option value="">Sve parcele</option>
-              {parcelsData?.parcels?.map((p: any) => (
-                <option key={p.id} value={p.id}>
-                  [{p.code}] {p.name}
-                </option>
-              ))}
-            </select>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+              <select
+                className={styles.selectInput}
+                value={selectedParcel}
+                onChange={(e) => setSelectedParcel(e.target.value)}
+              >
+                <option value="">Sve parcele</option>
+                {parcelsData?.parcels?.map((p: any) => (
+                  <option key={p.id} value={p.id}>
+                    [{p.code}] {p.name}
+                  </option>
+                ))}
+              </select>
+              {isManager && (
+                <ParcelQuickActions
+                  selectedParcel={parcelsData?.parcels?.find((p: any) => p.id === selectedParcel) || null}
+                  onAddClick={() => {
+                    setParcelQuickTarget('filter');
+                    setParcelToEdit(null);
+                    setParcelQuickModalOpen(true);
+                  }}
+                  onEditClick={(parcel) => {
+                    setParcelQuickTarget('filter');
+                    setParcelToEdit(parcel);
+                    setParcelQuickModalOpen(true);
+                  }}
+                />
+              )}
+            </div>
 
             <select
               className={styles.selectInput}
@@ -988,7 +1011,24 @@ const RadoviDashboard: React.FC = () => {
 
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Parcela</label>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
+                        <label className={styles.formLabel} style={{ marginBottom: 0 }}>Parcela</label>
+                        {isManager && (
+                          <ParcelQuickActions
+                            selectedParcel={parcelsData?.parcels?.find((p: any) => p.id === editForm.parcelId) || null}
+                            onAddClick={() => {
+                              setParcelQuickTarget('edit-work');
+                              setParcelToEdit(null);
+                              setParcelQuickModalOpen(true);
+                            }}
+                            onEditClick={(parcel) => {
+                              setParcelQuickTarget('edit-work');
+                              setParcelToEdit(parcel);
+                              setParcelQuickModalOpen(true);
+                            }}
+                          />
+                        )}
+                      </div>
                       <select
                         className={styles.selectInput}
                         value={editForm.parcelId}
@@ -1139,6 +1179,26 @@ const RadoviDashboard: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Brzi modal za dodavanje / izmenu parcele */}
+        <ParcelQuickModal
+          isOpen={parcelQuickModalOpen}
+          onClose={() => setParcelQuickModalOpen(false)}
+          parcelToEdit={parcelToEdit}
+          onSaved={(savedParcel, mode) => {
+            if (parcelQuickTarget === 'edit-work') {
+              setEditForm((prev) => ({ ...prev, parcelId: savedParcel.id }));
+            } else {
+              setSelectedParcel(savedParcel.id);
+            }
+            showToast(
+              mode === 'edit'
+                ? `Parcela [${savedParcel.code}] ${savedParcel.name} je izmenjena.`
+                : `Nova parcela [${savedParcel.code}] ${savedParcel.name} je dodata.`,
+              'success'
+            );
+          }}
+        />
       </div>
     </AppLayout>
   );

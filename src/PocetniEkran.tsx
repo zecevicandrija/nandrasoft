@@ -23,6 +23,7 @@ import {
 import styles from './PocetniEkran.module.css';
 import { signIn, signOut, useSession } from './lib/auth-client';
 import ThemeToggle from './components/ThemeToggle';
+import PushNotificationBanner from './components/PushNotificationBanner';
 
 const ROLE_LABELS: Record<string, string> = {
   DIREKTOR: 'Direktor / Administrator',
@@ -76,7 +77,7 @@ const PocetniEkran: React.FC = () => {
   const fetchTodayOrder = () => {
     const user = (session as any)?.user;
     if (user) {
-      fetch('http://localhost:5000/api/work-orders/my-today', { credentials: 'include' })
+      fetch('/api/work-orders/my-today', { credentials: 'include' })
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (data?.todayOrder) {
@@ -89,13 +90,17 @@ const PocetniEkran: React.FC = () => {
     }
   };
 
-  // Redirekcija za direktora i rukovodioca direktno na naloze / dispečing
+  // Redirekcija za uloge: direktor i rukovodilac idu na /nalozi, magacin na /magacin-djubrivo
   useEffect(() => {
     const user = (session as any)?.user;
-    if (user && ['DIREKTOR', 'RUKOVODILAC'].includes(user.role)) {
-      navigate('/nalozi', { replace: true });
-    } else {
-      fetchTodayOrder();
+    if (user) {
+      if (['DIREKTOR', 'RUKOVODILAC'].includes(user.role)) {
+        navigate('/nalozi', { replace: true });
+      } else if (user.role === 'MAGACIN') {
+        navigate('/magacin-djubrivo', { replace: true });
+      } else {
+        fetchTodayOrder();
+      }
     }
   }, [session, navigate]);
 
@@ -127,7 +132,7 @@ const PocetniEkran: React.FC = () => {
     setAcceptLoading(true);
 
     try {
-      const res = await fetch(`http://localhost:5000/api/work-orders/${todayOrder.id}/accept`, {
+      const res = await fetch(`/api/work-orders/${todayOrder.id}/accept`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -177,6 +182,8 @@ const PocetniEkran: React.FC = () => {
         const userRole = (result.data.user as any).role;
         if (['DIREKTOR', 'RUKOVODILAC'].includes(userRole)) {
           navigate('/nalozi', { replace: true });
+        } else if (userRole === 'MAGACIN') {
+          navigate('/magacin-djubrivo', { replace: true });
         }
       }
     } catch (err: any) {
@@ -215,9 +222,12 @@ const PocetniEkran: React.FC = () => {
   if (user) {
     const role = user.role || 'OPERATER';
 
-    // Rukovodilac i Direktor idu direktno na dashboard radnih naloga / dispečing
+    // Rukovodilac i Direktor idu direktno na dashboard radnih naloga / dispečing, Magacin na đubrivo
     if (['DIREKTOR', 'RUKOVODILAC'].includes(role)) {
       return <Navigate to="/nalozi" replace />;
+    }
+    if (role === 'MAGACIN') {
+      return <Navigate to="/magacin-djubrivo" replace />;
     }
 
     const initials = user.name
@@ -243,6 +253,12 @@ const PocetniEkran: React.FC = () => {
             <span className={styles.roleIconWrapper}>{getRoleIcon(role, 16)}</span>
             <span>{ROLE_LABELS[role] || role}</span>
           </div>
+
+          <PushNotificationBanner
+            userId={user.id}
+            onPushReceived={fetchTodayOrder}
+            showActiveStatus
+          />
 
           {todayOrder && (
             <div
@@ -636,10 +652,20 @@ const PocetniEkran: React.FC = () => {
             )}
 
             {['DIREKTOR', 'RUKOVODILAC', 'MAGACIN'].includes(role) && (
-              <Link to="/sifarnici" className={styles.adminBtn}>
-                <Database size={18} />
-                Šifarnici
-              </Link>
+              <>
+                <Link
+                  to="/magacin-djubrivo"
+                  className={styles.adminBtn}
+                  style={{ backgroundColor: 'rgba(22, 163, 74, 0.14)', color: '#16a34a' }}
+                >
+                  <Package size={18} />
+                  Magacin Đubriva & Zalihe
+                </Link>
+                <Link to="/sifarnici" className={styles.adminBtn}>
+                  <Database size={18} />
+                  Šifarnici
+                </Link>
+              </>
             )}
 
             {role === 'DIREKTOR' && (

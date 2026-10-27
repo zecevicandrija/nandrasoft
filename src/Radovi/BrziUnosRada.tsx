@@ -22,6 +22,7 @@ import {
   Gauge,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
 import { useSession } from '../lib/auth-client';
 import styles from './BrziUnosRada.module.css';
 
@@ -34,6 +35,11 @@ const BrziUnosRada: React.FC = () => {
   const { data: session } = useSession();
   const currentUser = (session as any)?.user;
   const isOperator = currentUser?.role === 'OPERATER';
+  const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(currentUser?.role || '');
+
+  // Brzo dodavanje / izmena parcele
+  const [parcelQuickModalOpen, setParcelQuickModalOpen] = useState(false);
+  const [parcelToEdit, setParcelToEdit] = useState<ParcelItem | null>(null);
 
   // Parametri prosleđeni sa Radnog Naloga
   const orderIdParam = searchParams.get('orderId');
@@ -541,13 +547,28 @@ const BrziUnosRada: React.FC = () => {
 
                 {/* 2. PARCELA */}
                 <div className={styles.fieldGroup}>
-                  <label className={styles.fieldLabel}>
+                  <label className={styles.fieldLabel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.4rem' }}>
                     <span>Parcela</span>
-                    {selectedParcelObj && (
-                      <span style={{ fontSize: '0.75rem', color: '#16a34a', fontWeight: 800 }}>
-                        Površina: {selectedParcelObj.areaHa} ha
-                      </span>
-                    )}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      {selectedParcelObj && (
+                        <span style={{ fontSize: '0.75rem', color: '#16a34a', fontWeight: 800 }}>
+                          Površina: {selectedParcelObj.areaHa} ha
+                        </span>
+                      )}
+                      {isManager && (
+                        <ParcelQuickActions
+                          selectedParcel={selectedParcelObj || null}
+                          onAddClick={() => {
+                            setParcelToEdit(null);
+                            setParcelQuickModalOpen(true);
+                          }}
+                          onEditClick={(parcel) => {
+                            setParcelToEdit(parcel);
+                            setParcelQuickModalOpen(true);
+                          }}
+                        />
+                      )}
+                    </span>
                   </label>
                   <select
                     className={styles.fieldSelect}
@@ -1022,6 +1043,16 @@ const BrziUnosRada: React.FC = () => {
             )}
           </div>
         )}
+
+        {/* Brzi modal za dodavanje / izmenu parcele */}
+        <ParcelQuickModal
+          isOpen={parcelQuickModalOpen}
+          onClose={() => setParcelQuickModalOpen(false)}
+          parcelToEdit={parcelToEdit}
+          onSaved={(savedParcel) => {
+            setParcelId(savedParcel.id);
+          }}
+        />
       </div>
     </AppLayout>
   );

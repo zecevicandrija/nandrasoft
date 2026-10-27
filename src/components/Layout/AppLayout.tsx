@@ -17,9 +17,11 @@ import {
   ShieldAlert,
   KeyRound,
   Loader2,
+  CreditCard,
 } from 'lucide-react';
 import { useSession, signOut } from '../../lib/auth-client';
 import ThemeToggle from '../ThemeToggle';
+import PushNotificationBanner from '../PushNotificationBanner';
 import styles from './AppLayout.module.css';
 
 interface AppLayoutProps {
@@ -77,6 +79,12 @@ const NAV_GROUPS: NavGroup[] = [
         to: '/masine-kvarovi',
         icon: <Wrench size={18} />,
         allowedRoles: ['MEHANICAR', 'RUKOVODILAC', 'DIREKTOR'],
+      },
+      {
+        title: 'Putarine',
+        to: '/masine/putarine',
+        icon: <CreditCard size={18} />,
+        allowedRoles: ['OPERATER', 'MEHANICAR', 'RUKOVODILAC', 'DIREKTOR', 'MAGACIN'],
       },
       {
         title: 'Neusklađenosti mašina',
@@ -252,6 +260,10 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
           ))}
         </nav>
 
+        <div className={styles.sidebarNotificationArea}>
+          <PushNotificationBanner userId={currentUser?.id} variant="sidebar" />
+        </div>
+
         <div className={styles.sidebarFooter}>
           <div className={styles.userInfoCompact}>
             <span className={styles.userNameCompact}>{currentUser?.name || 'Korisnik'}</span>
@@ -293,7 +305,9 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
           </div>
         </header>
 
-        <main className={styles.pageContent}>{children}</main>
+        <main className={styles.pageContent}>
+          {children}
+        </main>
       </div>
     </div>
   );

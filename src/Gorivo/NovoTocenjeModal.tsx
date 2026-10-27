@@ -12,6 +12,7 @@ import {
   ArrowUpToLine,
 } from 'lucide-react';
 import { useSession } from '../lib/auth-client';
+import { SlikaRacunaUpload } from './SlikaRacunaUpload';
 import styles from './GorivoDashboard.module.css';
 
 interface Machine {
@@ -67,16 +68,33 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
 
   const [machineId, setMachineId] = useState('');
   const [workerId, setWorkerId] = useState('');
-  const [fuelSource, setFuelSource] = useState<'CISTERNA' | 'PUMPA' | 'KANISTER'>('CISTERNA');
+  const [fuelSource, setFuelSource] = useState<'CISTERNA' | 'PUMPA' | 'KANISTER'>(isManager ? 'CISTERNA' : 'PUMPA');
+  const [gasStation, setGasStation] = useState<'PETROL' | 'EUROPETROL'>('PETROL');
   const [fuelType, setFuelType] = useState('EURODIZEL');
   const [liters, setLiters] = useState<string>('');
-  const [pricePerLiter, setPricePerLiter] = useState<string>('');
-  const [receiptNumber, setReceiptNumber] = useState('');
+  const [totalCost, setTotalCost] = useState<string>('');
+  const [receiptImageUrl, setReceiptImageUrl] = useState<string | null>(null);
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [notes, setNotes] = useState('');
   const [date, setDate] = useState(todayStr);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Reset pri otvaranju modala
+  useEffect(() => {
+    if (isOpen) {
+      setFuelSource(isManager ? 'CISTERNA' : 'PUMPA');
+      setGasStation('PETROL');
+      setLiters('');
+      setTotalCost('');
+      setReceiptImageUrl(null);
+      setUploadingReceipt(false);
+      setNotes('');
+      setDate(new Date().toISOString().split('T')[0]);
+      setError('');
+    }
+  }, [isManager, isOpen]);
 
   // Automatski selektuj radnika ako je povezan sa prijavljenim nalogom
   useEffect(() => {
@@ -113,8 +131,17 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
     }
   };
 
-  // Live pre-check upozorenja
+  // Live pre-check upozorenja i proračun cene po litru
   const parsedLiters = Number(liters) || 0;
+  const parsedTotalCost = Number(totalCost) || 0;
+  const calculatedPricePerLiter =
+    parsedLiters > 0 && parsedTotalCost > 0
+      ? Number((parsedTotalCost / parsedLiters).toFixed(2))
+      : null;
+
+  const hasReceipt = Boolean(receiptImageUrl && receiptImageUrl.trim().length > 0);
+  const isPriceRequiredForWorker = !isManager && fuelSource === 'PUMPA' && !hasReceipt;
+
   const warnings: string[] = [];
 
   if (selectedMachine && selectedMachine.tankCapacityLiters && parsedLiters > selectedMachine.tankCapacityLiters) {
@@ -134,6 +161,11 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    if (uploadingReceipt) {
+      setError('Molimo sačekajte da se završi otpremanje slike računa.');
+      return;
+    }
 
     if (!machineId) {
       setError('Morate izabrati radnu mašinu.');
@@ -158,6 +190,17 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
       setError('Morate izabrati radnika (točioca).');
       return;
     }
+
+    if (!isManager && fuelSource !== 'PUMPA') {
+      setError('Točenje iz cisterne firme i kanistera dozvoljeno je samo direktoru i rukovodiocu. Radnici mogu sipati isključivo na javnoj Petrol ili Europetrol pumpi.');
+      return;
+    }
+
+    if (fuelSource === 'PUMPA' && !gasStation) {
+      setError('Morate izabrati ovlašćenu benzinsku pumpu (Petrol ili Europetrol).');
+      return;
+    }
+
     if (!parsedLiters || parsedLiters <= 0) {
       setError('Količina goriva mora biti veća od 0 litara.');
       return;
@@ -173,10 +216,17 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
       return;
     }
 
+    // Pravilo za radnike na Petrol / Europetrol pumpi:
+    // Ako je slikao račun -> ne mora da unosi cenu.
+    // Ako NIJE slikao račun -> mora da unese cenu!
+    if (!isManager && fuelSource === 'PUMPA' && !hasReceipt && parsedTotalCost <= 0) {
+      setError('Pošto niste slikali račun sa pumpe (Petrol / Europetrol), obavezno je da unesete ukupan iznos (cenu) računa.');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      // Kombinujemo izabrani datum sa tačnim trenutnim satima, minutima i sekundama u lokalnom vremenu
       const now = new Date();
       let entryDateTime = now;
       if (date) {
@@ -188,16 +238,15 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
         machineId,
         workerId: effectiveWorkerId || workerId || null,
         fuelSource,
+        gasStation: fuelSource === 'PUMPA' ? gasStation : null,
         fuelType,
         liters: parsedLiters,
-        receiptNumber: receiptNumber || null,
+        totalCost: parsedTotalCost > 0 ? parsedTotalCost : null,
+        receiptImageUrl: receiptImageUrl || null,
+        receiptNumber: null,
         notes: notes || null,
         date: entryDateTime.toISOString(),
       };
-
-      if (pricePerLiter && isManager) {
-        payload.pricePerLiter = Number(pricePerLiter);
-      }
 
       const res = await fetch(`${API}/fuel/entries`, {
         method: 'POST',
@@ -212,7 +261,6 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
         throw new Error(data.error || 'Neuspešan unos točenja.');
       }
 
-      // Uspešno sačuvano
       onSuccess();
       onClose();
     } catch (err: any) {
@@ -263,49 +311,83 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
             </div>
           )}
 
-          {/* Izvor točenja (3 velika dugmeta) */}
-          <div className={styles.formGroup}>
-            <label className={styles.formLabel}>Izvor točenja goriva</label>
-            <div className={styles.sourceSelector}>
-              <button
-                type="button"
-                className={`${styles.sourceBtn} ${fuelSource === 'CISTERNA' ? styles.sourceBtnActive : ''}`}
-                onClick={() => setFuelSource('CISTERNA')}
-              >
-                <Building2 size={18} />
-                <div className={styles.sourceBtnText}>
-                  <span className={styles.sourceBtnTitle}>Cisterna firme</span>
-                  <span className={styles.sourceBtnSub}>
-                    {isManager ? `Dostupno: ${tankCurrentLiters} L` : 'Dvorišni tank gazdinstva'}
-                  </span>
-                </div>
-              </button>
+          {/* Izvor točenja (3 velika dugmeta) - SAMO ZA DIREKTORA I RUKOVODIOCA */}
+          {isManager && (
+            <div className={styles.formGroup}>
+              <label className={styles.formLabel}>Izvor točenja goriva</label>
+              <div className={styles.sourceSelector}>
+                <button
+                  type="button"
+                  className={`${styles.sourceBtn} ${fuelSource === 'CISTERNA' ? styles.sourceBtnActive : ''}`}
+                  onClick={() => setFuelSource('CISTERNA')}
+                >
+                  <Building2 size={18} />
+                  <div className={styles.sourceBtnText}>
+                    <span className={styles.sourceBtnTitle}>Cisterna firme</span>
+                    <span className={styles.sourceBtnSub}>Dostupno: {tankCurrentLiters} L</span>
+                  </div>
+                </button>
 
-              <button
-                type="button"
-                className={`${styles.sourceBtn} ${fuelSource === 'PUMPA' ? styles.sourceBtnActive : ''}`}
-                onClick={() => setFuelSource('PUMPA')}
-              >
-                <Fuel size={18} />
-                <div className={styles.sourceBtnText}>
-                  <span className={styles.sourceBtnTitle}>Javna pumpa</span>
-                  <span className={styles.sourceBtnSub}>NIS / MOL / Knez</span>
-                </div>
-              </button>
+                <button
+                  type="button"
+                  className={`${styles.sourceBtn} ${fuelSource === 'PUMPA' ? styles.sourceBtnActive : ''}`}
+                  onClick={() => setFuelSource('PUMPA')}
+                >
+                  <Fuel size={18} />
+                  <div className={styles.sourceBtnText}>
+                    <span className={styles.sourceBtnTitle}>Javna pumpa</span>
+                    <span className={styles.sourceBtnSub}>Petrol / Europetrol</span>
+                  </div>
+                </button>
 
-              <button
-                type="button"
-                className={`${styles.sourceBtn} ${fuelSource === 'KANISTER' ? styles.sourceBtnActive : ''}`}
-                onClick={() => setFuelSource('KANISTER')}
-              >
-                <MapPin size={18} />
-                <div className={styles.sourceBtnText}>
-                  <span className={styles.sourceBtnTitle}>Kanister na njivi</span>
-                  <span className={styles.sourceBtnSub}>Terensko sipanje</span>
-                </div>
-              </button>
+                <button
+                  type="button"
+                  className={`${styles.sourceBtn} ${fuelSource === 'KANISTER' ? styles.sourceBtnActive : ''}`}
+                  onClick={() => setFuelSource('KANISTER')}
+                >
+                  <MapPin size={18} />
+                  <div className={styles.sourceBtnText}>
+                    <span className={styles.sourceBtnTitle}>Kanister na njivi</span>
+                    <span className={styles.sourceBtnSub}>Terensko sipanje</span>
+                  </div>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Izbor javne pumpe (Petrol ili Europetrol) - za radnike uvek, za upravu kada izabere PUMPA */}
+          {(!isManager || fuelSource === 'PUMPA') && (
+            <div className={styles.formGroup}>
+              <label className={styles.formLabel}>
+                Ovlašćena benzinska pumpa <span className={styles.required}>*</span>
+              </label>
+              <div className={styles.pumpStationSelector}>
+                <button
+                  type="button"
+                  className={`${styles.pumpStationBtn} ${gasStation === 'PETROL' ? styles.pumpStationBtnActive : ''}`}
+                  onClick={() => setGasStation('PETROL')}
+                >
+                  <Fuel size={22} className={styles.pumpIconPetrol} />
+                  <div className={styles.pumpStationInfo}>
+                    <span className={styles.pumpStationName}>PETROL</span>
+                    <span className={styles.pumpStationDesc}>Petrol benzinska pumpa</span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className={`${styles.pumpStationBtn} ${gasStation === 'EUROPETROL' ? styles.pumpStationBtnActive : ''}`}
+                  onClick={() => setGasStation('EUROPETROL')}
+                >
+                  <Fuel size={22} className={styles.pumpIconEuropetrol} />
+                  <div className={styles.pumpStationInfo}>
+                    <span className={styles.pumpStationName}>EUROPETROL</span>
+                    <span className={styles.pumpStationDesc}>Euro Petrol benzinska pumpa</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className={styles.formGrid}>
             {/* Mašina */}
@@ -439,6 +521,72 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
             </div>
           </div>
 
+          {/* Slika računa sa pumpe (za Petrol / Europetrol) */}
+          {(!isManager || fuelSource === 'PUMPA') && (
+            <SlikaRacunaUpload
+              receiptImageUrl={receiptImageUrl}
+              onChange={setReceiptImageUrl}
+              onUploadStateChange={setUploadingReceipt}
+              isWorkerOnPump={!isManager && fuelSource === 'PUMPA'}
+              hasPriceEntered={parsedTotalCost > 0}
+            />
+          )}
+
+          {/* Iznos računa / Cena (RSD) */}
+          <div className={styles.financialSection}>
+            <div className={styles.sectionTitle}>
+              <Receipt size={16} />
+              <span>
+                {!isManager
+                  ? hasReceipt
+                    ? 'Iznos računa / Cena (nije obavezno jer ste slikali račun)'
+                    : 'Iznos računa / Cena sa pumpe (obavezno ako niste slikali račun)'
+                  : 'Iznos računa / Cena goriva (RSD)'}
+              </span>
+            </div>
+
+            <div className={styles.formGroup}>
+              <label className={styles.formLabel}>
+                Ukupan iznos računa / Cena (RSD){' '}
+                {isPriceRequiredForWorker && <span className={styles.required}>*</span>}
+              </label>
+              <div className={styles.amountInputRow}>
+                <input
+                  type="number"
+                  step="any"
+                  min="1"
+                  placeholder={
+                    hasReceipt && !isManager
+                      ? 'Opciono — cenu će uneti rukovodilac/direktor sa slike računa'
+                      : 'Unesite ukupan iznos sa računa (npr. 10250)'
+                  }
+                  className={styles.formInput}
+                  value={totalCost}
+                  onChange={(e) => setTotalCost(e.target.value)}
+                  required={isPriceRequiredForWorker}
+                />
+                <span className={styles.inputUnitBadge}>RSD</span>
+              </div>
+
+              {calculatedPricePerLiter !== null && (
+                <div className={styles.realtimePriceCalc}>
+                  Prosečno: <strong>{calculatedPricePerLiter.toFixed(2)} RSD/L</strong> (
+                  {parsedTotalCost.toLocaleString()} RSD / {parsedLiters} L)
+                </div>
+              )}
+
+              <span className={styles.fieldHint}>
+                {!isManager
+                  ? hasReceipt
+                    ? 'Slikali ste račun — ne morate unositi cenu (rukovodilac/direktor će uneti cenu sa slike računa).'
+                    : 'Ako ne slikate račun sa pumpe (Petrol / Europetrol), morate uneti ukupan iznos računa u RSD.'
+                  : fuelSource === 'CISTERNA'
+                    ? 'Automatski se uzima prosečna nabavna cena cisterne ako ostavite prazno'
+                    : 'Unesite ukupan iznos sa fiskalnog računa (npr. 8.500 RSD)'}
+              </span>
+            </div>
+          </div>
+
           {/* Napomena */}
           <div className={styles.formGroup}>
             <label className={styles.formLabel}>
@@ -454,62 +602,19 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
             />
           </div>
 
-          {/* Ako je točeno na pumpi ili korisnik ima menadžersku ulogu */}
-          {(fuelSource === 'PUMPA' || isManager) && (
-            <div className={styles.financialSection}>
-              <div className={styles.sectionTitle}>
-                <Receipt size={16} />
-                <span>Podaci o računu i ceni (Pumpe i uprava)</span>
-              </div>
-
-              <div className={styles.formGrid}>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>Broj računa / otpremnice</label>
-                  <input
-                    type="text"
-                    placeholder="npr. FIS-2026/0412"
-                    className={styles.formInput}
-                    value={receiptNumber}
-                    onChange={(e) => setReceiptNumber(e.target.value)}
-                  />
-                </div>
-
-                {isManager && (
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Cena po litru (RSD)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0.01"
-                      placeholder="npr. 185.00"
-                      className={styles.formInput}
-                      value={pricePerLiter}
-                      onChange={(e) => setPricePerLiter(e.target.value)}
-                    />
-                    <span className={styles.fieldHint}>
-                      {fuelSource === 'CISTERNA'
-                        ? 'Automatski se uzima prosečna nabavna cena cisterne ako ostavite prazno'
-                        : 'Unesite cenu sa računa benzinske pumpe'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           <div className={styles.modalActions}>
             <button
               type="button"
               className={styles.cancelBtn}
               onClick={onClose}
-              disabled={loading}
+              disabled={loading || uploadingReceipt}
             >
               Odustani
             </button>
             <button
               type="submit"
               className={styles.submitBtn}
-              disabled={loading}
+              disabled={loading || uploadingReceipt}
             >
               {loading ? (
                 <>

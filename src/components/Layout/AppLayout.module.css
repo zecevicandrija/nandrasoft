@@ -128,6 +128,12 @@
   color: var(--text-muted);
 }
 
+.sidebarNotificationArea {
+  padding: 0.6rem 0.85rem;
+  border-top: 1px solid var(--border-color);
+  background-color: var(--bg-card);
+}
+
 .sidebarFooter {
   padding: 1rem 1.2rem;
   border-top: 1px solid var(--border-color);

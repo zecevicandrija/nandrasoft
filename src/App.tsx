@@ -11,6 +11,8 @@ import NeuskladjenostiMasina from './Masine/NeuskladjenostiMasina';
 import RadniNaloziDashboard from './Nalozi/RadniNaloziDashboard';
 import GorivoDashboard from './Gorivo/GorivoDashboard';
 import RadionicaKvarovi from './Masine/RadionicaKvarovi';
+import PutarineDashboard from './Masine/PutarineDashboard';
+import FertilizerDashboard from './Djubrivo/FertilizerDashboard';
 
 function App() {
   return (
@@ -28,6 +30,9 @@ function App() {
           <Route path="/zaduzivanje-masina" element={<MasineZaduzenje />} />
           <Route path="/masine/zaduzenje" element={<Navigate to="/zaduzivanje-masina" replace />} />
           <Route path="/masine-kvarovi" element={<RadionicaKvarovi />} />
+          <Route path="/masine/putarine" element={<PutarineDashboard />} />
+          <Route path="/magacin-djubrivo" element={<FertilizerDashboard />} />
+          <Route path="/djubrivo" element={<Navigate to="/magacin-djubrivo" replace />} />
           <Route path="/masine/neusklađenosti" element={<NeuskladjenostiMasina />} />
           <Route path="/radovi/neusklađenosti" element={<NeuskladjenostiMasina />} />
           <Route path="*" element={<Navigate to="/" replace />} />

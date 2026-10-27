@@ -22,12 +22,14 @@ import {
   User,
   Calendar,
   Wrench,
+  Receipt,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
 import { NovoTocenjeModal } from './NovoTocenjeModal';
 import { PrijemCisterneModal } from './PrijemCisterneModal';
 import { IzmeniTocenjeModal } from './IzmeniTocenjeModal';
+import { PregledRacunaModal } from './PregledRacunaModal';
 import styles from './GorivoDashboard.module.css';
 
 const API = 'http://localhost:5000/api';
@@ -60,10 +62,12 @@ interface FuelEntry {
   id: string;
   date: string;
   fuelSource: 'CISTERNA' | 'PUMPA' | 'KANISTER';
+  gasStation?: 'PETROL' | 'EUROPETROL' | string;
   fuelType: string;
   liters: number;
-  pricePerLiter?: number;
-  totalCost?: number;
+  pricePerLiter?: number | null;
+  totalCost?: number | null;
+  receiptImageUrl?: string | null;
   hasAnomaly: boolean;
   anomalyReason?: string;
   receiptNumber?: string;
@@ -148,6 +152,26 @@ interface PaginationMeta {
   totalPages: number;
 }
 
+const renderPumpBadge = (entry: FuelEntry) => {
+  let badgeClass = styles.badgePumpa;
+  let label = 'Javna pumpa';
+
+  if (entry.gasStation === 'PETROL') {
+    badgeClass = styles.badgePetrol;
+    label = 'Pumpa (PETROL)';
+  } else if (entry.gasStation === 'EUROPETROL') {
+    badgeClass = styles.badgeEuropetrol;
+    label = 'Pumpa (EUROPETROL)';
+  }
+
+  return (
+    <span className={`${styles.sourceBadge} ${badgeClass}`}>
+      <Fuel size={13} />
+      {label}
+    </span>
+  );
+};
+
 const GorivoDashboard: React.FC = () => {
   const { data: session } = useSession();
   const currentUser = (session as any)?.user;
@@ -156,7 +180,7 @@ const GorivoDashboard: React.FC = () => {
 
   // Tabovi za rukovodioce
   const [activeTab, setActiveTab] = useState<'TOCENJA' | 'CISTERNA' | 'ANALITIKA' | 'ANOMALIJE'>('TOCENJA');
-  
+
   // Stanje za Rukovodioce (Menadžere)
   const [stats, setStats] = useState<FuelStats | null>(null);
   const [managerEntries, setManagerEntries] = useState<FuelEntry[]>([]);
@@ -196,6 +220,8 @@ const GorivoDashboard: React.FC = () => {
   const [isSupplyModalOpen, setIsSupplyModalOpen] = useState(false);
   const [isIzmeniModalOpen, setIsIzmeniModalOpen] = useState(false);
   const [selectedEntryForEdit, setSelectedEntryForEdit] = useState<FuelEntry | null>(null);
+  const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+  const [selectedEntryForReceipt, setSelectedEntryForReceipt] = useState<FuelEntry | null>(null);
 
   // 1. Učitavanje šifarnika (zajedničko)
   useEffect(() => {
@@ -417,6 +443,12 @@ const GorivoDashboard: React.FC = () => {
     setIsIzmeniModalOpen(true);
   };
 
+  // Otvaranje modala za pregled slike računa
+  const handleOpenReceipt = (entry: FuelEntry) => {
+    setSelectedEntryForReceipt(entry);
+    setIsReceiptModalOpen(true);
+  };
+
   // Menadžersko pretraživanje
   const filteredManagerEntries = managerEntries.filter((e) => {
     if (!searchFilter) return true;
@@ -445,7 +477,7 @@ const GorivoDashboard: React.FC = () => {
             <p>
               {isManager
                 ? 'Praćenje nivoa goriva u litrima, točenja na terenu, normativa L/ha i zaliha cisterne'
-                : 'Evidencija sipanja goriva u poljoprivredne mašine i traktore'}
+                : 'Evidencija sipanja goriva u mašine.'}
             </p>
           </div>
 
@@ -485,9 +517,8 @@ const GorivoDashboard: React.FC = () => {
                     <span>Cisterna firme</span>
                   </div>
                   <span
-                    className={`${styles.tankBadge} ${
-                      stats?.tank.isLow ? styles.tankBadgeLow : styles.tankBadgeOptimal
-                    }`}
+                    className={`${styles.tankBadge} ${stats?.tank.isLow ? styles.tankBadgeLow : styles.tankBadgeOptimal
+                      }`}
                   >
                     {stats?.tank.isLow ? (
                       <>
@@ -507,9 +538,8 @@ const GorivoDashboard: React.FC = () => {
                   {/* Animiran rezervoar sa nivoom tečnosti */}
                   <div className={styles.tankCylinder}>
                     <div
-                      className={`${styles.tankLiquidFill} ${
-                        stats?.tank.isLow ? styles.tankLiquidFillLow : ''
-                      }`}
+                      className={`${styles.tankLiquidFill} ${stats?.tank.isLow ? styles.tankLiquidFillLow : ''
+                        }`}
                       style={{
                         height: `${Math.max(5, stats?.tank.fillPercentage || 0)}%`,
                       }}
@@ -706,7 +736,7 @@ const GorivoDashboard: React.FC = () => {
                   >
                     <option value="">Svi izvori</option>
                     <option value="CISTERNA">Cisterna firme</option>
-                    <option value="PUMPA">Javna pumpa (NIS / MOL)</option>
+                    <option value="PUMPA">Javna pumpa (Petrol / Europetrol)</option>
                     <option value="KANISTER">Kanister na njivi</option>
                   </select>
 
@@ -728,9 +758,8 @@ const GorivoDashboard: React.FC = () => {
 
                   <button
                     type="button"
-                    className={`${styles.filterAnomalyToggle} ${
-                      onlyAnomalies ? styles.filterAnomalyToggleActive : ''
-                    }`}
+                    className={`${styles.filterAnomalyToggle} ${onlyAnomalies ? styles.filterAnomalyToggleActive : ''
+                      }`}
                     onClick={() => setOnlyAnomalies(!onlyAnomalies)}
                   >
                     <AlertTriangle size={15} />
@@ -768,7 +797,7 @@ const GorivoDashboard: React.FC = () => {
                             <th>Izvor točenja</th>
                             <th>Potrošnja L/ha</th>
                             <th>Status & Kontrola</th>
-                            <th>Finansije (RSD)</th>
+                            <th>Iznos (RSD) & Račun</th>
                             <th>Akcije</th>
                           </tr>
                         </thead>
@@ -803,12 +832,7 @@ const GorivoDashboard: React.FC = () => {
                                       Cisterna
                                     </span>
                                   )}
-                                  {entry.fuelSource === 'PUMPA' && (
-                                    <span className={`${styles.sourceBadge} ${styles.badgePumpa}`}>
-                                      <Fuel size={13} />
-                                      Pumpa
-                                    </span>
-                                  )}
+                                  {entry.fuelSource === 'PUMPA' && renderPumpBadge(entry)}
                                   {entry.fuelSource === 'KANISTER' && (
                                     <span className={`${styles.sourceBadge} ${styles.badgeKanister}`}>
                                       <MapPin size={13} />
@@ -849,16 +873,43 @@ const GorivoDashboard: React.FC = () => {
                                   )}
                                 </td>
                                 <td>
-                                  {entry.totalCost ? (
-                                    <div>
-                                      <strong>{entry.totalCost.toLocaleString()} RSD</strong>
-                                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                        {entry.pricePerLiter} RSD/L
+                                  <div className={styles.financeReceiptCell}>
+                                    {entry.totalCost ? (
+                                      <div>
+                                        <strong>{entry.totalCost.toLocaleString()} RSD</strong>
+                                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                          {entry.pricePerLiter} RSD/L
+                                        </div>
                                       </div>
-                                    </div>
-                                  ) : (
-                                    '—'
-                                  )}
+                                    ) : entry.receiptImageUrl ? (
+                                      <span className={styles.pendingPriceBadge}>
+                                        Čeka unos cene sa računa
+                                      </span>
+                                    ) : (
+                                      '—'
+                                    )}
+                                    {entry.receiptImageUrl && (
+                                      <button
+                                        type="button"
+                                        className={
+                                          entry.totalCost
+                                            ? styles.receiptTableBtn
+                                            : styles.receiptTableBtnHighlight
+                                        }
+                                        onClick={() => handleOpenReceipt(entry)}
+                                        title={
+                                          entry.totalCost
+                                            ? 'Pogledaj sliku fiskalnog računa'
+                                            : 'Pogledaj račun i unesi cenu'
+                                        }
+                                      >
+                                        <Receipt size={13} />
+                                        <span>
+                                          {entry.totalCost ? 'Slika računa' : 'Otvori račun & unesi cenu'}
+                                        </span>
+                                      </button>
+                                    )}
+                                  </div>
                                 </td>
                                 <td>
                                   <div className={styles.actionCell}>
@@ -1076,7 +1127,7 @@ const GorivoDashboard: React.FC = () => {
                         <div className={styles.anomalyMeta}>
                           <span><Calendar size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {new Date(a.date).toLocaleDateString('sr-RS')}</span>
                           <span><User size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Točilac: {a.worker.name}</span>
-                          <span><Building2 size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Izvor: {a.fuelSource}</span>
+                          <span><Building2 size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Izvor: {a.fuelSource}{a.gasStation ? ` (${a.gasStation})` : ''}</span>
                           {a.fieldWork?.parcel && <span><MapPin size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Parcela: {a.fieldWork.parcel.name}</span>}
                           {a.fieldWork?.workType && <span><Wrench size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {a.fieldWork.workType.name}</span>}
                         </div>
@@ -1129,6 +1180,7 @@ const GorivoDashboard: React.FC = () => {
                       <th>Mašina</th>
                       <th>Količina (L)</th>
                       <th>Izvor točenja</th>
+                      <th>Račun / Iznos</th>
                       <th>Akcije</th>
                     </tr>
                   </thead>
@@ -1164,18 +1216,32 @@ const GorivoDashboard: React.FC = () => {
                                 Cisterna
                               </span>
                             )}
-                            {entry.fuelSource === 'PUMPA' && (
-                              <span className={`${styles.sourceBadge} ${styles.badgePumpa}`}>
-                                <Fuel size={13} />
-                                Pumpa
-                              </span>
-                            )}
+                            {entry.fuelSource === 'PUMPA' && renderPumpBadge(entry)}
                             {entry.fuelSource === 'KANISTER' && (
                               <span className={`${styles.sourceBadge} ${styles.badgeKanister}`}>
                                 <MapPin size={13} />
                                 Kanister
                               </span>
                             )}
+                          </td>
+                          <td>
+                            <div className={styles.financeReceiptCell}>
+                              {entry.totalCost ? (
+                                <strong>{entry.totalCost.toLocaleString()} RSD</strong>
+                              ) : null}
+                              {entry.receiptImageUrl ? (
+                                <button
+                                  type="button"
+                                  className={styles.receiptTableBtn}
+                                  onClick={() => handleOpenReceipt(entry)}
+                                >
+                                  <Receipt size={13} />
+                                  <span>Slika računa</span>
+                                </button>
+                              ) : !entry.totalCost ? (
+                                '—'
+                              ) : null}
+                            </div>
                           </td>
                           <td>
                             <button
@@ -1201,10 +1267,6 @@ const GorivoDashboard: React.FC = () => {
                 <div className={styles.historyPlaceholderCard}>
                   <History size={42} color="#2563eb" />
                   <h4>Pregled prethodnih sipanja goriva</h4>
-                  <p>
-                    Ranija točenja se učitavaju na Vaš zahtev kako ne bismo bespotrebno opterećivali bazu.
-                    Prikazuje se najnovijih 50 točenja uz paginaciju (raniji dani su zaključani za izmenu).
-                  </p>
                   <button
                     className={styles.historyLoadBtn}
                     onClick={() => {
@@ -1286,12 +1348,7 @@ const GorivoDashboard: React.FC = () => {
                                         Cisterna
                                       </span>
                                     )}
-                                    {entry.fuelSource === 'PUMPA' && (
-                                      <span className={`${styles.sourceBadge} ${styles.badgePumpa}`}>
-                                        <Fuel size={13} />
-                                        Pumpa
-                                      </span>
-                                    )}
+                                    {entry.fuelSource === 'PUMPA' && renderPumpBadge(entry)}
                                     {entry.fuelSource === 'KANISTER' && (
                                       <span className={`${styles.sourceBadge} ${styles.badgeKanister}`}>
                                         <MapPin size={13} />
@@ -1405,6 +1462,24 @@ const GorivoDashboard: React.FC = () => {
           entry={selectedEntryForEdit}
           machines={machines}
           isManager={isManager}
+        />
+
+        {/* Modal 4: Pregled Slike Računa & Direktan unos cene */}
+        <PregledRacunaModal
+          isOpen={isReceiptModalOpen}
+          onClose={() => {
+            setIsReceiptModalOpen(false);
+            setSelectedEntryForReceipt(null);
+          }}
+          entry={selectedEntryForReceipt}
+          isManager={isManager}
+          onPriceSaved={() => {
+            if (isManager) {
+              refreshAllManager();
+            } else {
+              fetchTodayEntries();
+            }
+          }}
         />
       </div>
     </AppLayout>

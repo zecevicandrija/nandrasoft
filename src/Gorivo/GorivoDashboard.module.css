@@ -571,6 +571,18 @@
   border: 1px solid rgba(245, 158, 11, 0.25);
 }
 
+.badgePetrol {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.35);
+}
+
+.badgeEuropetrol {
+  background: rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+}
+
 /* Consumption & Anomaly indicators */
 .normBadgeGood {
   display: inline-flex;
@@ -1129,6 +1141,19 @@
   font-size: 0.85rem;
 }
 
+.workerRestrictionBanner {
+  background: rgba(2, 132, 199, 0.08);
+  border: 1px solid rgba(2, 132, 199, 0.25);
+  color: #0369a1;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
 /* 3 Source Selector Buttons in Modal */
 .sourceSelector {
   display: grid;
@@ -1159,6 +1184,17 @@
   color: #16a34a;
 }
 
+.sourceBtnDisabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--bg-hover) !important;
+  border: 2px dashed var(--border-color) !important;
+}
+
+.sourceBtnDisabled:hover {
+  transform: none !important;
+}
+
 .sourceBtnText {
   display: flex;
   flex-direction: column;
@@ -1181,6 +1217,67 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Javna pumpa selector: Petrol & Europetrol */
+.pumpStationSelector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+}
+
+.pumpStationBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.9rem 1rem;
+  background: var(--bg-input);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.pumpStationBtn:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+  transform: translateY(-1px);
+}
+
+.pumpStationBtnActive {
+  border-color: #0284c7 !important;
+  background: rgba(2, 132, 199, 0.09) !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
+}
+
+.pumpIconPetrol {
+  color: #0284c7;
+  flex-shrink: 0;
+}
+
+.pumpIconEuropetrol {
+  color: #4f46e5;
+  flex-shrink: 0;
+}
+
+.pumpStationInfo {
+  display: flex;
+  flex-direction: column;
+}
+
+.pumpStationName {
+  font-size: 0.98rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--text-primary);
+}
+
+.pumpStationDesc {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  margin-top: 1px;
 }
 
 /* Form fields */
@@ -1644,5 +1741,477 @@
 
   .quickAmountButtons {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ============================================================== */
+/* 📸 BUNNY.NET SLIKA RAČUNA UPLOAD & PREGLED RAČUNA MODAL       */
+/* ============================================================== */
+
+.receiptUploadBox {
+  background: var(--bg-card-secondary, #f8fafc);
+  border: 1.5px dashed rgba(2, 132, 199, 0.45);
+  border-radius: 12px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  box-sizing: border-box;
+}
+
+.receiptUploadHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.receiptUploadTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.receiptUploadTitle {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.receiptRuleBadgeOk {
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.14);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 0.2rem 0.6rem;
+  border-radius: 20px;
+}
+
+.receiptRuleBadgeOptional {
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: rgba(2, 132, 199, 0.12);
+  color: #0284c7;
+  border: 1px solid rgba(2, 132, 199, 0.3);
+  padding: 0.2rem 0.6rem;
+  border-radius: 20px;
+}
+
+.receiptRuleBadgeAction {
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  padding: 0.2rem 0.6rem;
+  border-radius: 20px;
+}
+
+.receiptButtonsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.receiptCameraBtn,
+.receiptGalleryBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.receiptCameraBtn {
+  background: rgba(2, 132, 199, 0.1);
+  border: 1.5px solid rgba(2, 132, 199, 0.35);
+  color: #0284c7;
+}
+
+.receiptCameraBtn:hover {
+  background: rgba(2, 132, 199, 0.18);
+  border-color: #0284c7;
+  transform: translateY(-1px);
+}
+
+.receiptGalleryBtn {
+  background: var(--bg-input);
+  border: 1.5px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.receiptGalleryBtn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-hover);
+  transform: translateY(-1px);
+}
+
+.receiptBtnTextCol {
+  display: flex;
+  flex-direction: column;
+}
+
+.receiptBtnMain {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.receiptBtnSub {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.receiptProgressCard {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.85rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.receiptProgressTitle {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.receiptProgressSub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.receiptErrorBox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.receiptPreviewCard {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: var(--bg-card);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: 10px;
+  padding: 0.75rem;
+}
+
+.receiptThumbWrapper {
+  width: 76px;
+  height: 76px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  flex-shrink: 0;
+  background: #0f172a;
+}
+
+.receiptThumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.receiptPreviewInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.receiptReadyBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #059669;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.receiptCompressionNote {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.receiptWorkerHint {
+  font-size: 0.76rem;
+  color: #0284c7;
+  font-weight: 600;
+}
+
+.receiptPreviewActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+
+.receiptViewLink,
+.receiptRetakeBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.receiptViewLink:hover,
+.receiptRetakeBtn:hover {
+  border-color: #0284c7;
+  color: #0284c7;
+}
+
+.receiptRemoveBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #dc2626;
+  cursor: pointer;
+}
+
+.realtimePriceCalc {
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 8px;
+  color: #059669;
+  font-size: 0.84rem;
+}
+
+/* Tabela: Iznos & Račun ćelija */
+.financeReceiptCell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.pendingPriceBadge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 0.18rem 0.5rem;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.receiptTableBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  background: rgba(2, 132, 199, 0.1);
+  border: 1px solid rgba(2, 132, 199, 0.3);
+  color: #0284c7;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.receiptTableBtn:hover {
+  background: rgba(2, 132, 199, 0.2);
+  border-color: #0284c7;
+}
+
+.receiptTableBtnHighlight {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  border: none;
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.25);
+  white-space: nowrap;
+}
+
+.receiptTableBtnHighlight:hover {
+  opacity: 0.94;
+  transform: translateY(-1px);
+}
+
+/* Modal za pregled računa */
+.receiptViewerModal {
+  max-width: 780px;
+}
+
+.receiptViewerBody {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+}
+
+.receiptMetaStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.receiptMetaPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.receiptToolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  background: var(--bg-card-secondary, #f8fafc);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+}
+
+.receiptToolBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 7px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.receiptToolBtn:hover {
+  background: var(--bg-hover);
+  border-color: #0284c7;
+  color: #0284c7;
+}
+
+.receiptZoomIndicator {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 48px;
+  text-align: center;
+}
+
+.receiptImageViewport {
+  width: 100%;
+  min-height: 320px;
+  max-height: 460px;
+  background: #0f172a;
+  border-radius: 12px;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.receiptFullImage {
+  max-width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  transition: transform 0.2s ease;
+  transform-origin: center center;
+  border-radius: 6px;
+}
+
+.receiptManagerPriceForm {
+  background: var(--bg-card-secondary, #f8fafc);
+  border: 1.5px solid rgba(22, 163, 74, 0.35);
+  border-radius: 12px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.receiptManagerFormHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.receiptManagerInputRow {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.receiptSavedBanner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.85rem;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #059669;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .receiptButtonsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .receiptPreviewCard {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .receiptManagerInputRow {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

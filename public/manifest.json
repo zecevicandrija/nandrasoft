@@ -1,0 +1,19 @@
+{
+  "name": "NANDRA Softver",
+  "short_name": "NANDRA",
+  "description": "Informacioni sistem za upravljanje mehanizacijom, radnim nalozima i proizvodnjom",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#16a34a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

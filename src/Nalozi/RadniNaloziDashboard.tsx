@@ -22,6 +22,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
 import { useSession } from '../lib/auth-client';
 import styles from './RadniNaloziDashboard.module.css';
 
@@ -51,6 +52,9 @@ interface Parcel {
   name: string;
   code: string;
   areaHa: number;
+  location?: string | null;
+  currentCrop?: string | null;
+  notes?: string | null;
 }
 
 interface WorkType {
@@ -97,7 +101,7 @@ interface WorkOrder {
   }>;
 }
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 const RadniNaloziDashboard: React.FC = () => {
   const { data: session } = useSession();
@@ -124,6 +128,11 @@ const RadniNaloziDashboard: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState('');
+
+  // Brzo dodavanje / izmena parcele
+  const [parcelQuickModalOpen, setParcelQuickModalOpen] = useState(false);
+  const [parcelToEdit, setParcelToEdit] = useState<ParcelItem | null>(null);
+  const [parcelQuickTarget, setParcelQuickTarget] = useState<'create-order' | 'edit-order'>('create-order');
 
   // Modal za prihvatanje naloga i zaduživanje mašine stanje
   const [selectedOrderToAccept, setSelectedOrderToAccept] = useState<WorkOrder | null>(null);
@@ -250,6 +259,21 @@ const RadniNaloziDashboard: React.FC = () => {
 
   useEffect(() => {
     fetchOrders();
+  }, [datePreset, customDate, statusFilter, typeFilter]);
+
+  useEffect(() => {
+    const handleSwMessage = (event: MessageEvent) => {
+      if (
+        event.data?.type === 'WORK_ORDER_PUSH_RECEIVED' ||
+        event.data?.type === 'WORK_ORDER_PUSH_CLICKED'
+      ) {
+        fetchOrders();
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
+    };
   }, [datePreset, customDate, statusFilter, typeFilter]);
 
   // Kreiranje naloga
@@ -1065,7 +1089,24 @@ const RadniNaloziDashboard: React.FC = () => {
                 {formData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
-                      <label>Parcela / Njiva</label>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
+                        <label style={{ marginBottom: 0 }}>Parcela / Njiva</label>
+                        {isManager && (
+                          <ParcelQuickActions
+                            selectedParcel={parcels.find((p) => p.id === formData.parcelId) || null}
+                            onAddClick={() => {
+                              setParcelQuickTarget('create-order');
+                              setParcelToEdit(null);
+                              setParcelQuickModalOpen(true);
+                            }}
+                            onEditClick={(parcel) => {
+                              setParcelQuickTarget('create-order');
+                              setParcelToEdit(parcel);
+                              setParcelQuickModalOpen(true);
+                            }}
+                          />
+                        )}
+                      </div>
                       <select
                         className={styles.modalSelect}
                         value={formData.parcelId}
@@ -1304,7 +1345,24 @@ const RadniNaloziDashboard: React.FC = () => {
                 {editFormData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
-                      <label>Parcela / Njiva</label>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
+                        <label style={{ marginBottom: 0 }}>Parcela / Njiva</label>
+                        {isManager && (
+                          <ParcelQuickActions
+                            selectedParcel={parcels.find((p) => p.id === editFormData.parcelId) || null}
+                            onAddClick={() => {
+                              setParcelQuickTarget('edit-order');
+                              setParcelToEdit(null);
+                              setParcelQuickModalOpen(true);
+                            }}
+                            onEditClick={(parcel) => {
+                              setParcelQuickTarget('edit-order');
+                              setParcelToEdit(parcel);
+                              setParcelQuickModalOpen(true);
+                            }}
+                          />
+                        )}
+                      </div>
                       <select
                         className={styles.modalSelect}
                         value={editFormData.parcelId}
@@ -1815,6 +1873,29 @@ const RadniNaloziDashboard: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Brzi modal za dodavanje / izmenu parcele */}
+        <ParcelQuickModal
+          isOpen={parcelQuickModalOpen}
+          onClose={() => setParcelQuickModalOpen(false)}
+          parcelToEdit={parcelToEdit}
+          onSaved={(savedParcel, mode) => {
+            setParcels((prev) => {
+              if (mode === 'edit') {
+                return prev.map((p) => (p.id === savedParcel.id ? savedParcel : p));
+              }
+              return [...prev, savedParcel].sort((a, b) => a.code.localeCompare(b.code));
+            });
+            if (parcelQuickTarget === 'create-order') {
+              setFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
+            } else {
+              setEditFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
+            }
+            if (mode === 'edit') {
+              fetchOrders();
+            }
+          }}
+        />
       </div>
     </AppLayout>
   );
