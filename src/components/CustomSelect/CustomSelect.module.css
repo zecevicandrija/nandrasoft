@@ -1,0 +1,290 @@
+/* ========================================================
+   CUSTOM SELECT (100% Responsive na telefonima & Desktopu)
+   Inspirisano selectom iz Magacina Đubriva za prijem robe
+   ======================================================== */
+
+.customSelectContainer {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.customSelectContainerOpen {
+  z-index: 60;
+}
+
+.customSelectTrigger {
+  width: 100%;
+  min-height: 46px;
+  padding: 0.55rem 0.85rem;
+  border-radius: 9px;
+  border: 1.5px solid var(--border-color);
+  background: var(--bg-card, #ffffff);
+  color: var(--text-primary, #0f172a);
+  font-size: 0.88rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+  text-align: left;
+}
+
+.customSelectTrigger:hover:not(:disabled) {
+  border-color: #86efac;
+}
+
+.customSelectTriggerOpen {
+  border-color: #16a34a !important;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+}
+
+.customSelectTrigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--bg-secondary, #f1f5f9);
+}
+
+:global([data-theme="dark"]) .customSelectTrigger {
+  background-color: var(--bg-card, #131b2c);
+  color: #f8fafc;
+  border-color: var(--border-color, #243046);
+}
+
+:global([data-theme="dark"]) .customSelectTrigger:hover:not(:disabled) {
+  border-color: #3b4a66;
+}
+
+:global([data-theme="dark"]) .customSelectTriggerOpen {
+  border-color: #16a34a !important;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.25);
+}
+
+.customSelectContent {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.customSelectMainText {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+}
+
+.customSelectPlaceholder {
+  color: var(--text-muted, #94a3b8);
+  font-weight: 500;
+  font-size: 0.86rem;
+}
+
+.customSelectSubText {
+  font-size: 0.74rem;
+  color: var(--text-secondary, #64748b);
+  margin-top: 0.1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.customSelectChevron {
+  color: var(--text-secondary, #64748b);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.customSelectChevronRotated {
+  transform: rotate(180deg);
+}
+
+.customSelectDropdown {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-width: 100%;
+  z-index: 1000;
+  background: var(--bg-card, #ffffff);
+  border: 1.5px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 290px;
+  box-sizing: border-box;
+  animation: customSelectFadeIn 0.15s ease-out;
+}
+
+@keyframes customSelectFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+:global([data-theme="dark"]) .customSelectDropdown {
+  background: #131b2c;
+  border-color: #243046;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.6);
+}
+
+.customSelectSearchWrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary, #f8fafc);
+  flex-shrink: 0;
+}
+
+:global([data-theme="dark"]) .customSelectSearchWrap {
+  background: rgba(15, 23, 42, 0.6);
+  border-bottom-color: #243046;
+}
+
+.customSelectSearchInput {
+  width: 100%;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 0.86rem;
+  color: var(--text-primary, #0f172a);
+}
+
+:global([data-theme="dark"]) .customSelectSearchInput {
+  color: #f8fafc;
+}
+
+.customSelectList {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: 230px;
+  -webkit-overflow-scrolling: touch;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.customSelectEmpty {
+  padding: 1.25rem 1rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--text-muted, #94a3b8);
+}
+
+.customSelectItem {
+  padding: 0.6rem 0.85rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  transition: background 0.12s ease;
+}
+
+:global([data-theme="dark"]) .customSelectItem {
+  border-bottom-color: rgba(255, 255, 255, 0.05);
+}
+
+.customSelectItem:last-child {
+  border-bottom: none;
+}
+
+.customSelectItem:hover {
+  background: var(--bg-hover, #f1f5f9);
+}
+
+:global([data-theme="dark"]) .customSelectItem:hover {
+  background: #1e293b;
+}
+
+.customSelectItemActive {
+  background: rgba(22, 163, 74, 0.1) !important;
+}
+
+:global([data-theme="dark"]) .customSelectItemActive {
+  background: rgba(74, 222, 128, 0.15) !important;
+}
+
+.customSelectItemLeft {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.customSelectItemTitle {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary, #0f172a);
+  word-break: break-word;
+}
+
+:global([data-theme="dark"]) .customSelectItemTitle {
+  color: #f8fafc;
+}
+
+.customSelectItemSub {
+  font-size: 0.74rem;
+  color: var(--text-secondary, #64748b);
+  margin-top: 0.1rem;
+}
+
+.customSelectItemRight {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.badgeDefault {
+  background: rgba(14, 165, 233, 0.1);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.25);
+}
+
+.badgeSuccess {
+  background: rgba(22, 163, 74, 0.1);
+  color: #16a34a;
+  border: 1px solid rgba(22, 163, 74, 0.25);
+}
+
+.badgeWarning {
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.badgeDanger {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+

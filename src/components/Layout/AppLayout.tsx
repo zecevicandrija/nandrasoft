@@ -221,7 +221,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
       <aside className={`${styles.sidebar} ${mobileOpen ? styles.sidebarOpen : ''}`}>
         <div className={styles.sidebarHeader}>
           <div className={styles.brandLogo}>
-            <Tractor size={22} />
+            <img src="/nandralogo.webp" alt="NANDRA Logo" className={styles.brandLogoImg} />
           </div>
           <div className={styles.brandText}>
             <span className={styles.brandName}>NANDRA</span>

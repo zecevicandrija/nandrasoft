@@ -14,8 +14,6 @@ import {
   ShieldAlert,
   Pencil,
   History,
-  ChevronLeft,
-  ChevronRight,
   Lock,
   Clock,
   Eye,
@@ -26,6 +24,8 @@ import {
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
+import CustomSelect from '../components/CustomSelect/CustomSelect';
+import TablePagination from '../components/TablePagination/TablePagination';
 import { NovoTocenjeModal } from './NovoTocenjeModal';
 import { PrijemCisterneModal } from './PrijemCisterneModal';
 import { IzmeniTocenjeModal } from './IzmeniTocenjeModal';
@@ -181,6 +181,15 @@ const GorivoDashboard: React.FC = () => {
   // Tabovi za rukovodioce
   const [activeTab, setActiveTab] = useState<'TOCENJA' | 'CISTERNA' | 'ANALITIKA' | 'ANOMALIJE'>('TOCENJA');
 
+  type PeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve' | 'custom';
+  const PAGE_SIZE = 25;
+
+  // Brzi period filter (Danas, Ova Nedelja, Ovaj Mesec, Svi Unosi, Prilagođen Raspon)
+  const [period, setPeriod] = useState<PeriodType>('sve');
+  const [suppliesPage, setSuppliesPage] = useState(1);
+  const [analyticsPage, setAnalyticsPage] = useState(1);
+  const [anomaliesPage, setAnomaliesPage] = useState(1);
+
   // Stanje za Rukovodioce (Menadžere)
   const [stats, setStats] = useState<FuelStats | null>(null);
   const [managerEntries, setManagerEntries] = useState<FuelEntry[]>([]);
@@ -199,6 +208,46 @@ const GorivoDashboard: React.FC = () => {
   const [onlyAnomalies, setOnlyAnomalies] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+
+  // Promena perioda
+  const handlePeriodChange = (newPeriod: PeriodType) => {
+    setPeriod(newPeriod);
+    setManagerPage(1);
+    setSuppliesPage(1);
+    setAnalyticsPage(1);
+    setAnomaliesPage(1);
+
+    const now = new Date();
+    const formatYMD = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    if (newPeriod === 'danas') {
+      const today = formatYMD(now);
+      setDateFrom(today);
+      setDateTo(today);
+    } else if (newPeriod === 'nedelja') {
+      const day = now.getDay();
+      const diff = (day === 0 ? -6 : 1) - day;
+      const monday = new Date(now);
+      monday.setDate(now.getDate() + diff);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      setDateFrom(formatYMD(monday));
+      setDateTo(formatYMD(sunday));
+    } else if (newPeriod === 'mesec') {
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      setDateFrom(formatYMD(firstDay));
+      setDateTo(formatYMD(lastDay));
+    } else if (newPeriod === 'sve') {
+      setDateFrom('');
+      setDateTo('');
+    }
+  };
 
   // Stanje za Radnike (Operatere)
   const [todayEntries, setTodayEntries] = useState<FuelEntry[]>([]);
@@ -271,7 +320,7 @@ const GorivoDashboard: React.FC = () => {
       setLoading(true);
       const params = new URLSearchParams();
       params.set('page', String(page));
-      params.set('limit', '50');
+      params.set('limit', String(PAGE_SIZE));
       if (machineFilter) params.set('machineId', machineFilter);
       if (workerFilter) params.set('workerId', workerFilter);
       if (sourceFilter) params.set('fuelSource', sourceFilter);
@@ -297,10 +346,14 @@ const GorivoDashboard: React.FC = () => {
 
   const fetchSupplies = async () => {
     try {
-      const res = await fetch(`${API}/fuel/supplies`, { credentials: 'include' });
+      const params = new URLSearchParams();
+      if (dateFrom) params.set('dateFrom', dateFrom);
+      if (dateTo) params.set('dateTo', dateTo);
+      const res = await fetch(`${API}/fuel/supplies?${params.toString()}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setSupplies(data.supplies || []);
+        setSuppliesPage(1);
       }
     } catch (err) {
       console.error('Greška pri dohvatanju prijema cisterni:', err);
@@ -309,10 +362,14 @@ const GorivoDashboard: React.FC = () => {
 
   const fetchAnalytics = async () => {
     try {
-      const res = await fetch(`${API}/fuel/analytics/l-per-ha`, { credentials: 'include' });
+      const params = new URLSearchParams();
+      if (dateFrom) params.set('dateFrom', dateFrom);
+      if (dateTo) params.set('dateTo', dateTo);
+      const res = await fetch(`${API}/fuel/analytics/l-per-ha?${params.toString()}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setAnalytics(data.analytics || []);
+        setAnalyticsPage(1);
       }
     } catch (err) {
       console.error('Greška pri dohvatanju L/ha analitike:', err);
@@ -321,10 +378,14 @@ const GorivoDashboard: React.FC = () => {
 
   const fetchAnomalies = async () => {
     try {
-      const res = await fetch(`${API}/fuel/anomalies`, { credentials: 'include' });
+      const params = new URLSearchParams();
+      if (dateFrom) params.set('dateFrom', dateFrom);
+      if (dateTo) params.set('dateTo', dateTo);
+      const res = await fetch(`${API}/fuel/anomalies?${params.toString()}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setAnomalies(data.anomalies || []);
+        setAnomaliesPage(1);
       }
     } catch (err) {
       console.error('Greška pri dohvatanju anomalija:', err);
@@ -362,7 +423,7 @@ const GorivoDashboard: React.FC = () => {
   const fetchHistoryEntries = async (page = 1) => {
     try {
       setHistoryLoading(true);
-      const res = await fetch(`${API}/fuel/entries?scope=history&page=${page}&limit=50`, { credentials: 'include' });
+      const res = await fetch(`${API}/fuel/entries?scope=history&page=${page}&limit=${PAGE_SIZE}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setHistoryEntries(data.entries || []);
@@ -690,6 +751,80 @@ const GorivoDashboard: React.FC = () => {
               </button>
             </div>
 
+            {/* Brzi Period Filter (Danas, Ova Nedelja, Ovaj Mesec, Svi Unosi, Prilagođen Raspon) */}
+            <div className={styles.periodRowCard}>
+              <div className={styles.periodButtonGroup}>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${period === 'danas' ? styles.periodBtnActive : ''}`}
+                  onClick={() => handlePeriodChange('danas')}
+                >
+                  Danas
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${period === 'nedelja' ? styles.periodBtnActive : ''}`}
+                  onClick={() => handlePeriodChange('nedelja')}
+                >
+                  Ova Nedelja
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${period === 'mesec' ? styles.periodBtnActive : ''}`}
+                  onClick={() => handlePeriodChange('mesec')}
+                >
+                  Ovaj Mesec
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${period === 'sve' ? styles.periodBtnActive : ''}`}
+                  onClick={() => handlePeriodChange('sve')}
+                >
+                  Svi Unosi
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${period === 'custom' ? styles.periodBtnActive : ''}`}
+                  onClick={() => handlePeriodChange('custom')}
+                >
+                  Prilagođen Raspon
+                </button>
+              </div>
+
+              {period === 'custom' && (
+                <div className={styles.customDateRangeBox}>
+                  <span>Od:</span>
+                  <input
+                    type="date"
+                    className={styles.dateInput}
+                    value={dateFrom}
+                    onChange={(e) => {
+                      setDateFrom(e.target.value);
+                      setPeriod('custom');
+                      setManagerPage(1);
+                      setSuppliesPage(1);
+                      setAnalyticsPage(1);
+                      setAnomaliesPage(1);
+                    }}
+                  />
+                  <span>Do:</span>
+                  <input
+                    type="date"
+                    className={styles.dateInput}
+                    value={dateTo}
+                    onChange={(e) => {
+                      setDateTo(e.target.value);
+                      setPeriod('custom');
+                      setManagerPage(1);
+                      setSuppliesPage(1);
+                      setAnalyticsPage(1);
+                      setAnomaliesPage(1);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
             {/* TAB 1: Dnevnik Točenja */}
             {activeTab === 'TOCENJA' && (
               <>
@@ -701,65 +836,60 @@ const GorivoDashboard: React.FC = () => {
                     className={styles.filterInput}
                     value={searchFilter}
                     onChange={(e) => setSearchFilter(e.target.value)}
+                    style={{ flex: '1 1 200px', minWidth: '180px' }}
                   />
 
-                  <select
-                    className={styles.filterSelect}
-                    value={machineFilter}
-                    onChange={(e) => setMachineFilter(e.target.value)}
-                  >
-                    <option value="">Sve mašine</option>
-                    {machines.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className={styles.filterSelectWrapper}>
+                    <CustomSelect
+                      value={machineFilter}
+                      onChange={(val) => setMachineFilter(val)}
+                      options={[
+                        { value: '', label: 'Sve mašine' },
+                        ...machines.map((m) => ({
+                          value: m.id,
+                          label: m.name,
+                          subLabel: m.brandModel || m.type,
+                        })),
+                      ]}
+                      placeholder="Sve mašine"
+                      searchable
+                    />
+                  </div>
 
-                  <select
-                    className={styles.filterSelect}
-                    value={workerFilter}
-                    onChange={(e) => setWorkerFilter(e.target.value)}
-                  >
-                    <option value="">Svi radnici</option>
-                    {workers.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className={styles.filterSelectWrapper}>
+                    <CustomSelect
+                      value={workerFilter}
+                      onChange={(val) => setWorkerFilter(val)}
+                      options={[
+                        { value: '', label: 'Svi radnici' },
+                        ...workers.map((w) => ({
+                          value: w.id,
+                          label: w.name,
+                        })),
+                      ]}
+                      placeholder="Svi radnici"
+                      searchable
+                    />
+                  </div>
 
-                  <select
-                    className={styles.filterSelect}
-                    value={sourceFilter}
-                    onChange={(e) => setSourceFilter(e.target.value)}
-                  >
-                    <option value="">Svi izvori</option>
-                    <option value="CISTERNA">Cisterna firme</option>
-                    <option value="PUMPA">Javna pumpa (Petrol / Europetrol)</option>
-                    <option value="KANISTER">Kanister na njivi</option>
-                  </select>
-
-                  <input
-                    type="date"
-                    className={styles.filterInput}
-                    value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    title="Datum od"
-                  />
-
-                  <input
-                    type="date"
-                    className={styles.filterInput}
-                    value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    title="Datum do"
-                  />
+                  <div className={styles.filterSelectWrapper}>
+                    <CustomSelect
+                      value={sourceFilter}
+                      onChange={(val) => setSourceFilter(val)}
+                      options={[
+                        { value: '', label: 'Svi izvori' },
+                        { value: 'CISTERNA', label: 'Cisterna firme' },
+                        { value: 'PUMPA', label: 'Javna pumpa (Petrol / Europetrol)' },
+                        { value: 'KANISTER', label: 'Kanister na njivi' },
+                      ]}
+                      placeholder="Svi izvori"
+                      searchable={false}
+                    />
+                  </div>
 
                   <button
                     type="button"
-                    className={`${styles.filterAnomalyToggle} ${onlyAnomalies ? styles.filterAnomalyToggleActive : ''
-                      }`}
+                    className={`${styles.filterAnomalyToggle} ${onlyAnomalies ? styles.filterAnomalyToggleActive : ''}`}
                     onClick={() => setOnlyAnomalies(!onlyAnomalies)}
                   >
                     <AlertTriangle size={15} />
@@ -938,36 +1068,18 @@ const GorivoDashboard: React.FC = () => {
                         </tbody>
                       </table>
 
-                      {/* Paginacija za menadžera */}
-                      {managerPagination && managerPagination.totalPages > 1 && (
-                        <div className={styles.paginationContainer}>
-                          <div className={styles.paginationInfo}>
-                            Prikazano <strong>{filteredManagerEntries.length}</strong> od ukupno{' '}
-                            <strong>{managerPagination.total}</strong> zapisa
-                          </div>
-                          <div className={styles.paginationButtons}>
-                            <button
-                              className={styles.paginationBtn}
-                              disabled={managerPage <= 1 || loading}
-                              onClick={() => fetchManagerEntries(managerPage - 1)}
-                            >
-                              <ChevronLeft size={16} />
-                              <span>Prethodna</span>
-                            </button>
-                            <span className={styles.pageIndicator}>
-                              Stranica {managerPage} od {managerPagination.totalPages}
-                            </span>
-                            <button
-                              className={styles.paginationBtn}
-                              disabled={managerPage >= managerPagination.totalPages || loading}
-                              onClick={() => fetchManagerEntries(managerPage + 1)}
-                            >
-                              <span>Sledeća</span>
-                              <ChevronRight size={16} />
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                      {/* Paginacija za menadžera (25 po strani sa direktnim unosom) */}
+                      <TablePagination
+                        currentPage={managerPage}
+                        totalPages={managerPagination?.totalPages || 1}
+                        totalItems={managerPagination?.total || filteredManagerEntries.length}
+                        pageSize={PAGE_SIZE}
+                        onPageChange={(p) => {
+                          setManagerPage(p);
+                          fetchManagerEntries(p);
+                        }}
+                        itemName="točenja"
+                      />
                     </>
                   )}
                 </div>
@@ -984,166 +1096,211 @@ const GorivoDashboard: React.FC = () => {
                     <p>Kliknite na dugme „Prijem cisterne“ kako biste uneli dovoz goriva od dobavljača.</p>
                   </div>
                 ) : (
-                  <table className={styles.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Datum prijema</th>
-                        <th>Dobavljač</th>
-                        <th>Broj otpremnice / računa</th>
-                        <th>Količina (L)</th>
-                        <th>Cena / L</th>
-                        <th>Ukupno RSD</th>
-                        <th>Primio</th>
-                        <th>Napomena</th>
-                        <th>Akcije</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {supplies.map((s) => (
-                        <tr key={s.id}>
-                          <td>{new Date(s.date).toLocaleDateString('sr-RS')}</td>
-                          <td>
-                            <strong>{s.supplierName || s.supplier?.name || 'Dobavljač'}</strong>
-                          </td>
-                          <td>{s.receiptNumber || '—'}</td>
-                          <td>
-                            <span className={styles.amountCell}>{s.liters.toLocaleString()}</span>
-                            <span className={styles.amountUnit}>L</span>
-                          </td>
-                          <td>{s.pricePerLiter ? `${s.pricePerLiter.toFixed(2)} RSD` : '—'}</td>
-                          <td>
-                            <strong>{s.totalCost ? `${s.totalCost.toLocaleString()} RSD` : '—'}</strong>
-                          </td>
-                          <td>{s.createdBy?.name}</td>
-                          <td>{s.notes || '—'}</td>
-                          <td>
-                            <button
-                              className={styles.deleteRowBtn}
-                              onClick={() => handleDeleteSupply(s.id, s.liters)}
-                              title="Storniraj prijem cisterne"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </td>
+                  <>
+                    <table className={styles.dataTable}>
+                      <thead>
+                        <tr>
+                          <th>Datum prijema</th>
+                          <th>Dobavljač</th>
+                          <th>Broj otpremnice / računa</th>
+                          <th>Količina (L)</th>
+                          <th>Cena / L</th>
+                          <th>Ukupno RSD</th>
+                          <th>Primio</th>
+                          <th>Napomena</th>
+                          <th>Akcije</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {supplies
+                          .slice((suppliesPage - 1) * PAGE_SIZE, suppliesPage * PAGE_SIZE)
+                          .map((s) => (
+                            <tr key={s.id}>
+                              <td>{new Date(s.date).toLocaleDateString('sr-RS')}</td>
+                              <td>
+                                <strong>{s.supplierName || s.supplier?.name || 'Dobavljač'}</strong>
+                              </td>
+                              <td>{s.receiptNumber || '—'}</td>
+                              <td>
+                                <span className={styles.amountCell}>{s.liters.toLocaleString()}</span>
+                                <span className={styles.amountUnit}>L</span>
+                              </td>
+                              <td>{s.pricePerLiter ? `${s.pricePerLiter.toFixed(2)} RSD` : '—'}</td>
+                              <td>
+                                <strong>{s.totalCost ? `${s.totalCost.toLocaleString()} RSD` : '—'}</strong>
+                              </td>
+                              <td>{s.createdBy?.name}</td>
+                              <td>{s.notes || '—'}</td>
+                              <td>
+                                <button
+                                  className={styles.deleteRowBtn}
+                                  onClick={() => handleDeleteSupply(s.id, s.liters)}
+                                  title="Storniraj prijem cisterne"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+
+                    <TablePagination
+                      currentPage={suppliesPage}
+                      totalPages={Math.max(1, Math.ceil(supplies.length / PAGE_SIZE))}
+                      totalItems={supplies.length}
+                      pageSize={PAGE_SIZE}
+                      onPageChange={(p) => setSuppliesPage(p)}
+                      itemName="prijema cisterne"
+                    />
+                  </>
                 )}
               </div>
             )}
 
             {/* TAB 3: Analitika L/ha po operacijama */}
             {activeTab === 'ANALITIKA' && (
-              <div className={styles.analyticsGrid}>
-                {analytics.map((item) => (
-                  <div key={item.workTypeId} className={styles.analyticsCard}>
-                    <div className={styles.analyticsCardHeader}>
-                      <div>
-                        <div className={styles.analyticsOpName}>{item.workTypeName}</div>
-                        <div className={styles.analyticsCategory}>{item.category}</div>
-                      </div>
-                      {item.variancePercent !== null && (
-                        <span
-                          className={
-                            item.status === 'ANOMALIJA'
-                              ? styles.normBadgeWarning
-                              : styles.normBadgeGood
-                          }
-                        >
-                          {item.variancePercent > 0 ? `+${item.variancePercent}%` : `${item.variancePercent}%`}
-                        </span>
-                      )}
-                    </div>
+              <>
+                <div className={styles.analyticsGrid}>
+                  {analytics
+                    .slice((analyticsPage - 1) * PAGE_SIZE, analyticsPage * PAGE_SIZE)
+                    .map((item) => (
+                      <div key={item.workTypeId} className={styles.analyticsCard}>
+                        <div className={styles.analyticsCardHeader}>
+                          <div>
+                            <div className={styles.analyticsOpName}>{item.workTypeName}</div>
+                            <div className={styles.analyticsCategory}>{item.category}</div>
+                          </div>
+                          {item.variancePercent !== null && (
+                            <span
+                              className={
+                                item.status === 'ANOMALIJA'
+                                  ? styles.normBadgeWarning
+                                  : styles.normBadgeGood
+                              }
+                            >
+                              {item.variancePercent > 0 ? `+${item.variancePercent}%` : `${item.variancePercent}%`}
+                            </span>
+                          )}
+                        </div>
 
-                    <div className={styles.analyticsCompareRow}>
-                      <div>
-                        <span className={styles.tankMetaLabel}>Ostvareno:</span>
-                        <div className={styles.actualLiters}>
-                          {item.actualLPerHa !== null ? `${item.actualLPerHa} L/ha` : '—'}
+                        <div className={styles.analyticsCompareRow}>
+                          <div>
+                            <span className={styles.tankMetaLabel}>Ostvareno:</span>
+                            <div className={styles.actualLiters}>
+                              {item.actualLPerHa !== null ? `${item.actualLPerHa} L/ha` : '—'}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <span className={styles.tankMetaLabel}>Propisan normativ:</span>
+                            <div className={styles.normLiters}>
+                              <strong>{item.normLPerHa !== null ? `${item.normLPerHa} L/ha` : 'Nije definisan'}</strong>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Progress bar odstupanja */}
+                        {item.normLPerHa && item.actualLPerHa && (
+                          <div className={styles.varianceBarTrack}>
+                            <div
+                              className={
+                                item.status === 'ANOMALIJA'
+                                  ? styles.varianceBarFillBad
+                                  : item.status === 'UPOZORENJE'
+                                    ? styles.varianceBarFillWarning
+                                    : styles.varianceBarFillGood
+                              }
+                              style={{
+                                width: `${Math.min(100, (item.actualLPerHa / (item.normLPerHa * 1.5)) * 100)}%`,
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        <div className={styles.analyticsTotals}>
+                          <span>Ukupno: {item.totalLiters.toLocaleString()} L</span>
+                          <span>Urađeno: {item.totalHa.toLocaleString()} ha</span>
+                          <span>Broj točenja: {item.entriesCount}</span>
                         </div>
                       </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <span className={styles.tankMetaLabel}>Propisan normativ:</span>
-                        <div className={styles.normLiters}>
-                          <strong>{item.normLPerHa !== null ? `${item.normLPerHa} L/ha` : 'Nije definisan'}</strong>
-                        </div>
-                      </div>
-                    </div>
+                    ))}
+                </div>
 
-                    {/* Progress bar odstupanja */}
-                    {item.normLPerHa && item.actualLPerHa && (
-                      <div className={styles.varianceBarTrack}>
-                        <div
-                          className={
-                            item.status === 'ANOMALIJA'
-                              ? styles.varianceBarFillBad
-                              : item.status === 'UPOZORENJE'
-                                ? styles.varianceBarFillWarning
-                                : styles.varianceBarFillGood
-                          }
-                          style={{
-                            width: `${Math.min(100, (item.actualLPerHa / (item.normLPerHa * 1.5)) * 100)}%`,
-                          }}
-                        />
-                      </div>
-                    )}
-
-                    <div className={styles.analyticsTotals}>
-                      <span>Ukupno: {item.totalLiters.toLocaleString()} L</span>
-                      <span>Urađeno: {item.totalHa.toLocaleString()} ha</span>
-                      <span>Broj točenja: {item.entriesCount}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                <div style={{ marginTop: '1rem', background: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                  <TablePagination
+                    currentPage={analyticsPage}
+                    totalPages={Math.max(1, Math.ceil(analytics.length / PAGE_SIZE))}
+                    totalItems={analytics.length}
+                    pageSize={PAGE_SIZE}
+                    onPageChange={(p) => setAnalyticsPage(p)}
+                    itemName="radnih operacija"
+                  />
+                </div>
+              </>
             )}
 
             {/* TAB 4: Upitne Potrošnje */}
             {activeTab === 'ANOMALIJE' && (
-              <div className={styles.anomalyCardList}>
-                {anomalies.length === 0 ? (
-                  <div className={styles.emptyState}>
-                    <CheckCircle2 size={44} color="#059669" />
-                    <div className={styles.emptyStateTitle}>Nema upitnih potrošnji</div>
-                    <p>Sva točenja goriva su usklađena sa normativima iz Cenovnika, kapacitetom mašina i radovima na njivi.</p>
-                  </div>
-                ) : (
-                  anomalies.map((a) => (
-                    <div key={a.id} className={styles.anomalyAlertCard}>
-                      <div className={styles.anomalyInfo}>
-                        <div className={styles.anomalyMachine}>
-                          <AlertTriangle size={18} color="#ef4444" />
-                          <span>{a.machine.name}</span>
-                          <span className={styles.amountCell} style={{ fontSize: '1rem', marginLeft: 8 }}>
-                            ({a.liters} L)
-                          </span>
-                        </div>
-
-                        <div className={styles.anomalyReasonText}>
-                          <strong>Razlog detekcije:</strong> {a.anomalyReason || 'Prekoračenje normativa ili točenje bez radnog naloga'}
-                        </div>
-
-                        <div className={styles.anomalyMeta}>
-                          <span><Calendar size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {new Date(a.date).toLocaleDateString('sr-RS')}</span>
-                          <span><User size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Točilac: {a.worker.name}</span>
-                          <span><Building2 size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Izvor: {a.fuelSource}{a.gasStation ? ` (${a.gasStation})` : ''}</span>
-                          {a.fieldWork?.parcel && <span><MapPin size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Parcela: {a.fieldWork.parcel.name}</span>}
-                          {a.fieldWork?.workType && <span><Wrench size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {a.fieldWork.workType.name}</span>}
-                        </div>
-                      </div>
-
-                      <button
-                        className={styles.deleteRowBtn}
-                        onClick={() => handleDeleteEntry(a.id, a.machine.name, a.liters)}
-                        title="Storniraj točenje"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+              <>
+                <div className={styles.anomalyCardList}>
+                  {anomalies.length === 0 ? (
+                    <div className={styles.emptyState}>
+                      <CheckCircle2 size={44} color="#059669" />
+                      <div className={styles.emptyStateTitle}>Nema upitnih potrošnji</div>
+                      <p>Sva točenja goriva su usklađena sa normativima iz Cenovnika, kapacitetom mašina i radovima na njivi.</p>
                     </div>
-                  ))
+                  ) : (
+                    anomalies
+                      .slice((anomaliesPage - 1) * PAGE_SIZE, anomaliesPage * PAGE_SIZE)
+                      .map((a) => (
+                        <div key={a.id} className={styles.anomalyAlertCard}>
+                          <div className={styles.anomalyInfo}>
+                            <div className={styles.anomalyMachine}>
+                              <AlertTriangle size={18} color="#ef4444" />
+                              <span>{a.machine.name}</span>
+                              <span className={styles.amountCell} style={{ fontSize: '1rem', marginLeft: 8 }}>
+                                ({a.liters} L)
+                              </span>
+                            </div>
+
+                            <div className={styles.anomalyReasonText}>
+                              <strong>Razlog detekcije:</strong> {a.anomalyReason || 'Prekoračenje normativa ili točenje bez radnog naloga'}
+                            </div>
+
+                            <div className={styles.anomalyMeta}>
+                              <span><Calendar size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {new Date(a.date).toLocaleDateString('sr-RS')}</span>
+                              <span><User size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Točilac: {a.worker.name}</span>
+                              <span><Building2 size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Izvor: {a.fuelSource}{a.gasStation ? ` (${a.gasStation})` : ''}</span>
+                              {a.fieldWork?.parcel && <span><MapPin size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Parcela: {a.fieldWork.parcel.name}</span>}
+                              {a.fieldWork?.workType && <span><Wrench size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {a.fieldWork.workType.name}</span>}
+                            </div>
+                          </div>
+
+                          <button
+                            className={styles.deleteRowBtn}
+                            onClick={() => handleDeleteEntry(a.id, a.machine.name, a.liters)}
+                            title="Storniraj točenje"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      ))
+                  )}
+                </div>
+
+                {anomalies.length > 0 && (
+                  <div style={{ marginTop: '1rem', background: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                    <TablePagination
+                      currentPage={anomaliesPage}
+                      totalPages={Math.max(1, Math.ceil(anomalies.length / PAGE_SIZE))}
+                      totalItems={anomalies.length}
+                      pageSize={PAGE_SIZE}
+                      onPageChange={(p) => setAnomaliesPage(p)}
+                      itemName="upitnih potrošnji"
+                    />
+                  </div>
                 )}
-              </div>
+              </>
             )}
           </>
         ) : (
@@ -1368,36 +1525,18 @@ const GorivoDashboard: React.FC = () => {
                           </tbody>
                         </table>
 
-                        {/* Paginacija za radnika (do 50 zapisa po strani) */}
-                        {historyPagination && historyPagination.totalPages > 1 && (
-                          <div className={styles.paginationContainer}>
-                            <div className={styles.paginationInfo}>
-                              Prikazano <strong>{historyEntries.length}</strong> od ukupno{' '}
-                              <strong>{historyPagination.total}</strong> prethodnih sipanja
-                            </div>
-                            <div className={styles.paginationButtons}>
-                              <button
-                                className={styles.paginationBtn}
-                                disabled={historyPage <= 1 || historyLoading}
-                                onClick={() => fetchHistoryEntries(historyPage - 1)}
-                              >
-                                <ChevronLeft size={16} />
-                                <span>Prethodna</span>
-                              </button>
-                              <span className={styles.pageIndicator}>
-                                Stranica {historyPage} od {historyPagination.totalPages}
-                              </span>
-                              <button
-                                className={styles.paginationBtn}
-                                disabled={historyPage >= historyPagination.totalPages || historyLoading}
-                                onClick={() => fetchHistoryEntries(historyPage + 1)}
-                              >
-                                <span>Sledeća</span>
-                                <ChevronRight size={16} />
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                        {/* Paginacija za radnika (25 po strani sa direktnim unosom) */}
+                        <TablePagination
+                          currentPage={historyPage}
+                          totalPages={historyPagination?.totalPages || 1}
+                          totalItems={historyPagination?.total || historyEntries.length}
+                          pageSize={PAGE_SIZE}
+                          onPageChange={(page) => {
+                            setHistoryPage(page);
+                            fetchHistoryEntries(page);
+                          }}
+                          itemName="prethodnih točenja"
+                        />
                       </>
                     )}
                   </div>

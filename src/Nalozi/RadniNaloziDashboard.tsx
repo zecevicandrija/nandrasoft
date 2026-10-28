@@ -10,16 +10,23 @@ import {
   Clock,
   X,
   Play,
-  Sparkles,
   KeyRound,
   Fuel,
   AlertCircle,
   Loader2,
   Pencil,
-  Lock,
   Info,
   RotateCcw,
   AlertTriangle,
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Calendar,
+  Filter,
+  CheckCircle2,
+  Layers,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
@@ -101,6 +108,20 @@ interface WorkOrder {
   }>;
 }
 
+interface PaginationData {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+interface StatsData {
+  totalOrders: number;
+  pendingOrders: number;
+  inProgressOrders: number;
+  completedOrders: number;
+}
+
 const API = '/api';
 
 const RadniNaloziDashboard: React.FC = () => {
@@ -111,6 +132,21 @@ const RadniNaloziDashboard: React.FC = () => {
 
   const [orders, setOrders] = useState<WorkOrder[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Paginacija & Statistika (25 naloga po stranici)
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationData>({
+    total: 0,
+    page: 1,
+    limit: 25,
+    totalPages: 1,
+  });
+  const [stats, setStats] = useState<StatsData>({
+    totalOrders: 0,
+    pendingOrders: 0,
+    inProgressOrders: 0,
+    completedOrders: 0,
+  });
 
   // Filteri - podrazumevano prikazujemo 'SVE' tako da se odmah vide svi nalozi
   const [datePreset, setDatePreset] = useState<'DANAS' | 'SUTRA' | 'SVE' | 'CUSTOM'>('SVE');
@@ -187,6 +223,11 @@ const RadniNaloziDashboard: React.FC = () => {
   const [reactivateLoading, setReactivateLoading] = useState(false);
   const [reactivateError, setReactivateError] = useState('');
 
+  // Modal za trajno brisanje radnog naloga
+  const [orderToDelete, setOrderToDelete] = useState<WorkOrder | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
   // Učitavanje šifarnika
   useEffect(() => {
     const fetchMaster = async () => {
@@ -222,11 +263,13 @@ const RadniNaloziDashboard: React.FC = () => {
     fetchMaster();
   }, []);
 
-  // Učitavanje naloga
-  const fetchOrders = async () => {
+  // Učitavanje naloga sa paginacijom
+  const fetchOrders = async (targetPage = page) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
+      params.set('page', String(targetPage));
+      params.set('limit', '25');
 
       if (datePreset === 'DANAS') {
         params.set('date', new Date().toISOString().split('T')[0]);
@@ -249,6 +292,12 @@ const RadniNaloziDashboard: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         setOrders(data.workOrders || []);
+        if (data.pagination) {
+          setPagination(data.pagination);
+        }
+        if (data.stats) {
+          setStats(data.stats);
+        }
       }
     } catch (err) {
       console.error('Greška pri dohvatanju radnih naloga:', err);
@@ -258,8 +307,8 @@ const RadniNaloziDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchOrders();
-  }, [datePreset, customDate, statusFilter, typeFilter]);
+    fetchOrders(page);
+  }, [page, datePreset, customDate, statusFilter, typeFilter]);
 
   useEffect(() => {
     const handleSwMessage = (event: MessageEvent) => {
@@ -267,14 +316,14 @@ const RadniNaloziDashboard: React.FC = () => {
         event.data?.type === 'WORK_ORDER_PUSH_RECEIVED' ||
         event.data?.type === 'WORK_ORDER_PUSH_CLICKED'
       ) {
-        fetchOrders();
+        fetchOrders(page);
       }
     };
     navigator.serviceWorker?.addEventListener('message', handleSwMessage);
     return () => {
       navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
     };
-  }, [datePreset, customDate, statusFilter, typeFilter]);
+  }, [page, datePreset, customDate, statusFilter, typeFilter]);
 
   // Kreiranje naloga
   const handleCreateOrder = async (e: React.FormEvent) => {
@@ -320,7 +369,8 @@ const RadniNaloziDashboard: React.FC = () => {
         instructions: '',
       });
 
-      fetchOrders();
+      setPage(1);
+      fetchOrders(1);
     } catch (err: any) {
       setModalError(err.message);
     } finally {
@@ -339,9 +389,9 @@ const RadniNaloziDashboard: React.FC = () => {
     const cap = hasTank ? (order.machine?.tankCapacityLiters as number) : 0;
     const curFuel =
       hasTank &&
-      order.machine?.currentFuelLiters !== undefined &&
-      order.machine.currentFuelLiters !== null &&
-      order.machine.currentFuelLiters > 0
+        order.machine?.currentFuelLiters !== undefined &&
+        order.machine.currentFuelLiters !== null &&
+        order.machine.currentFuelLiters > 0
         ? order.machine.currentFuelLiters
         : cap;
     setAcceptFuelLiters(curFuel);
@@ -382,7 +432,7 @@ const RadniNaloziDashboard: React.FC = () => {
       }
 
       setSelectedOrderToAccept(null);
-      fetchOrders();
+      fetchOrders(page);
     } catch (err: any) {
       setAcceptError(err.message);
     } finally {
@@ -407,7 +457,7 @@ const RadniNaloziDashboard: React.FC = () => {
         throw new Error(data.error || 'Greška pri otkazivanju radnog naloga.');
       }
       setOrderToCancel(null);
-      fetchOrders();
+      fetchOrders(page);
     } catch (err: any) {
       setCancelError(err.message || 'Greška pri otkazivanju radnog naloga.');
     } finally {
@@ -434,11 +484,38 @@ const RadniNaloziDashboard: React.FC = () => {
         throw new Error(data.error || 'Greška pri ponovnom aktiviranju radnog naloga.');
       }
       setOrderToReactivate(null);
-      fetchOrders();
+      fetchOrders(page);
     } catch (err: any) {
       setReactivateError(err.message || 'Greška pri ponovnom aktiviranju radnog naloga.');
     } finally {
       setReactivateLoading(false);
+    }
+  };
+
+  // Potvrda trajnog brisanja radnog naloga iz modala
+  const handleConfirmDelete = async () => {
+    if (!orderToDelete) return;
+    setDeleteLoading(true);
+    setDeleteError('');
+    try {
+      const res = await fetch(`${API}/work-orders/${orderToDelete.id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Greška pri brisanju radnog naloga.');
+      }
+      setOrderToDelete(null);
+      if (orders.length === 1 && page > 1) {
+        setPage(page - 1);
+      } else {
+        fetchOrders(page);
+      }
+    } catch (err: any) {
+      setDeleteError(err.message || 'Greška pri brisanju radnog naloga.');
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -469,22 +546,9 @@ const RadniNaloziDashboard: React.FC = () => {
     return workers;
   };
 
-  // Helper za proveru mogućnosti izmene radnog naloga
-  // Ako je status PLANIRAN, DODELJEN ili U_TOKU -> rukovodilac može izmeniti uvek
-  // Ako je status ZAVRSEN -> može izmeniti samo do 23:59:59h istog dana (nakon toga je zaključan)
-  const canEditOrder = (order: WorkOrder) => {
-    if (!isManager) return false;
-    if (order.status === 'OTKAZAN') return false;
-    if (order.status !== 'ZAVRSEN') return true;
-
-    // Za završene proveravamo da li je danas isti kalendarski dan kada je nalog ažuriran/završen
-    const completionDate = new Date(order.updatedAt || order.orderDate);
-    const now = new Date();
-    return (
-      now.getFullYear() === completionDate.getFullYear() &&
-      now.getMonth() === completionDate.getMonth() &&
-      now.getDate() === completionDate.getDate()
-    );
+  // Za direktore i rukovodioce uvek su otključani svi radni nalozi za izmenu (i završeni i prethodni datumi)
+  const canEditOrder = (_order?: WorkOrder) => {
+    return isManager;
   };
 
   const handleOpenEditModal = (order: WorkOrder) => {
@@ -535,7 +599,7 @@ const RadniNaloziDashboard: React.FC = () => {
       }
 
       setEditingOrder(null);
-      fetchOrders();
+      fetchOrders(page);
     } catch (err: any) {
       setEditModalError(err.message);
     } finally {
@@ -543,11 +607,122 @@ const RadniNaloziDashboard: React.FC = () => {
     }
   };
 
-  // Statistika
-  const totalOrders = orders.length;
-  const pendingOrders = orders.filter((o) => ['PLANIRAN', 'DODELJEN'].includes(o.status)).length;
-  const inProgressOrders = orders.filter((o) => o.status === 'U_TOKU').length;
-  const completedOrders = orders.filter((o) => o.status === 'ZAVRSEN').length;
+  // Statistika (koristi precizne brojeve sa servera za izabrani opseg)
+  const totalOrders = stats.totalOrders || orders.length;
+  const pendingOrders = stats.pendingOrders !== undefined
+    ? stats.pendingOrders
+    : orders.filter((o) => ['PLANIRAN', 'DODELJEN'].includes(o.status)).length;
+  const inProgressOrders = stats.inProgressOrders !== undefined
+    ? stats.inProgressOrders
+    : orders.filter((o) => o.status === 'U_TOKU').length;
+  const completedOrders = stats.completedOrders !== undefined
+    ? stats.completedOrders
+    : orders.filter((o) => o.status === 'ZAVRSEN').length;
+
+  const renderPagination = () => {
+    if (pagination.total === 0) return null;
+
+    const current = pagination.page;
+    const totalP = pagination.totalPages;
+    const startItem = (current - 1) * pagination.limit + 1;
+    const endItem = Math.min(current * pagination.limit, pagination.total);
+
+    const getPageNumbers = () => {
+      const pages: (number | string)[] = [];
+      if (totalP <= 7) {
+        for (let i = 1; i <= totalP; i++) pages.push(i);
+      } else {
+        pages.push(1);
+        if (current > 3) pages.push('ellipsis-start');
+        const start = Math.max(2, current - 1);
+        const end = Math.min(totalP - 1, current + 1);
+        for (let i = start; i <= end; i++) {
+          if (!pages.includes(i)) pages.push(i);
+        }
+        if (current < totalP - 2) pages.push('ellipsis-end');
+        if (!pages.includes(totalP)) pages.push(totalP);
+      }
+      return pages;
+    };
+
+    return (
+      <div className={styles.paginationBar}>
+        <div className={styles.paginationInfo}>
+          Prikazano <strong>{startItem} – {endItem}</strong> od ukupno <strong>{pagination.total}</strong> naloga (25 po stranici)
+        </div>
+
+        {totalP > 1 && (
+          <div className={styles.paginationButtons}>
+            <button
+              type="button"
+              className={styles.paginationBtn}
+              onClick={() => setPage(1)}
+              disabled={current === 1 || loading}
+              title="Prva stranica"
+            >
+              <ChevronsLeft size={16} />
+              <span className={styles.paginationBtnText}>Prva</span>
+            </button>
+            <button
+              type="button"
+              className={styles.paginationBtn}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={current === 1 || loading}
+              title="Prethodna stranica"
+            >
+              <ChevronLeft size={16} />
+              <span className={styles.paginationBtnText}>Prethodna</span>
+            </button>
+
+            <div className={styles.pageNumbers}>
+              {getPageNumbers().map((p, idx) => {
+                if (typeof p === 'string') {
+                  return (
+                    <span key={`ellipsis-${idx}`} className={styles.paginationEllipsis}>
+                      …
+                    </span>
+                  );
+                }
+                const isActive = p === current;
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    className={`${styles.paginationPageBtn} ${isActive ? styles.paginationPageBtnActive : ''}`}
+                    onClick={() => setPage(p)}
+                    disabled={loading}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              className={styles.paginationBtn}
+              onClick={() => setPage((p) => Math.min(totalP, p + 1))}
+              disabled={current === totalP || loading}
+              title="Sledeća stranica"
+            >
+              <span className={styles.paginationBtnText}>Sledeća</span>
+              <ChevronRight size={16} />
+            </button>
+            <button
+              type="button"
+              className={styles.paginationBtn}
+              onClick={() => setPage(totalP)}
+              disabled={current === totalP || loading}
+              title="Poslednja stranica"
+            >
+              <span className={styles.paginationBtnText}>Poslednja</span>
+              <ChevronsRight size={16} />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <AppLayout pageTitle="Radni Nalozi & Dispečing">
@@ -556,7 +731,9 @@ const RadniNaloziDashboard: React.FC = () => {
         <div className={styles.headerBar}>
           <div className={styles.titleSection}>
             <h2>
-              <ClipboardList size={26} color="#16a34a" />
+              <span className={styles.titleIconBadge}>
+                <ClipboardList size={22} />
+              </span>
               Dnevni Radni Nalozi
             </h2>
             <p>
@@ -568,7 +745,7 @@ const RadniNaloziDashboard: React.FC = () => {
 
           {isManager && (
             <button className={styles.newOrderBtn} onClick={() => setIsModalOpen(true)}>
-              <Plus size={20} />
+              <Plus size={18} />
               <span>Izdaj novi nalog</span>
             </button>
           )}
@@ -577,8 +754,8 @@ const RadniNaloziDashboard: React.FC = () => {
         {/* KPI Grid */}
         <div className={styles.kpiGrid}>
           <div className={styles.kpiCard}>
-            <div className={styles.kpiIcon}>
-              <ClipboardList size={24} />
+            <div className={styles.kpiIconTotal}>
+              <ClipboardList size={22} />
             </div>
             <div className={styles.kpiInfo}>
               <span className={styles.kpiLabel}>Ukupno naloga</span>
@@ -587,39 +764,33 @@ const RadniNaloziDashboard: React.FC = () => {
           </div>
 
           <div className={styles.kpiCard}>
-            <div className={styles.kpiIcon} style={{ background: 'rgba(217, 119, 6, 0.1)', color: '#d97706' }}>
-              <Clock size={24} />
+            <div className={styles.kpiIconPending}>
+              <Clock size={22} />
             </div>
             <div className={styles.kpiInfo}>
               <span className={styles.kpiLabel}>Na čekanju</span>
-              <span className={styles.kpiValue} style={{ color: '#d97706' }}>
-                {pendingOrders}
-              </span>
+              <span className={styles.kpiValuePending}>{pendingOrders}</span>
             </div>
           </div>
 
           <div className={styles.kpiCard}>
-            <div className={styles.kpiIcon} style={{ background: 'rgba(37, 99, 235, 0.1)', color: '#2563eb' }}>
-              <Play size={24} />
+            <div className={styles.kpiIconInProgress}>
+              <Play size={22} />
             </div>
             <div className={styles.kpiInfo}>
               <span className={styles.kpiLabel}>U toku</span>
-              <span className={styles.kpiValue} style={{ color: '#2563eb' }}>
-                {inProgressOrders}
-              </span>
+              <span className={styles.kpiValueInProgress}>{inProgressOrders}</span>
             </div>
           </div>
 
           {isManager && (
             <div className={styles.kpiCard}>
-              <div className={styles.kpiIcon} style={{ background: 'rgba(22, 163, 74, 0.1)', color: '#16a34a' }}>
-                <Sparkles size={24} />
+              <div className={styles.kpiIconCompleted}>
+                <CheckCircle2 size={22} />
               </div>
               <div className={styles.kpiInfo}>
                 <span className={styles.kpiLabel}>Završeno</span>
-                <span className={styles.kpiValue} style={{ color: '#16a34a' }}>
-                  {completedOrders}
-                </span>
+                <span className={styles.kpiValueCompleted}>{completedOrders}</span>
               </div>
             </div>
           )}
@@ -630,146 +801,172 @@ const RadniNaloziDashboard: React.FC = () => {
           <div className={styles.dateFilterButtons}>
             <button
               className={`${styles.dateBtn} ${datePreset === 'DANAS' ? styles.dateBtnActive : ''}`}
-              onClick={() => setDatePreset('DANAS')}
+              onClick={() => {
+                setDatePreset('DANAS');
+                setPage(1);
+              }}
             >
               Danas
             </button>
             <button
               className={`${styles.dateBtn} ${datePreset === 'SUTRA' ? styles.dateBtnActive : ''}`}
-              onClick={() => setDatePreset('SUTRA')}
+              onClick={() => {
+                setDatePreset('SUTRA');
+                setPage(1);
+              }}
             >
               Sutra (Planirano)
             </button>
             <button
               className={`${styles.dateBtn} ${datePreset === 'SVE' ? styles.dateBtnActive : ''}`}
-              onClick={() => setDatePreset('SVE')}
+              onClick={() => {
+                setDatePreset('SVE');
+                setPage(1);
+              }}
             >
               Svi datumi
             </button>
           </div>
 
           <div className={styles.filterInputs}>
-            <input
-              type="date"
-              className={styles.dateInput}
-              value={customDate}
-              onChange={(e) => {
-                setCustomDate(e.target.value);
-                setDatePreset('CUSTOM');
-              }}
-              title="Izaberi proizvoljan datum"
-            />
+            <div className={styles.inputWrapper}>
+              <Calendar size={15} className={styles.inputIcon} />
+              <input
+                type="date"
+                className={styles.dateInput}
+                value={customDate}
+                onChange={(e) => {
+                  setCustomDate(e.target.value);
+                  setDatePreset('CUSTOM');
+                  setPage(1);
+                }}
+                title="Izaberi proizvoljan datum"
+              />
+            </div>
 
-            <select
-              className={styles.selectInput}
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-            >
-              <option value="">Svi tipovi posla</option>
-              <option value="RAD_NJIVA">Rad na njivi</option>
-              <option value="REMONT_SERVIS">Remont & Servis</option>
-              <option value="OSTALO">Ostalo / Magacin</option>
-            </select>
+            <div className={styles.inputWrapper}>
+              <Filter size={15} className={styles.inputIcon} />
+              <select
+                className={styles.selectInput}
+                value={typeFilter}
+                onChange={(e) => {
+                  setTypeFilter(e.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="">Svi tipovi posla</option>
+                <option value="RAD_NJIVA">Rad na njivi</option>
+                <option value="REMONT_SERVIS">Remont & Servis</option>
+                <option value="OSTALO">Ostalo / Magacin</option>
+              </select>
+            </div>
 
-            <select
-              className={styles.selectInput}
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
-              {isManager ? (
-                <>
-                  <option value="">Svi statusi</option>
-                  <option value="DODELJEN">Dodeljen (Na čekanju)</option>
-                  <option value="U_TOKU">U toku</option>
-                  <option value="ZAVRSEN">Završen</option>
-                  <option value="OTKAZAN">Otkazan</option>
-                </>
-              ) : (
-                <>
-                  <option value="">Aktivni nalozi (Dodeljeni & U toku)</option>
-                  <option value="DODELJEN">Samo Dodeljen (Na čekanju)</option>
-                  <option value="U_TOKU">Samo U toku</option>
-                  <option value="ZAVRSEN">Završeni nalozi</option>
-                  <option value="SVE">Svi nalozi (i završeni)</option>
-                </>
-              )}
-            </select>
+            <div className={styles.inputWrapper}>
+              <Layers size={15} className={styles.inputIcon} />
+              <select
+                className={styles.selectInput}
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setPage(1);
+                }}
+              >
+                {isManager ? (
+                  <>
+                    <option value="">Svi statusi</option>
+                    <option value="DODELJEN">Dodeljen (Na čekanju)</option>
+                    <option value="U_TOKU">U toku</option>
+                    <option value="ZAVRSEN">Završen</option>
+                    <option value="OTKAZAN">Otkazan</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="">Aktivni nalozi (Dodeljeni & U toku)</option>
+                    <option value="DODELJEN">Samo Dodeljen (Na čekanju)</option>
+                    <option value="U_TOKU">Samo U toku</option>
+                    <option value="ZAVRSEN">Završeni nalozi</option>
+                    <option value="SVE">Svi nalozi (i završeni)</option>
+                  </>
+                )}
+              </select>
+            </div>
           </div>
         </div>
 
         {/* Orders Grid */}
         {loading ? (
           <div className={styles.emptyState}>
+            <Loader2 size={32} className={styles.spinnerIcon} />
             <p>Učitavam radne naloge...</p>
           </div>
         ) : orders.length === 0 ? (
           <div className={styles.emptyState}>
-            <ClipboardList size={40} color="#9ca3af" />
-            <p>Nema izdatih radnih naloga za izabrani period i filtere.</p>
+            <div className={styles.emptyStateIcon}>
+              <ClipboardList size={38} />
+            </div>
+            <strong>Nema izdatih radnih naloga</strong>
+            <p>Za izabrani period i filtere trenutno nema evidentiranih radnih naloga.</p>
             {isManager && (
               <button className={styles.newOrderBtn} onClick={() => setIsModalOpen(true)}>
-                <Plus size={18} /> Izdaj prvi nalog za sutra
+                <Plus size={18} /> Izdaj novi nalog
               </button>
             )}
           </div>
         ) : (
-          <div className={styles.ordersGrid}>
-            {orders.map((order) => {
-              const isRemont = order.orderType === 'REMONT_SERVIS';
+          <>
+            <div className={styles.ordersGrid}>
+              {orders.map((order) => {
+                const isRemont = order.orderType === 'REMONT_SERVIS';
 
-              return (
-                <div key={order.id} className={styles.orderCard}>
-                  {/* Card Header */}
-                  <div>
-                    <div className={styles.orderCardHeader}>
-                      <div>
-                        <span className={styles.orderNumber}>{order.orderNumber}</span>
-                        <div className={styles.orderDate}>
-                          {new Date(order.orderDate).toLocaleDateString('sr-RS', {
-                            weekday: 'short',
-                            day: 'numeric',
-                            month: 'numeric',
-                            year: 'numeric',
-                          })}
+                return (
+                  <div key={order.id} className={styles.orderCard}>
+                    {/* Card Header */}
+                    <div className={styles.cardHeader}>
+                      <div className={styles.headerLeft}>
+                        <span className={styles.orderNumberBadge}>{order.orderNumber}</span>
+                        <div className={styles.orderDateRow}>
+                          <Calendar size={13} className={styles.dateIcon} />
+                          <span>
+                            {new Date(order.orderDate).toLocaleDateString('sr-RS', {
+                              weekday: 'short',
+                              day: 'numeric',
+                              month: 'numeric',
+                              year: 'numeric',
+                            })}
+                          </span>
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <div className={styles.headerBadges}>
+                        <div className={styles.statusAndPriority}>
                           {order.priority === 'KRITICNO' && (
-                            <span className={styles.priorityBadgeKriticno}>
-                              ⚡ Kritično
-                            </span>
+                            <span className={styles.priorityBadgeKriticno}>⚡ Kritično</span>
                           )}
                           {order.priority === 'HITNO' && (
-                            <span className={styles.priorityBadgeHitno}>
-                              ⚠️ Hitno
-                            </span>
+                            <span className={styles.priorityBadgeHitno}>⚠️ Hitno</span>
                           )}
                           <span className={`${styles.statusBadge} ${styles[`status${order.status}`]}`}>
+                            <span className={styles.statusDot} />
                             {order.status === 'DODELJEN'
                               ? 'Dodeljen'
                               : order.status === 'U_TOKU'
-                              ? 'U toku'
-                              : order.status === 'ZAVRSEN'
-                              ? 'Završen'
-                              : order.status === 'OTKAZAN'
-                              ? 'Otkazan'
-                              : 'Planiran'}
+                                ? 'U toku'
+                                : order.status === 'ZAVRSEN'
+                                  ? 'Završen'
+                                  : order.status === 'OTKAZAN'
+                                    ? 'Otkazan'
+                                    : 'Planiran'}
                           </span>
                         </div>
-                        <span
-                          className={isRemont ? styles.typeBadgeRemont : styles.typeBadgeNjiva}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                        >
+                        <span className={isRemont ? styles.typeBadgeRemont : styles.typeBadgeNjiva}>
                           {isRemont ? (
                             <>
-                              <Wrench size={13} />
+                              <Wrench size={12} />
                               <span>Remont / Servis</span>
                             </>
                           ) : (
                             <>
-                              <Tractor size={13} />
+                              <Tractor size={12} />
                               <span>Rad na njivi</span>
                             </>
                           )}
@@ -778,58 +975,71 @@ const RadniNaloziDashboard: React.FC = () => {
                     </div>
 
                     {/* Card Body */}
-                    <div className={styles.orderBody} style={{ marginTop: '0.75rem' }}>
-                      <div className={styles.orderRow}>
-                        <User size={16} className={styles.orderRowIcon} />
-                        <span>
-                          Radnik: <strong className={styles.orderRowStrong}>{order.worker?.name}</strong>
-                        </span>
+                    <div className={styles.orderBody}>
+                      <div className={styles.metaRowsList}>
+                        <div className={styles.orderRow}>
+                          <div className={styles.rowIconWrapper}>
+                            <User size={15} />
+                          </div>
+                          <div className={styles.rowContent}>
+                            <span className={styles.rowLabel}>Radnik:</span>
+                            <strong className={styles.rowValue}>{order.worker?.name}</strong>
+                          </div>
+                        </div>
+
+                        {order.machine && (
+                          <div className={styles.orderRow}>
+                            <div className={styles.rowIconWrapper}>
+                              <Tractor size={15} />
+                            </div>
+                            <div className={styles.rowContent}>
+                              <span className={styles.rowLabel}>Mašina:</span>
+                              <span className={styles.rowValue}>
+                                <strong>{order.machine?.name}</strong>
+                                {order.attachment && (
+                                  <span className={styles.attachmentText}> + {order.attachment.name}</span>
+                                )}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {order.parcel && (
+                          <div className={styles.orderRow}>
+                            <div className={styles.rowIconWrapper}>
+                              <MapPin size={15} />
+                            </div>
+                            <div className={styles.rowContent}>
+                              <span className={styles.rowLabel}>Parcela:</span>
+                              <strong className={styles.rowValue}>{order.parcel?.name}</strong>
+                            </div>
+                          </div>
+                        )}
+
+                        {order.workType && (
+                          <div className={styles.orderRow}>
+                            <div className={styles.rowIconWrapper}>
+                              <Wrench size={15} />
+                            </div>
+                            <div className={styles.rowContent}>
+                              <span className={styles.rowLabel}>Posao:</span>
+                              <span className={styles.rowValue}>
+                                <strong>{order.workType?.name}</strong>
+                                {order.plannedAreaHa && (
+                                  <span className={styles.planBadge}>{order.plannedAreaHa} ha</span>
+                                )}
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
-
-                      {order.machine && (
-                        <div className={styles.orderRow}>
-                          <Tractor size={16} className={styles.orderRowIcon} />
-                          <span>
-                            Mašina: <strong className={styles.orderRowStrong}>{order.machine?.name}</strong>
-                            {order.attachment && ` + ${order.attachment.name}`}
-                          </span>
-                        </div>
-                      )}
-
-                      {order.parcel && (
-                        <div className={styles.orderRow}>
-                          <MapPin size={16} className={styles.orderRowIcon} />
-                          <span>
-                            Parcela: <strong>{order.parcel?.name}</strong>
-                          </span>
-                        </div>
-                      )}
-
-                      {order.workType && (
-                        <div className={styles.orderRow}>
-                          <Wrench size={16} className={styles.orderRowIcon} />
-                          <span>
-                            Posao: <strong>{order.workType?.name}</strong>
-                            {order.plannedAreaHa && ` (Plan: ${order.plannedAreaHa} ha)`}
-                          </span>
-                        </div>
-                      )}
 
                       {order.machineAssignments &&
                         order.machineAssignments.length > 0 &&
                         order.machineAssignments[0].startFuelLiters !== undefined &&
                         order.machineAssignments[0].startFuelLiters !== null && (
-                          <div
-                            style={{
-                              fontSize: '0.85rem',
-                              color: '#0284c7',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.4rem',
-                              marginTop: '0.2rem',
-                            }}
-                          >
-                            <Fuel size={15} color="#0284c7" />
+                          <div className={styles.fuelNotice}>
+                            <Fuel size={14} className={styles.fuelIcon} />
                             <span>
                               Zaduženo gorivo: <strong>{order.machineAssignments[0].startFuelLiters} L</strong>
                             </span>
@@ -837,103 +1047,120 @@ const RadniNaloziDashboard: React.FC = () => {
                         )}
 
                       {order.instructions && (
-                        <div className={styles.instructionsBox}>"{order.instructions}"</div>
+                        <div className={styles.instructionsBox}>
+                          <span className={styles.instructionsQuote}>“</span>
+                          <span>{order.instructions}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Card Footer / Akcije */}
+                    <div className={styles.orderCardFooter}>
+                      {/* Primarna radna akcija */}
+                      <div className={styles.primaryActionWrapper}>
+                        {!isRemont &&
+                          (order.status === 'PLANIRAN' || order.status === 'DODELJEN') && (
+                            <button
+                              type="button"
+                              className={styles.acceptOrderBtn}
+                              onClick={() => handleOpenAcceptModal(order)}
+                            >
+                              <KeyRound size={16} />
+                              <span>Prihvati nalog i zaduži</span>
+                            </button>
+                          )}
+
+                        {!isRemont && order.status === 'U_TOKU' && (
+                          <Link
+                            to={`/radovi/novi?orderId=${order.id}&parcelId=${order.parcelId || ''}&machineId=${order.machineId || ''
+                              }&attachmentId=${order.attachmentId || ''}&workTypeId=${order.workTypeId || ''
+                              }&workerId=${order.workerId}`}
+                            className={styles.startWorkBtn}
+                          >
+                            <Play size={16} />
+                            <span>Prijavi rad i razduži</span>
+                          </Link>
+                        )}
+
+                        {isRemont && order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
+                          <Link
+                            to={`/masine-kvarovi?orderId=${order.id}&machineId=${order.machineId || ''}`}
+                            className={styles.workshopBtn}
+                          >
+                            <Wrench size={16} />
+                            <span>Otvori u radionici</span>
+                          </Link>
+                        )}
+                      </div>
+
+                      {/* Menadžerske akcije */}
+                      {isManager && (
+                        <div className={styles.managerActionsWrapper}>
+                          {canEditOrder(order) && (
+                            <button
+                              type="button"
+                              className={styles.editBtn}
+                              onClick={() => handleOpenEditModal(order)}
+                              title="Izmeni radni nalog"
+                            >
+                              <Pencil size={14} />
+                              <span>Izmeni</span>
+                            </button>
+                          )}
+
+                          {order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
+                            <button
+                              type="button"
+                              className={styles.cancelBtn}
+                              onClick={() => {
+                                setCancelError('');
+                                setOrderToCancel(order);
+                              }}
+                              title="Otkaži nalog"
+                            >
+                              <X size={14} />
+                              <span>Otkaži</span>
+                            </button>
+                          )}
+
+                          {order.status === 'OTKAZAN' && (
+                            <button
+                              type="button"
+                              className={styles.reactivateBtn}
+                              onClick={() => {
+                                setReactivateError('');
+                                setOrderToReactivate(order);
+                              }}
+                              title="Ponovo aktiviraj nalog"
+                            >
+                              <RotateCcw size={14} />
+                              <span>Aktiviraj</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            className={styles.deleteBtn}
+                            onClick={() => {
+                              setDeleteError('');
+                              setOrderToDelete(order);
+                            }}
+                            title="Trajno obriši nalog"
+                          >
+                            <Trash2 size={14} />
+                            <span>Obriši</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
+                );
+              })}
+            </div>
 
-                  {/* Card Footer / Akcije */}
-                  <div className={styles.orderCardFooter}>
-                    {!isRemont &&
-                      (order.status === 'PLANIRAN' || order.status === 'DODELJEN') && (
-                        <button
-                          type="button"
-                          className={styles.acceptOrderBtn}
-                          onClick={() => handleOpenAcceptModal(order)}
-                        >
-                          <KeyRound size={16} />
-                          <span>Prihvati nalog i zaduži mašinu</span>
-                        </button>
-                      )}
-
-                    {!isRemont && order.status === 'U_TOKU' && (
-                      <Link
-                        to={`/radovi/novi?orderId=${order.id}&parcelId=${order.parcelId || ''}&machineId=${
-                          order.machineId || ''
-                        }&attachmentId=${order.attachmentId || ''}&workTypeId=${order.workTypeId || ''}&workerId=${order.workerId}`}
-                        className={styles.startWorkBtn}
-                      >
-                        <Play size={16} />
-                        <span>Prijavi rad i razduži mašinu</span>
-                      </Link>
-                    )}
-
-                    {isRemont && order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
-                      <Link
-                        to={`/masine-kvarovi?orderId=${order.id}&machineId=${order.machineId || ''}`}
-                        className={styles.startWorkBtn}
-                        style={{ backgroundColor: '#7e22ce' }}
-                      >
-                        <Wrench size={16} />
-                        <span>Otvori u radionici</span>
-                      </Link>
-                    )}
-
-                    {isManager && canEditOrder(order) && (
-                      <button
-                        type="button"
-                        className={styles.editBtn}
-                        onClick={() => handleOpenEditModal(order)}
-                        title="Izmeni radni nalog"
-                      >
-                        <Pencil size={14} />
-                        <span>Izmeni</span>
-                      </button>
-                    )}
-
-                    {isManager && order.status === 'ZAVRSEN' && !canEditOrder(order) && (
-                      <span
-                        className={styles.lockedBadge}
-                        title="Završeni nalog se može menjati samo do 23:59h istog dana kada je završen. Rok za izmenu je istekao."
-                      >
-                        <Lock size={13} />
-                        <span>Zaključan</span>
-                      </span>
-                    )}
-
-                    {isManager && order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
-                      <button
-                        type="button"
-                        className={styles.cancelBtn}
-                        onClick={() => {
-                          setCancelError('');
-                          setOrderToCancel(order);
-                        }}
-                        title="Otkaži nalog"
-                      >
-                        Otkaži
-                      </button>
-                    )}
-
-                    {isManager && order.status === 'OTKAZAN' && (
-                      <button
-                        type="button"
-                        className={styles.reactivateBtn}
-                        onClick={() => {
-                          setReactivateError('');
-                          setOrderToReactivate(order);
-                        }}
-                        title="Ponovo aktiviraj nalog"
-                      >
-                        <RotateCcw size={14} />
-                        <span>Ponovo aktiviraj</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+            {/* Pagination Controls */}
+            {renderPagination()}
+          </>
         )}
 
         {/* Modal za izdavanje novog naloga */}
@@ -1023,8 +1250,8 @@ const RadniNaloziDashboard: React.FC = () => {
                       {formData.orderType === 'REMONT_SERVIS'
                         ? 'Dodeljeni mehaničar / serviser *'
                         : formData.orderType === 'RAD_NJIVA'
-                        ? 'Dodeljeni operater / traktorista *'
-                        : 'Radnik kome se nalog izdaje *'}
+                          ? 'Dodeljeni operater / traktorista *'
+                          : 'Radnik kome se nalog izdaje *'}
                     </label>
                     <select
                       className={styles.modalSelect}
@@ -1036,8 +1263,8 @@ const RadniNaloziDashboard: React.FC = () => {
                         {formData.orderType === 'REMONT_SERVIS'
                           ? 'Izaberi mehaničara iz baze...'
                           : formData.orderType === 'RAD_NJIVA'
-                          ? 'Izaberi operatera iz baze...'
-                          : 'Izaberi radnika iz baze...'}
+                            ? 'Izaberi operatera iz baze...'
+                            : 'Izaberi radnika iz baze...'}
                       </option>
                       {getFilteredWorkers(formData.orderType).map((w) => (
                         <option key={w.id} value={w.id}>
@@ -1279,8 +1506,8 @@ const RadniNaloziDashboard: React.FC = () => {
                       {editFormData.orderType === 'REMONT_SERVIS'
                         ? 'Dodeljeni mehaničar / serviser *'
                         : editFormData.orderType === 'RAD_NJIVA'
-                        ? 'Dodeljeni operater / traktorista *'
-                        : 'Radnik kome se nalog izdaje *'}
+                          ? 'Dodeljeni operater / traktorista *'
+                          : 'Radnik kome se nalog izdaje *'}
                     </label>
                     <select
                       className={styles.modalSelect}
@@ -1292,8 +1519,8 @@ const RadniNaloziDashboard: React.FC = () => {
                         {editFormData.orderType === 'REMONT_SERVIS'
                           ? 'Izaberi mehaničara iz baze...'
                           : editFormData.orderType === 'RAD_NJIVA'
-                          ? 'Izaberi operatera iz baze...'
-                          : 'Izaberi radnika iz baze...'}
+                            ? 'Izaberi operatera iz baze...'
+                            : 'Izaberi radnika iz baze...'}
                       </option>
                       {getFilteredWorkers(editFormData.orderType).map((w) => (
                         <option key={w.id} value={w.id}>
@@ -1442,17 +1669,33 @@ const RadniNaloziDashboard: React.FC = () => {
                   />
                 </div>
 
-                <div className={styles.modalFooter}>
+                <div className={styles.modalFooter} style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                   <button
                     type="button"
-                    className={styles.cancelModalBtn}
-                    onClick={() => setEditingOrder(null)}
+                    className={styles.deleteBtn}
+                    onClick={() => {
+                      const toDelete = editingOrder;
+                      setEditingOrder(null);
+                      setDeleteError('');
+                      setOrderToDelete(toDelete);
+                    }}
+                    title="Obriši ovaj radni nalog"
                   >
-                    Odustani
+                    <Trash2 size={14} />
+                    <span>Obriši nalog</span>
                   </button>
-                  <button type="submit" className={styles.saveBtn} disabled={editModalLoading}>
-                    {editModalLoading ? 'Čuvanje izmena...' : 'Sačuvaj izmene'}
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className={styles.cancelModalBtn}
+                      onClick={() => setEditingOrder(null)}
+                    >
+                      Odustani
+                    </button>
+                    <button type="submit" className={styles.saveBtn} disabled={editModalLoading}>
+                      {editModalLoading ? 'Čuvanje izmena...' : 'Sačuvaj izmene'}
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -1544,7 +1787,7 @@ const RadniNaloziDashboard: React.FC = () => {
                         }}
                         style={
                           selectedOrderToAccept.machine?.tankCapacityLiters &&
-                          Number(acceptFuelLiters) > selectedOrderToAccept.machine.tankCapacityLiters
+                            Number(acceptFuelLiters) > selectedOrderToAccept.machine.tankCapacityLiters
                             ? { borderColor: '#ef4444' }
                             : undefined
                         }
@@ -1715,8 +1958,8 @@ const RadniNaloziDashboard: React.FC = () => {
                       {orderToCancel.status === 'U_TOKU'
                         ? 'U toku (Mašina zadužena)'
                         : orderToCancel.status === 'DODELJEN'
-                        ? 'Dodeljen'
-                        : orderToCancel.status}
+                          ? 'Dodeljen'
+                          : orderToCancel.status}
                     </span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -1874,6 +2117,140 @@ const RadniNaloziDashboard: React.FC = () => {
           </div>
         )}
 
+        {/* Modal za potvrdu trajnog brisanja naloga */}
+        {orderToDelete && (
+          <div className={styles.modalBackdrop} onClick={() => !deleteLoading && setOrderToDelete(null)}>
+            <div
+              className={styles.modalContent}
+              style={{ maxWidth: '480px' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={styles.modalHeader}>
+                <h3 style={{ color: '#b91c1c' }}>
+                  <AlertTriangle size={22} color="#dc2626" />
+                  <span>Trajno Brisanje Radnog Naloga</span>
+                </h3>
+                <button
+                  type="button"
+                  className={styles.modalCloseBtn}
+                  onClick={() => !deleteLoading && setOrderToDelete(null)}
+                  disabled={deleteLoading}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className={styles.confirmDialogBody}>
+                <div className={styles.confirmWarningBox}>
+                  <AlertCircle size={22} style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <div>
+                    <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
+                      Da li ste sigurni da želite trajno da obrišete ovaj radni nalog?
+                    </div>
+                    <div style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>
+                      Ova akcija je <strong>nepovratna</strong>. Radni nalog <strong>{orderToDelete.orderNumber}</strong> će biti trajno obrisan iz sistema.
+                    </div>
+                  </div>
+                </div>
+
+                {orderToDelete.status === 'ZAVRSEN' && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '0.75rem',
+                      background: 'rgba(2, 132, 199, 0.08)',
+                      border: '1px solid #bae6fd',
+                      borderLeft: '4px solid #0284c7',
+                      padding: '0.85rem 1rem',
+                      borderRadius: '8px',
+                      color: '#0369a1',
+                      fontSize: '0.84rem',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    <Info size={20} color="#0284c7" style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <div>
+                      <strong style={{ display: 'block', marginBottom: '0.2rem' }}>
+                        Završen radni nalog
+                      </strong>
+                      Uklanjanjem radnog naloga sama evidencija o izvršenom radu na njivi ostaje sačuvana u istorijatu i izveštajima.
+                    </div>
+                  </div>
+                )}
+
+                {deleteError && (
+                  <div style={{ padding: '0.75rem 1rem', background: '#fee2e2', color: '#b91c1c', borderRadius: '6px', fontSize: '0.85rem' }}>
+                    {deleteError}
+                  </div>
+                )}
+
+                <div className={styles.orderPreviewBox}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color, #e2e8f0)', paddingBottom: '0.4rem', fontWeight: 700 }}>
+                    <span>Broj naloga:</span>
+                    <span style={{ color: '#16a34a' }}>{orderToDelete.orderNumber}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Status:</span>
+                    <span style={{ fontWeight: 600 }}>{orderToDelete.status}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Radnik:</span>
+                    <span style={{ fontWeight: 600 }}>{orderToDelete.worker?.name || 'Nije dodeljen'}</span>
+                  </div>
+                  {orderToDelete.orderDate && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Datum naloga:</span>
+                      <span>{new Date(orderToDelete.orderDate).toLocaleDateString('sr-RS')}</span>
+                    </div>
+                  )}
+                  {orderToDelete.parcel && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Parcela:</span>
+                      <span>{orderToDelete.parcel.name}</span>
+                    </div>
+                  )}
+                  {orderToDelete.machine && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Mašina:</span>
+                      <span>{orderToDelete.machine.name}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className={styles.modalFooter}>
+                <button
+                  type="button"
+                  className={styles.cancelModalBtn}
+                  onClick={() => setOrderToDelete(null)}
+                  disabled={deleteLoading}
+                >
+                  Odustani
+                </button>
+                <button
+                  type="button"
+                  className={styles.confirmCancelBtn}
+                  onClick={handleConfirmDelete}
+                  disabled={deleteLoading}
+                >
+                  {deleteLoading ? (
+                    <>
+                      <Loader2 size={16} className={styles.spinnerIcon} />
+                      <span>Brisanje...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={16} />
+                      <span>Da, trajno obriši</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Brzi modal za dodavanje / izmenu parcele */}
         <ParcelQuickModal
           isOpen={parcelQuickModalOpen}
@@ -1892,7 +2269,7 @@ const RadniNaloziDashboard: React.FC = () => {
               setEditFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
             }
             if (mode === 'edit') {
-              fetchOrders();
+              fetchOrders(page);
             }
           }}
         />

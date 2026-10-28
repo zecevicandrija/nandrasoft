@@ -12,6 +12,7 @@ import {
   Receipt,
 } from 'lucide-react';
 import { SlikaRacunaUpload } from './SlikaRacunaUpload';
+import CustomSelect from '../components/CustomSelect/CustomSelect';
 import styles from './GorivoDashboard.module.css';
 
 interface Machine {
@@ -299,17 +300,16 @@ export const IzmeniTocenjeModal = ({
 
           <div className={styles.formGroup}>
             <label className={styles.formLabel}>Vrsta energenta</label>
-            <select
-              className={styles.formSelect}
+            <CustomSelect
               value={fuelType}
-              onChange={(e) => setFuelType(e.target.value)}
-            >
-              {FLUID_TYPES.map((ft) => (
-                <option key={ft.value} value={ft.value}>
-                  {ft.label}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setFuelType(val)}
+              options={FLUID_TYPES.map((ft) => ({
+                value: ft.value,
+                label: ft.label,
+              }))}
+              placeholder="Izaberite energent"
+              searchable={false}
+            />
           </div>
 
           {/* Količina u litrima */}

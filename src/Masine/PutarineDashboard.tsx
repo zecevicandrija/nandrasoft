@@ -17,12 +17,18 @@ import {
   Calendar,
   User,
   FileText,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Lock,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
 import styles from './PutarineDashboard.module.css';
 
 const API = '/api';
+const PAGE_SIZE = 25;
 
 interface VehicleItem {
   id: string;
@@ -37,10 +43,14 @@ interface VehicleItem {
 interface TollEntry {
   id: string;
   date: string;
+  createdAt?: string;
+  createdById?: string;
+  isToday?: boolean;
+  canEdit?: boolean;
   machineId: string;
   machine: VehicleItem;
   workerId: string;
-  worker: { id: string; name: string };
+  worker: { id: string; name: string; userId?: string | null };
   amount: number;
   paymentMethod: 'ENP_TAG' | 'GOTOVINA' | 'KARTICA';
   tagNumber?: string | null;
@@ -64,6 +74,13 @@ interface TollTopUp {
   createdBy?: { id: string; name: string };
 }
 
+interface PaginationMeta {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 const PutarineDashboard: React.FC = () => {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
@@ -71,13 +88,37 @@ const PutarineDashboard: React.FC = () => {
   const userRole = currentUser?.role || 'OPERATER';
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(userRole);
 
-  // Filteri
+  // Filteri i paginacija
   const [activeTab, setActiveTab] = useState<'entries' | 'topups'>('entries');
   const [filterMachineId, setFilterMachineId] = useState('');
   const [filterWorkerId, setFilterWorkerId] = useState('');
   const [filterPaymentMethod, setFilterPaymentMethod] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [entriesPage, setEntriesPage] = useState(1);
+  const [topUpsPage, setTopUpsPage] = useState(1);
+
+  // Reset na prvu stranicu prilikom promene bilo kog filtera
+  useEffect(() => {
+    setEntriesPage(1);
+    setTopUpsPage(1);
+  }, [filterMachineId, filterWorkerId, filterPaymentMethod, dateFrom, dateTo]);
+
+  // Pomoćna funkcija za brojeve stranica sa elipsom (...)
+  const getPageNumbers = (current: number, total: number): Array<number | string> => {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    const pages: Array<number | string> = [];
+    if (current <= 4) {
+      pages.push(1, 2, 3, 4, 5, '...', total);
+    } else if (current >= total - 3) {
+      pages.push(1, '...', total - 4, total - 3, total - 2, total - 1, total);
+    } else {
+      pages.push(1, '...', current - 1, current, current + 1, '...', total);
+    }
+    return pages;
+  };
 
   // Toast obaveštenje
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -97,13 +138,25 @@ const PutarineDashboard: React.FC = () => {
   const workers: Array<{ id: string; name: string; userId?: string | null }> =
     workersData?.workers || [];
 
-  // Dohvatanje putarina, dopuna, vozila i statistike
+  // Dohvatanje putarina, dopuna, vozila i statistike (25 po stranici)
   const { data: tollsData, isLoading } = useQuery({
-    queryKey: ['tolls', filterMachineId, filterWorkerId, filterPaymentMethod, dateFrom, dateTo],
+    queryKey: [
+      'tolls',
+      filterMachineId,
+      filterWorkerId,
+      filterPaymentMethod,
+      dateFrom,
+      dateTo,
+      entriesPage,
+      topUpsPage,
+    ],
     queryFn: async () => {
       const params = new URLSearchParams();
+      params.append('entriesPage', String(entriesPage));
+      params.append('topUpsPage', String(topUpsPage));
+      params.append('limit', String(PAGE_SIZE));
       if (filterMachineId) params.append('machineId', filterMachineId);
-      if (filterWorkerId) params.append('workerId', filterWorkerId);
+      if (isManager && filterWorkerId) params.append('workerId', filterWorkerId);
       if (filterPaymentMethod) params.append('paymentMethod', filterPaymentMethod);
       if (dateFrom) params.append('dateFrom', dateFrom);
       if (dateTo) params.append('dateTo', dateTo);
@@ -118,13 +171,51 @@ const PutarineDashboard: React.FC = () => {
   const topUps: TollTopUp[] = tollsData?.topUps || [];
   const vehicles: VehicleItem[] = tollsData?.vehicles || [];
   const taggedVehicles: VehicleItem[] = tollsData?.taggedVehicles || [];
+  const currentWorkerFromServer: { id: string; name: string } | null =
+    tollsData?.currentWorker || null;
+
   const stats = tollsData?.stats || {
     totalCostPeriod: 0,
     enpCostPeriod: 0,
     cashCardCostPeriod: 0,
     totalEntriesCount: 0,
+    totalTopUpsCount: 0,
     totalTopUpsPeriod: 0,
     totalTagBalance: 0,
+  };
+
+  const entriesPagination: PaginationMeta = tollsData?.entriesPagination || {
+    total: stats.totalEntriesCount || entries.length,
+    page: entriesPage,
+    limit: PAGE_SIZE,
+    totalPages: Math.max(1, Math.ceil((stats.totalEntriesCount || entries.length) / PAGE_SIZE)),
+  };
+
+  const topUpsPagination: PaginationMeta = tollsData?.topUpsPagination || {
+    total: stats.totalTopUpsCount || topUps.length,
+    page: topUpsPage,
+    limit: PAGE_SIZE,
+    totalPages: Math.max(1, Math.ceil((stats.totalTopUpsCount || topUps.length) / PAGE_SIZE)),
+  };
+
+  // Provera da li je datum jednak današnjem kalendarskom danu
+  const isSameCalendarDay = (dStr?: string | Date) => {
+    if (!dStr) return false;
+    const d = new Date(dStr);
+    const now = new Date();
+    return (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    );
+  };
+
+  // Radnik može menjati/brisati svoj unos samo do kraja dana u kojem je unet;
+  // Direktor i Rukovodilac mogu menjati/brisati uvek.
+  const canModifyEntry = (entry: TollEntry) => {
+    if (isManager) return true;
+    if (entry.canEdit !== undefined) return Boolean(entry.canEdit);
+    return isSameCalendarDay(entry.date) && (!entry.createdAt || isSameCalendarDay(entry.createdAt));
   };
 
   // Sortiramo vozila tako da KAMION i vozila sa ENP tagom budu na vrhu liste
@@ -143,7 +234,12 @@ const PutarineDashboard: React.FC = () => {
   const [entryLoading, setEntryLoading] = useState(false);
   const [entryError, setEntryError] = useState('');
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const formatLocalDateInput = (dStr?: string | Date) => {
+    const d = dStr ? new Date(dStr) : new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  const todayStr = formatLocalDateInput();
   const [entryForm, setEntryForm] = useState({
     date: todayStr,
     machineId: '',
@@ -157,11 +253,12 @@ const PutarineDashboard: React.FC = () => {
 
   // Pomoćna funkcija za pronalazak ulogovanog radnika
   const findCurrentUsersWorkerId = () => {
+    if (currentWorkerFromServer?.id) return currentWorkerFromServer.id;
     if (!currentUser || workers.length === 0) return '';
     const byId = workers.find((w) => w.userId === currentUser.id);
     if (byId) return byId.id;
     const byName = workers.find(
-      (w) => w.name.toLowerCase() === (currentUser.name || '').toLowerCase()
+      (w) => w.name.toLowerCase() === (currentUser.name || '').trim().toLowerCase()
     );
     return byName ? byName.id : '';
   };
@@ -176,7 +273,7 @@ const PutarineDashboard: React.FC = () => {
       '';
     const veh = vehicles.find((v) => v.id === defaultMachine);
     setEntryForm({
-      date: todayStr,
+      date: formatLocalDateInput(),
       machineId: defaultMachine,
       workerId: findCurrentUsersWorkerId(),
       amount: '',
@@ -192,7 +289,7 @@ const PutarineDashboard: React.FC = () => {
     setEditingEntry(entry);
     setEntryError('');
     setEntryForm({
-      date: entry.date ? new Date(entry.date).toISOString().slice(0, 10) : todayStr,
+      date: entry.date ? formatLocalDateInput(entry.date) : todayStr,
       machineId: entry.machineId,
       workerId: entry.workerId,
       amount: String(entry.amount),
@@ -218,7 +315,7 @@ const PutarineDashboard: React.FC = () => {
     e.preventDefault();
     setEntryError('');
 
-    if (!entryForm.machineId || !entryForm.workerId || !entryForm.amount || Number(entryForm.amount) <= 0) {
+    if (!entryForm.machineId || (isManager && !entryForm.workerId) || !entryForm.amount || Number(entryForm.amount) <= 0) {
       setEntryError('Vozilo, vozač i iznos u RSD (veći od 0) su obavezni.');
       return;
     }
@@ -235,7 +332,7 @@ const PutarineDashboard: React.FC = () => {
         body: JSON.stringify({
           date: entryForm.date,
           machineId: entryForm.machineId,
-          workerId: entryForm.workerId,
+          workerId: entryForm.workerId || undefined,
           amount: Number(entryForm.amount),
           paymentMethod: entryForm.paymentMethod,
           tagNumber: entryForm.tagNumber.trim() || null,
@@ -667,26 +764,28 @@ const PutarineDashboard: React.FC = () => {
 
         {/* FILTERI I TABOVI */}
         <div className={styles.filterCard}>
-          {isManager && (
-            <div className={styles.tabsRow}>
-              <div className={styles.tabButtons}>
-                <button
-                  type="button"
-                  className={`${styles.tabBtn} ${activeTab === 'entries' ? styles.tabBtnActive : ''}`}
-                  onClick={() => setActiveTab('entries')}
-                >
-                  Dnevnik putarina ({entries.length})
-                </button>
+          <div className={styles.tabsRow}>
+            <div className={styles.tabButtons}>
+              <button
+                type="button"
+                className={`${styles.tabBtn} ${activeTab === 'entries' ? styles.tabBtnActive : ''}`}
+                onClick={() => setActiveTab('entries')}
+              >
+                {isManager
+                  ? `Dnevnik putarina (${entriesPagination.total})`
+                  : `Moje evidentirane putarine (${entriesPagination.total})`}
+              </button>
+              {isManager && (
                 <button
                   type="button"
                   className={`${styles.tabBtn} ${activeTab === 'topups' ? styles.tabBtnActive : ''}`}
                   onClick={() => setActiveTab('topups')}
                 >
-                  Istorija dopuna ENP tagova ({topUps.length})
+                  Istorija dopuna ENP tagova ({topUpsPagination.total})
                 </button>
-              </div>
+              )}
             </div>
-          )}
+          </div>
 
           <div className={styles.filtersRow}>
             <div className={styles.filterGroup}>
@@ -802,30 +901,116 @@ const PutarineDashboard: React.FC = () => {
                         <th>Iznos (RSD)</th>
                         <th>Način plaćanja / Tag</th>
                         <th>Relacija / Napomena</th>
-                        {isManager && <th style={{ textAlign: 'right' }}>Akcije</th>}
+                        <th style={{ textAlign: 'right' }}>Akcije</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {entries.map((entry) => (
-                        <tr key={entry.id}>
-                          <td>
-                            <strong>{new Date(entry.date).toLocaleDateString('sr-RS')}</strong>
-                          </td>
-                          <td>
-                            <div style={{ fontWeight: 700 }}>{entry.machine?.name}</div>
-                            {entry.machine?.regNumber && (
-                              <div className={styles.tableSubtext}>
-                                {entry.machine.regNumber}
+                      {entries.map((entry) => {
+                        const editable = canModifyEntry(entry);
+                        return (
+                          <tr key={entry.id}>
+                            <td>
+                              <strong>{new Date(entry.date).toLocaleDateString('sr-RS')}</strong>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 700 }}>{entry.machine?.name}</div>
+                              {entry.machine?.regNumber && (
+                                <div className={styles.tableSubtext}>
+                                  {entry.machine.regNumber}
+                                </div>
+                              )}
+                            </td>
+                            <td>{entry.worker?.name || '—'}</td>
+                            <td>
+                              <span className={styles.amountBadge}>
+                                {Number(entry.amount).toLocaleString('sr-RS')} RSD
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                className={`${styles.methodPill} ${
+                                  entry.paymentMethod === 'ENP_TAG'
+                                    ? styles.methodENP
+                                    : entry.paymentMethod === 'GOTOVINA'
+                                    ? styles.methodCash
+                                    : styles.methodCard
+                                }`}
+                              >
+                                {entry.paymentMethod === 'ENP_TAG'
+                                  ? 'ENP Tag'
+                                  : entry.paymentMethod === 'GOTOVINA'
+                                  ? 'Gotovina'
+                                  : 'Kartica'}
+                              </span>
+                              {entry.tagNumber && (
+                                <div className={styles.tagSubtext}>
+                                  Tag: {entry.tagNumber}
+                                </div>
+                              )}
+                            </td>
+                            <td>
+                              {entry.routeRelation && (
+                                <div className={styles.routeRelationBox}>
+                                  <MapPin size={13} className={styles.routeIcon} />
+                                  <span>{entry.routeRelation}</span>
+                                </div>
+                              )}
+                              {entry.notes && (
+                                <div className={styles.tableNotes}>{entry.notes}</div>
+                              )}
+                              {!entry.routeRelation && !entry.notes && '—'}
+                            </td>
+                            <td>
+                              <div className={styles.rowActions}>
+                                {editable ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className={styles.iconBtn}
+                                      onClick={() => openEditEntryModal(entry)}
+                                      title="Izmeni putarinu"
+                                    >
+                                      <Pencil size={14} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+                                      onClick={() => handleDeleteEntry(entry)}
+                                      title="Obriši putarinu"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span
+                                    className={styles.lockedBadge}
+                                    title="Rok za izmenu i brisanje je istekao (radnik može menjati samo do kraja dana unosa)"
+                                  >
+                                    <Lock size={12} />
+                                    <span>Zaključano</span>
+                                  </span>
+                                )}
                               </div>
-                            )}
-                          </td>
-                          <td>{entry.worker?.name || '—'}</td>
-                          <td>
-                            <span className={styles.amountBadge}>
-                              {Number(entry.amount).toLocaleString('sr-RS')} RSD
-                            </span>
-                          </td>
-                          <td>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mobile Card List (< 768px) */}
+                <div className={styles.mobileCardList}>
+                  {entries.map((entry) => {
+                    const editable = canModifyEntry(entry);
+                    return (
+                      <div key={entry.id} className={styles.mobileEntryCard}>
+                        <div className={styles.mobileCardHeader}>
+                          <div className={styles.mobileCardDate}>
+                            <Calendar size={13} />
+                            <span>{new Date(entry.date).toLocaleDateString('sr-RS')}</span>
+                          </div>
+                          <div className={styles.mobileCardHeaderRight}>
                             <span
                               className={`${styles.methodPill} ${
                                 entry.paymentMethod === 'ENP_TAG'
@@ -841,34 +1026,62 @@ const PutarineDashboard: React.FC = () => {
                                 ? 'Gotovina'
                                 : 'Kartica'}
                             </span>
+                            <span className={styles.amountBadge}>
+                              {Number(entry.amount).toLocaleString('sr-RS')} RSD
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className={styles.mobileCardBody}>
+                          <div className={styles.mobileVehicleRow}>
+                            <Truck size={15} className={styles.mobileRowIcon} />
+                            <div className={styles.mobileVehicleName}>
+                              <span>{entry.machine?.name}</span>
+                              {entry.machine?.regNumber && (
+                                <span className={styles.mobileRegBadge}>{entry.machine.regNumber}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className={styles.mobileMetaRow}>
+                            <div className={styles.mobileMetaItem}>
+                              <User size={13} className={styles.mobileRowIcon} />
+                              <span>{entry.worker?.name || '—'}</span>
+                            </div>
                             {entry.tagNumber && (
-                              <div className={styles.tagSubtext}>
-                                Tag: {entry.tagNumber}
+                              <div className={styles.mobileMetaItem}>
+                                <Tag size={13} className={styles.mobileRowIcon} />
+                                <span>Tag: {entry.tagNumber}</span>
                               </div>
                             )}
-                          </td>
-                          <td>
-                            {entry.routeRelation && (
-                              <div className={styles.routeRelationBox}>
-                                <MapPin size={13} className={styles.routeIcon} />
-                                <span>{entry.routeRelation}</span>
-                              </div>
-                            )}
-                            {entry.notes && (
-                              <div className={styles.tableNotes}>{entry.notes}</div>
-                            )}
-                            {!entry.routeRelation && !entry.notes && '—'}
-                          </td>
-                          {isManager && (
-                            <td>
-                              <div className={styles.rowActions}>
+                          </div>
+
+                          {entry.routeRelation && (
+                            <div className={styles.mobileRouteRow}>
+                              <MapPin size={13} className={styles.routeIcon} />
+                              <span>{entry.routeRelation}</span>
+                            </div>
+                          )}
+
+                          {entry.notes && (
+                            <div className={styles.mobileNotes}>
+                              {entry.notes}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className={styles.mobileCardFooter}>
+                          <div className={styles.rowActions}>
+                            {editable ? (
+                              <>
                                 <button
                                   type="button"
                                   className={styles.iconBtn}
                                   onClick={() => openEditEntryModal(entry)}
                                   title="Izmeni putarinu"
                                 >
-                                  <Pencil size={14} />
+                                  <Pencil size={13} />
+                                  <span>Izmeni</span>
                                 </button>
                                 <button
                                   type="button"
@@ -876,113 +1089,110 @@ const PutarineDashboard: React.FC = () => {
                                   onClick={() => handleDeleteEntry(entry)}
                                   title="Obriši putarinu"
                                 >
-                                  <Trash2 size={14} />
+                                  <Trash2 size={13} />
+                                  <span>Obriši</span>
                                 </button>
-                              </div>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Mobile Card List (< 768px) */}
-                <div className={styles.mobileCardList}>
-                  {entries.map((entry) => (
-                    <div key={entry.id} className={styles.mobileEntryCard}>
-                      <div className={styles.mobileCardHeader}>
-                        <div className={styles.mobileCardDate}>
-                          <Calendar size={13} />
-                          <span>{new Date(entry.date).toLocaleDateString('sr-RS')}</span>
-                        </div>
-                        <div className={styles.mobileCardHeaderRight}>
-                          <span
-                            className={`${styles.methodPill} ${
-                              entry.paymentMethod === 'ENP_TAG'
-                                ? styles.methodENP
-                                : entry.paymentMethod === 'GOTOVINA'
-                                ? styles.methodCash
-                                : styles.methodCard
-                            }`}
-                          >
-                            {entry.paymentMethod === 'ENP_TAG'
-                              ? 'ENP Tag'
-                              : entry.paymentMethod === 'GOTOVINA'
-                              ? 'Gotovina'
-                              : 'Kartica'}
-                          </span>
-                          <span className={styles.amountBadge}>
-                            {Number(entry.amount).toLocaleString('sr-RS')} RSD
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className={styles.mobileCardBody}>
-                        <div className={styles.mobileVehicleRow}>
-                          <Truck size={15} className={styles.mobileRowIcon} />
-                          <div className={styles.mobileVehicleName}>
-                            <span>{entry.machine?.name}</span>
-                            {entry.machine?.regNumber && (
-                              <span className={styles.mobileRegBadge}>{entry.machine.regNumber}</span>
+                              </>
+                            ) : (
+                              <span
+                                className={styles.lockedBadge}
+                                title="Rok za izmenu i brisanje je istekao (dozvoljeno samo do kraja dana unosa)"
+                              >
+                                <Lock size={12} />
+                                <span>Zaključano</span>
+                              </span>
                             )}
                           </div>
                         </div>
+                      </div>
+                    );
+                  })}
+                </div>
 
-                        <div className={styles.mobileMetaRow}>
-                          <div className={styles.mobileMetaItem}>
-                            <User size={13} className={styles.mobileRowIcon} />
-                            <span>{entry.worker?.name || '—'}</span>
-                          </div>
-                          {entry.tagNumber && (
-                            <div className={styles.mobileMetaItem}>
-                              <Tag size={13} className={styles.mobileRowIcon} />
-                              <span>Tag: {entry.tagNumber}</span>
-                            </div>
-                          )}
-                        </div>
+                {/* Paginacija za Dnevnik putarina (25 po stranici) */}
+                {entriesPagination.total > 0 && (
+                  <div className={styles.paginationBar}>
+                    <div className={styles.paginationInfo}>
+                      Prikazano{' '}
+                      <strong>
+                        {(entriesPagination.page - 1) * PAGE_SIZE + 1}
+                      </strong>{' '}
+                      –{' '}
+                      <strong>
+                        {Math.min(entriesPagination.page * PAGE_SIZE, entriesPagination.total)}
+                      </strong>{' '}
+                      od ukupno <strong>{entriesPagination.total}</strong> putarina (25 po stranici)
+                    </div>
 
-                        {entry.routeRelation && (
-                          <div className={styles.mobileRouteRow}>
-                            <MapPin size={13} className={styles.routeIcon} />
-                            <span>{entry.routeRelation}</span>
-                          </div>
-                        )}
+                    <div className={styles.paginationButtons}>
+                      <button
+                        type="button"
+                        className={styles.paginationBtn}
+                        onClick={() => setEntriesPage(1)}
+                        disabled={entriesPagination.page <= 1}
+                        title="Prva stranica"
+                      >
+                        <ChevronsLeft size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.paginationBtn}
+                        onClick={() => setEntriesPage((p) => Math.max(1, p - 1))}
+                        disabled={entriesPagination.page <= 1}
+                        title="Prethodna stranica"
+                      >
+                        <ChevronLeft size={15} />
+                        <span>Prethodna</span>
+                      </button>
 
-                        {entry.notes && (
-                          <div className={styles.mobileNotes}>
-                            {entry.notes}
-                          </div>
+                      <div className={styles.pageNumbers}>
+                        {getPageNumbers(entriesPagination.page, entriesPagination.totalPages).map(
+                          (pNum, idx) =>
+                            pNum === '...' ? (
+                              <span key={`entries-dots-${idx}`} className={styles.paginationEllipsis}>
+                                ...
+                              </span>
+                            ) : (
+                              <button
+                                key={`entries-page-${pNum}`}
+                                type="button"
+                                className={`${styles.paginationPageBtn} ${
+                                  Number(pNum) === entriesPagination.page
+                                    ? styles.paginationPageBtnActive
+                                    : ''
+                                }`}
+                                onClick={() => setEntriesPage(Number(pNum))}
+                              >
+                                {pNum}
+                              </button>
+                            )
                         )}
                       </div>
 
-                      {isManager && (
-                        <div className={styles.mobileCardFooter}>
-                          <div className={styles.rowActions}>
-                            <button
-                              type="button"
-                              className={styles.iconBtn}
-                              onClick={() => openEditEntryModal(entry)}
-                              title="Izmeni putarinu"
-                            >
-                              <Pencil size={13} />
-                              <span>Izmeni</span>
-                            </button>
-                            <button
-                              type="button"
-                              className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                              onClick={() => handleDeleteEntry(entry)}
-                              title="Obriši putarinu"
-                            >
-                              <Trash2 size={13} />
-                              <span>Obriši</span>
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                      <button
+                        type="button"
+                        className={styles.paginationBtn}
+                        onClick={() =>
+                          setEntriesPage((p) => Math.min(entriesPagination.totalPages, p + 1))
+                        }
+                        disabled={entriesPagination.page >= entriesPagination.totalPages}
+                        title="Sledeća stranica"
+                      >
+                        <span>Sledeća</span>
+                        <ChevronRight size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.paginationBtn}
+                        onClick={() => setEntriesPage(entriesPagination.totalPages)}
+                        disabled={entriesPagination.page >= entriesPagination.totalPages}
+                        title="Poslednja stranica"
+                      >
+                        <ChevronsRight size={15} />
+                      </button>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
               </>
             )
           ) : topUps.length === 0 ? (
@@ -1110,6 +1320,91 @@ const PutarineDashboard: React.FC = () => {
                   </div>
                 ))}
               </div>
+
+              {/* Paginacija za Istoriju dopuna ENP tagova (25 po stranici) */}
+              {topUpsPagination.total > 0 && (
+                <div className={styles.paginationBar}>
+                  <div className={styles.paginationInfo}>
+                    Prikazano{' '}
+                    <strong>
+                      {(topUpsPagination.page - 1) * PAGE_SIZE + 1}
+                    </strong>{' '}
+                    –{' '}
+                    <strong>
+                      {Math.min(topUpsPagination.page * PAGE_SIZE, topUpsPagination.total)}
+                    </strong>{' '}
+                    od ukupno <strong>{topUpsPagination.total}</strong> dopuna (25 po stranici)
+                  </div>
+
+                  <div className={styles.paginationButtons}>
+                    <button
+                      type="button"
+                      className={styles.paginationBtn}
+                      onClick={() => setTopUpsPage(1)}
+                      disabled={topUpsPagination.page <= 1}
+                      title="Prva stranica"
+                    >
+                      <ChevronsLeft size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.paginationBtn}
+                      onClick={() => setTopUpsPage((p) => Math.max(1, p - 1))}
+                      disabled={topUpsPagination.page <= 1}
+                      title="Prethodna stranica"
+                    >
+                      <ChevronLeft size={15} />
+                      <span>Prethodna</span>
+                    </button>
+
+                    <div className={styles.pageNumbers}>
+                      {getPageNumbers(topUpsPagination.page, topUpsPagination.totalPages).map(
+                        (pNum, idx) =>
+                          pNum === '...' ? (
+                            <span key={`topups-dots-${idx}`} className={styles.paginationEllipsis}>
+                              ...
+                            </span>
+                          ) : (
+                            <button
+                              key={`topups-page-${pNum}`}
+                              type="button"
+                              className={`${styles.paginationPageBtn} ${
+                                Number(pNum) === topUpsPagination.page
+                                  ? styles.paginationPageBtnActive
+                                  : ''
+                              }`}
+                              onClick={() => setTopUpsPage(Number(pNum))}
+                            >
+                              {pNum}
+                            </button>
+                          )
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      className={styles.paginationBtn}
+                      onClick={() =>
+                        setTopUpsPage((p) => Math.min(topUpsPagination.totalPages, p + 1))
+                      }
+                      disabled={topUpsPagination.page >= topUpsPagination.totalPages}
+                      title="Sledeća stranica"
+                    >
+                      <span>Sledeća</span>
+                      <ChevronRight size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.paginationBtn}
+                      onClick={() => setTopUpsPage(topUpsPagination.totalPages)}
+                      disabled={topUpsPagination.page >= topUpsPagination.totalPages}
+                      title="Poslednja stranica"
+                    >
+                      <ChevronsRight size={15} />
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -1159,30 +1454,44 @@ const PutarineDashboard: React.FC = () => {
 
                     <div className={styles.formGroup}>
                       <label>Vozač / Radnik *</label>
-                      <select
-                        className={styles.formSelect}
-                        value={entryForm.workerId}
-                        onChange={(e) => setEntryForm({ ...entryForm, workerId: e.target.value })}
-                        required
-                      >
-                        <option value="">Izaberi vozača...</option>
-                        {workers.map((w) => (
-                          <option key={w.id} value={w.id}>
-                            {w.name}
-                          </option>
-                        ))}
-                      </select>
+                      {isManager ? (
+                        <select
+                          className={styles.formSelect}
+                          value={entryForm.workerId}
+                          onChange={(e) => setEntryForm({ ...entryForm, workerId: e.target.value })}
+                          required
+                        >
+                          <option value="">Izaberi vozača...</option>
+                          {workers.map((w) => (
+                            <option key={w.id} value={w.id}>
+                              {w.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          className={styles.formInput}
+                          value={
+                            currentWorkerFromServer?.name ||
+                            currentUser?.name ||
+                            'Ulogovani radnik'
+                          }
+                          disabled
+                        />
+                      )}
                     </div>
                   </div>
 
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
-                      <label>Datum *</label>
+                      <label>Datum {!isManager && '(današnji dan)'} *</label>
                       <input
                         type="date"
                         className={styles.formInput}
                         value={entryForm.date}
                         onChange={(e) => setEntryForm({ ...entryForm, date: e.target.value })}
+                        disabled={!isManager}
                         required
                       />
                     </div>

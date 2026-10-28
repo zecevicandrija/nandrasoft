@@ -6,6 +6,7 @@ import {
   Loader2,
   AlertTriangle,
 } from 'lucide-react';
+import CustomSelect from '../components/CustomSelect/CustomSelect';
 import styles from './GorivoDashboard.module.css';
 
 interface Partner {
@@ -164,18 +165,20 @@ export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
             {/* Dobavljač iz šifarnika */}
             <div className={styles.formGroup}>
               <label className={styles.formLabel}>Dobavljač (Partner)</label>
-              <select
-                className={styles.formSelect}
+              <CustomSelect
                 value={supplierId}
-                onChange={(e) => setSupplierId(e.target.value)}
-              >
-                <option value="">-- Izaberite dobavljača ili unesite naziv --</option>
-                {partners.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setSupplierId(val)}
+                options={[
+                  { value: '', label: '-- Izaberite dobavljača ili unesite naziv --' },
+                  ...partners.map((p) => ({
+                    value: p.id,
+                    label: p.name,
+                    subLabel: p.type ? `Tip: ${p.type}` : undefined,
+                  })),
+                ]}
+                placeholder="-- Izaberite dobavljača --"
+                searchable
+              />
             </div>
 
             {/* Alternativni naziv ako nije u šifarniku */}
@@ -218,14 +221,16 @@ export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
             {/* Vrsta goriva */}
             <div className={styles.formGroup}>
               <label className={styles.formLabel}>Vrsta goriva</label>
-              <select
-                className={styles.formSelect}
+              <CustomSelect
                 value={fuelType}
-                onChange={(e) => setFuelType(e.target.value)}
-              >
-                <option value="EURODIZEL">Eurodizel (Standardni)</option>
-                <option value="EURODIZEL ADITIVNI">Eurodizel Aditivni</option>
-              </select>
+                onChange={(val) => setFuelType(val)}
+                options={[
+                  { value: 'EURODIZEL', label: 'Eurodizel (Standardni)' },
+                  { value: 'EURODIZEL ADITIVNI', label: 'Eurodizel Aditivni' },
+                ]}
+                placeholder="Izaberite vrstu goriva"
+                searchable={false}
+              />
             </div>
           </div>
 

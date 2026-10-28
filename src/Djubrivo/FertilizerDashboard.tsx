@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
+import { CustomSelect } from './CustomSelect';
 import styles from './FertilizerDashboard.module.css';
 
 const API = '/api';
@@ -99,6 +100,8 @@ interface ParcelSummaryItem {
   parcelName: string;
   areaHa: number;
   currentCrop: string;
+  totalIssuedKg?: number;
+  totalReturnedKg?: number;
   totalKgApplied: number;
   avgKgPerHa: number;
   applicationsCount: number;
@@ -278,6 +281,53 @@ const FertilizerDashboard: React.FC = () => {
     });
   }, [products, onlyLowStock, filterType, searchQuery]);
 
+  // Opcije za prilagođene Dropdown selektore (potpuno responsive na svim ekranima)
+  const fertilizerProductOptions = useMemo(() => {
+    return products.map((p) => ({
+      value: p.id,
+      label: p.name,
+      subLabel: `Stanje: ${p.currentStock.toLocaleString('sr-RS')} ${p.unit} • Min: ${p.minStockWarning.toLocaleString('sr-RS')} ${p.unit}`,
+      badge: p.isBelowMin
+        ? 'Ispod min'
+        : `${p.currentStock.toLocaleString('sr-RS')} ${p.unit}`,
+      badgeType: (p.isBelowMin ? 'danger' : 'success') as any,
+      isAlert: p.isBelowMin,
+    }));
+  }, [products]);
+
+  const supplierOptions = useMemo(() => {
+    return [
+      { value: '', label: '— Bez definisanog dobavljača —' },
+      ...suppliers.map((s) => ({
+        value: s.id,
+        label: s.name,
+        subLabel: s.pib ? `PIB: ${s.pib}` : undefined,
+      })),
+    ];
+  }, [suppliers]);
+
+  const parcelOptions = useMemo(() => {
+    return [
+      { value: '', label: '— Izaberite parcelu —' },
+      ...parcels.map((p) => ({
+        value: p.id,
+        label: `[${p.code}] ${p.name}`,
+        subLabel: `${p.areaHa} ha${p.currentCrop ? ` • Kultura: ${p.currentCrop}` : ''}`,
+      })),
+    ];
+  }, [parcels]);
+
+  const workerOptions = useMemo(() => {
+    return [
+      { value: '', label: '— Izaberite radnika —' },
+      ...workers.map((w) => ({
+        value: w.id,
+        label: w.name,
+        subLabel: w.type ? `Kategorija: ${w.type}` : undefined,
+      })),
+    ];
+  }, [workers]);
+
   // ==========================================
   // FORMA ZA PRIJEM ROBE U MAGACIN (TAB 2)
   // ==========================================
@@ -382,6 +432,11 @@ const FertilizerDashboard: React.FC = () => {
 
   const selectedIssueProduct = products.find((p) => p.id === issueForm.productId);
   const selectedIssueParcel = parcels.find((p) => p.id === issueForm.parcelId);
+
+  const selectedIssueParcelSummary = useMemo(() => {
+    if (!issueForm.parcelId) return null;
+    return parcelSummary.find((s) => s.parcelId === issueForm.parcelId) || null;
+  }, [parcelSummary, issueForm.parcelId]);
 
   const handleIssueParcelChange = (parcelId: string) => {
     const p = parcels.find((item) => item.id === parcelId);
@@ -583,7 +638,7 @@ const FertilizerDashboard: React.FC = () => {
   };
 
   // ==========================================
-  // MODALI: IZMENA I BRISANJE ZAPISA KRETANJA (PRIJEMA)
+  // MODALI: IZMENA I BRISANJE ZAPISA KRETANJA (PRIJEMA / IZDAVANJA)
   // ==========================================
   const [editMovementModalOpen, setEditMovementModalOpen] = useState(false);
   const [editingMovement, setEditingMovement] = useState<FertilizerMovement | null>(null);
@@ -595,6 +650,10 @@ const FertilizerDashboard: React.FC = () => {
     supplierId: '',
     notes: '',
     date: '',
+    parcelId: '',
+    receivedWorkerId: '',
+    areaHa: '',
+    cropName: '',
   });
   const [editMovementLoading, setEditMovementLoading] = useState(false);
   const [editMovementError, setEditMovementError] = useState('');
@@ -615,9 +674,39 @@ const FertilizerDashboard: React.FC = () => {
       supplierId: m.supplierId || '',
       notes: m.notes || '',
       date: m.date ? m.date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      parcelId: m.parcelId || '',
+      receivedWorkerId: m.receivedWorker?.id || '',
+      areaHa: m.areaHa ? String(m.areaHa) : m.parcel?.areaHa ? String(m.parcel.areaHa) : '',
+      cropName: m.cropName || m.parcel?.currentCrop || '',
     });
     setEditMovementModalOpen(true);
   };
+
+  const handleEditParcelChange = (parcelId: string) => {
+    const p = parcels.find((item) => item.id === parcelId);
+    setEditMovementForm((prev) => ({
+      ...prev,
+      parcelId,
+      areaHa: p ? String(p.areaHa) : prev.areaHa,
+      cropName: p?.currentCrop || prev.cropName,
+    }));
+  };
+
+  const editQtyNum = Number(editMovementForm.quantity) || 0;
+  const editAreaNum = Number(editMovementForm.areaHa) || 0;
+  const editLiveKgPerHa = useMemo(() => {
+    if (editQtyNum <= 0 || editAreaNum <= 0 || !editingMovement) return null;
+    const baseKg =
+      editingMovement.product?.unit === 'TONA' ? editQtyNum * 1000 : editQtyNum;
+    return Number((baseKg / editAreaNum).toFixed(1));
+  }, [editQtyNum, editAreaNum, editingMovement]);
+
+  const editDiff = editingMovement ? editQtyNum - editingMovement.quantity : 0;
+  const currentProdForEdit = products.find((p) => p.id === editingMovement?.productId);
+  const editExceedsStock =
+    editingMovement?.movementType === 'IZDAVANJE_NJIVA' &&
+    Boolean(currentProdForEdit) &&
+    editDiff > (currentProdForEdit?.currentStock || 0);
 
   const handleSaveMovementEdit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -627,6 +716,13 @@ const FertilizerDashboard: React.FC = () => {
     const qty = Number(editMovementForm.quantity);
     if (!qty || qty <= 0) {
       setEditMovementError('Količina mora biti veća od 0.');
+      return;
+    }
+
+    if (editExceedsStock) {
+      setEditMovementError(
+        `Nedovoljno zaliha u magacinu! Na stanju preostaje samo ${currentProdForEdit?.currentStock} ${currentProdForEdit?.unit}.`
+      );
       return;
     }
 
@@ -640,6 +736,10 @@ const FertilizerDashboard: React.FC = () => {
         supplierId: editMovementForm.supplierId || null,
         notes: editMovementForm.notes.trim() || null,
         date: editMovementForm.date,
+        parcelId: editMovementForm.parcelId || null,
+        receivedWorkerId: editMovementForm.receivedWorkerId || null,
+        areaHa: Number(editMovementForm.areaHa) || null,
+        cropName: editMovementForm.cropName.trim() || null,
       };
 
       const res = await fetch(`${API}/fertilizer/movements/${editingMovement.id}`, {
@@ -656,7 +756,11 @@ const FertilizerDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-parcel-summary'] });
       setEditMovementModalOpen(false);
-      showToast('Zapis prijema je uspešno izmenjen i zalihe su ažurirane.');
+      showToast(
+        editingMovement.movementType === 'IZDAVANJE_NJIVA'
+          ? 'Zapis izdavanja na njivu je uspešno izmenjen i zalihe su ažurirane.'
+          : 'Zapis prijema je uspešno izmenjen i zalihe su ažurirane.'
+      );
     } catch (err: any) {
       setEditMovementError(err.message || 'Greška pri izmeni zapisa.');
     } finally {
@@ -686,7 +790,11 @@ const FertilizerDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-parcel-summary'] });
       setDeleteMovementModalOpen(false);
-      showToast('Zapis prijema je uspešno obrisan i zalihe su stornirane.');
+      showToast(
+        deletingMovement.movementType === 'IZDAVANJE_NJIVA'
+          ? 'Zapis izdavanja na njivu je obrisan i zalihe su vraćene u magacin.'
+          : 'Zapis prijema je uspešno obrisan i zalihe su stornirane.'
+      );
     } catch (err: any) {
       setDeleteError(err.message || 'Greška pri brisanju zapisa.');
     } finally {
@@ -718,7 +826,7 @@ const FertilizerDashboard: React.FC = () => {
       case 'POVRAT_SA_NJIVE':
         return <span className={`${styles.badge} ${styles.badgeReturn}`}>↩ Povrat sa njive</span>;
       case 'OTPIS_KOREKCIJA':
-        return <span className={`${styles.badge} ${styles.badgeWriteoff}`}>✕ Otpis / Kalo</span>;
+        return <span className={`${styles.badge} ${styles.badgeWriteoff}`}>✕ Otpis</span>;
       default:
         return <span className={styles.badge}>{MOVEMENT_LABELS[type] || type}</span>;
     }
@@ -730,9 +838,8 @@ const FertilizerDashboard: React.FC = () => {
         {/* Toast obaveštenje */}
         {toast && (
           <div
-            className={`${styles.toast} ${
-              toast.type === 'error' ? styles.toastError : styles.toastSuccess
-            }`}
+            className={`${styles.toast} ${toast.type === 'error' ? styles.toastError : styles.toastSuccess
+              }`}
           >
             {toast.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
             <span>{toast.text}</span>
@@ -869,14 +976,12 @@ const FertilizerDashboard: React.FC = () => {
           </div>
 
           <div
-            className={`${styles.statCard} ${
-              stats.lowStockCount > 0 ? styles.statCardAlert : ''
-            }`}
+            className={`${styles.statCard} ${stats.lowStockCount > 0 ? styles.statCardAlert : ''
+              }`}
           >
             <div
-              className={`${styles.statIcon} ${
-                stats.lowStockCount > 0 ? styles.iconRed : styles.iconGreen
-              }`}
+              className={`${styles.statIcon} ${stats.lowStockCount > 0 ? styles.iconRed : styles.iconGreen
+                }`}
             >
               <AlertTriangle size={24} />
             </div>
@@ -1060,9 +1165,8 @@ const FertilizerDashboard: React.FC = () => {
                             <div className={styles.stockProgressWrap}>
                               <div className={styles.stockNumbers}>
                                 <span
-                                  className={`${styles.stockCurrent} ${
-                                    prod.isBelowMin ? styles.stockCurrentDanger : ''
-                                  }`}
+                                  className={`${styles.stockCurrent} ${prod.isBelowMin ? styles.stockCurrentDanger : ''
+                                    }`}
                                 >
                                   {prod.currentStock.toLocaleString('sr-RS')} {prod.unit}
                                 </span>
@@ -1072,9 +1176,8 @@ const FertilizerDashboard: React.FC = () => {
                               </div>
                               <div className={styles.progressBarTrack}>
                                 <div
-                                  className={`${styles.progressBarFill} ${
-                                    prod.isBelowMin ? styles.progressDanger : styles.progressOk
-                                  }`}
+                                  className={`${styles.progressBarFill} ${prod.isBelowMin ? styles.progressDanger : styles.progressOk
+                                    }`}
                                   style={{ width: `${prod.fillPercentage || 0}%` }}
                                 />
                               </div>
@@ -1181,20 +1284,13 @@ const FertilizerDashboard: React.FC = () => {
 
                 <div className={styles.formField}>
                   <label>Dobavljač (iz šifarnika Partnera)</label>
-                  <select
-                    className={styles.formSelect}
+                  <CustomSelect
                     value={receiveForm.supplierId}
-                    onChange={(e) =>
-                      setReceiveForm({ ...receiveForm, supplierId: e.target.value })
-                    }
-                  >
-                    <option value="">— Izaberite dobavljača —</option>
-                    {suppliers.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} {s.pib ? `(PIB: ${s.pib})` : ''}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => setReceiveForm({ ...receiveForm, supplierId: val })}
+                    options={supplierOptions}
+                    placeholder="— Izaberite dobavljača —"
+                    searchable={suppliers.length > 3}
+                  />
                 </div>
 
                 <div className={`${styles.formField} ${styles.formFieldFull}`}>
@@ -1221,23 +1317,52 @@ const FertilizerDashboard: React.FC = () => {
                       + Dodaj novo đubrivo u šifarnik
                     </button>
                   </div>
-                  <select
-                    className={styles.formSelect}
+                  <CustomSelect
                     value={receiveForm.productId}
-                    onChange={(e) => handleSelectProductForReceive(e.target.value)}
-                    required
-                  >
-                    <option value="" className={styles.optionNormal}>— Izaberite đubrivo koje se prima —</option>
-                    {products.map((p) => (
-                      <option
-                        key={p.id}
-                        value={p.id}
-                        className={p.isBelowMin ? styles.optionBelowMin : styles.optionNormal}
-                      >
-                        {p.name} - (Trenutno stanje: {p.currentStock.toLocaleString('sr-RS')} {p.unit}) - (Minimalno: {p.minStockWarning.toLocaleString('sr-RS')} {p.unit})
-                      </option>
-                    ))}
-                  </select>
+                    onChange={handleSelectProductForReceive}
+                    options={fertilizerProductOptions}
+                    placeholder="— Izaberite đubrivo koje se prima —"
+                    searchable={true}
+                  />
+
+                  {selectedReceiveProduct && (
+                    <div
+                      className={`${styles.selectedProductCard} ${selectedReceiveProduct.isBelowMin ? styles.selectedProductCardDanger : ''
+                        }`}
+                    >
+                      <div className={styles.selectedProductInfo}>
+                        <div className={styles.selectedProductItem}>
+                          <span>Stanje:</span>
+                          <strong>
+                            {selectedReceiveProduct.currentStock.toLocaleString('sr-RS')}{' '}
+                            {selectedReceiveProduct.unit}
+                          </strong>
+                        </div>
+                        <div className={styles.selectedProductItem}>
+                          <span>Min. prag:</span>
+                          <strong>
+                            {selectedReceiveProduct.minStockWarning.toLocaleString('sr-RS')}{' '}
+                            {selectedReceiveProduct.unit}
+                          </strong>
+                        </div>
+                        {selectedReceiveProduct.defaultLocation && (
+                          <div className={styles.selectedProductItem}>
+                            <span>Lokacija:</span>
+                            <strong>{selectedReceiveProduct.defaultLocation}</strong>
+                          </div>
+                        )}
+                      </div>
+                      {selectedReceiveProduct.isBelowMin ? (
+                        <span className={`${styles.badge} ${styles.badgeLowStock}`}>
+                          <AlertTriangle size={12} /> Zaliha ispod minimuma
+                        </span>
+                      ) : (
+                        <span className={`${styles.badge} ${styles.badgeOkStock}`}>
+                          <CheckCircle2 size={12} /> Redovna zaliha
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className={styles.formField}>
@@ -1440,12 +1565,12 @@ const FertilizerDashboard: React.FC = () => {
                       ))}
                     {movements.filter((m) => m.movementType === 'PRIJEM_NABAVKA').length ===
                       0 && (
-                      <tr>
-                        <td colSpan={5} className={styles.emptyState}>
-                          Još uvek nema zabeleženih prijema.
-                        </td>
-                      </tr>
-                    )}
+                        <tr>
+                          <td colSpan={5} className={styles.emptyState}>
+                            Još uvek nema zabeleženih prijema.
+                          </td>
+                        </tr>
+                      )}
                   </tbody>
                 </table>
               </div>
@@ -1483,7 +1608,7 @@ const FertilizerDashboard: React.FC = () => {
                   >
                     <option value="IZDAVANJE_NJIVA">Izdavanje na njivu (Redovan izlaz)</option>
                     <option value="POVRAT_SA_NJIVE">Povrat neiskorišćenog đubriva sa njive</option>
-                    <option value="OTPIS_KOREKCIJA">Otpis / Kalo / Oštećena ambalaža</option>
+                    <option value="OTPIS_KOREKCIJA">Otpis / Oštećena ambalaža</option>
                   </select>
                 </div>
 
@@ -1500,23 +1625,46 @@ const FertilizerDashboard: React.FC = () => {
 
                 <div className={`${styles.formField} ${styles.formFieldFull}`}>
                   <label>Proizvod đubriva koji se izdaje *</label>
-                  <select
-                    className={styles.formSelect}
+                  <CustomSelect
                     value={issueForm.productId}
-                    onChange={(e) => setIssueForm({ ...issueForm, productId: e.target.value })}
-                    required
-                  >
-                    <option value="" className={styles.optionNormal}>— Izaberite đubrivo iz magacina —</option>
-                    {products.map((p) => (
-                      <option
-                        key={p.id}
-                        value={p.id}
-                        className={p.isBelowMin ? styles.optionBelowMin : styles.optionNormal}
-                      >
-                        {p.name} - (Trenutno stanje: {p.currentStock.toLocaleString('sr-RS')} {p.unit}) - (Minimalno: {p.minStockWarning.toLocaleString('sr-RS')} {p.unit})
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => setIssueForm({ ...issueForm, productId: val })}
+                    options={fertilizerProductOptions}
+                    placeholder="— Izaberite đubrivo iz magacina —"
+                    searchable={true}
+                  />
+
+                  {selectedIssueProduct && (
+                    <div
+                      className={`${styles.selectedProductCard} ${selectedIssueProduct.isBelowMin ? styles.selectedProductCardDanger : ''
+                        }`}
+                    >
+                      <div className={styles.selectedProductInfo}>
+                        <div className={styles.selectedProductItem}>
+                          <span>Trenutno na stanju:</span>
+                          <strong>
+                            {selectedIssueProduct.currentStock.toLocaleString('sr-RS')}{' '}
+                            {selectedIssueProduct.unit}
+                          </strong>
+                        </div>
+                        <div className={styles.selectedProductItem}>
+                          <span>Minimalni prag:</span>
+                          <strong>
+                            {selectedIssueProduct.minStockWarning.toLocaleString('sr-RS')}{' '}
+                            {selectedIssueProduct.unit}
+                          </strong>
+                        </div>
+                      </div>
+                      {selectedIssueProduct.isBelowMin ? (
+                        <span className={`${styles.badge} ${styles.badgeLowStock}`}>
+                          <AlertTriangle size={12} /> Zaliha ispod minimuma
+                        </span>
+                      ) : (
+                        <span className={`${styles.badge} ${styles.badgeOkStock}`}>
+                          <CheckCircle2 size={12} /> Redovna zaliha
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {issueForm.movementType !== 'OTPIS_KOREKCIJA' && (
@@ -1526,20 +1674,13 @@ const FertilizerDashboard: React.FC = () => {
                         Parcela na koju se đubrivo odvozi{' '}
                         {issueForm.movementType === 'IZDAVANJE_NJIVA' ? '*' : ''}
                       </label>
-                      <select
-                        className={styles.formSelect}
+                      <CustomSelect
                         value={issueForm.parcelId}
-                        onChange={(e) => handleIssueParcelChange(e.target.value)}
-                        required={issueForm.movementType === 'IZDAVANJE_NJIVA'}
-                      >
-                        <option value="">— Izaberite parcelu —</option>
-                        {parcels.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            [{p.code}] {p.name} ({p.areaHa} ha
-                            {p.currentCrop ? ` - ${p.currentCrop}` : ''})
-                          </option>
-                        ))}
-                      </select>
+                        onChange={handleIssueParcelChange}
+                        options={parcelOptions}
+                        placeholder="— Izaberite parcelu —"
+                        searchable={parcels.length > 3}
+                      />
                     </div>
 
                     <div className={styles.formField}>
@@ -1547,21 +1688,15 @@ const FertilizerDashboard: React.FC = () => {
                         Preuzeo radnik / traktorista{' '}
                         {issueForm.movementType === 'IZDAVANJE_NJIVA' ? '*' : ''}
                       </label>
-                      <select
-                        className={styles.formSelect}
+                      <CustomSelect
                         value={issueForm.receivedWorkerId}
-                        onChange={(e) =>
-                          setIssueForm({ ...issueForm, receivedWorkerId: e.target.value })
+                        onChange={(val) =>
+                          setIssueForm({ ...issueForm, receivedWorkerId: val })
                         }
-                        required={issueForm.movementType === 'IZDAVANJE_NJIVA'}
-                      >
-                        <option value="">— Izaberite radnika —</option>
-                        {workers.map((w) => (
-                          <option key={w.id} value={w.id}>
-                            {w.name}
-                          </option>
-                        ))}
-                      </select>
+                        options={workerOptions}
+                        placeholder="— Izaberite radnika —"
+                        searchable={workers.length > 3}
+                      />
                     </div>
 
                     <div className={styles.formField}>
@@ -1623,15 +1758,52 @@ const FertilizerDashboard: React.FC = () => {
                   </div>
                 </div>
 
-                {/* UŽIVO KALKULATOR DOZE (kg/ha) I KONTROLA STANJA */}
+                {/* UŽIVO KALKULATOR DOZE (kg/ha) ILI INFO O POVRATU */}
                 {selectedIssueProduct && issueQtyNum > 0 && (
                   <div className={styles.formFieldFull}>
                     <div
-                      className={`${styles.dosePreviewBox} ${
-                        exceedsStock ? styles.dosePreviewDanger : ''
-                      }`}
+                      className={`${styles.dosePreviewBox} ${exceedsStock ? styles.dosePreviewDanger : ''
+                        }`}
                     >
-                      {exceedsStock ? (
+                      {issueForm.movementType === 'POVRAT_SA_NJIVE' ? (
+                        <>
+                          <div className={styles.doseRowMain}>
+                            <span className={styles.doseLabel}>
+                              <ArrowDownToLine
+                                size={16}
+                                style={{
+                                  verticalAlign: 'middle',
+                                  marginRight: '0.35rem',
+                                  color: '#16a34a',
+                                }}
+                              />
+                              Povrat neiskorišćenog đubriva u magacin:
+                            </span>
+                            <span className={styles.doseValueHighlight}>
+                              +{issueQtyNum.toLocaleString('sr-RS')} {selectedIssueProduct.unit}
+                            </span>
+                          </div>
+                          <div className={styles.doseMeta}>
+                            <span>
+                              Novo stanje u magacinu:{' '}
+                              <strong>
+                                {(selectedIssueProduct.currentStock + issueQtyNum).toLocaleString(
+                                  'sr-RS'
+                                )}{' '}
+                                {selectedIssueProduct.unit}
+                              </strong>
+                            </span>
+                            {selectedIssueParcel && (
+                              <span>
+                                Umanjuje se utrošak za parcelu:{' '}
+                                <strong>
+                                  [{selectedIssueParcel.code}] {selectedIssueParcel.name}
+                                </strong>
+                              </span>
+                            )}
+                          </div>
+                        </>
+                      ) : exceedsStock ? (
                         <div
                           style={{
                             display: 'flex',
@@ -1667,10 +1839,9 @@ const FertilizerDashboard: React.FC = () => {
                             <span>
                               Preostaje u magacinu nakon promene:{' '}
                               <strong>
-                                {(isOutflowType
-                                  ? selectedIssueProduct.currentStock - issueQtyNum
-                                  : selectedIssueProduct.currentStock + issueQtyNum
-                                ).toLocaleString('sr-RS')}{' '}
+                                {(selectedIssueProduct.currentStock - issueQtyNum).toLocaleString(
+                                  'sr-RS'
+                                )}{' '}
                                 {selectedIssueProduct.unit}
                               </strong>
                             </span>
@@ -1691,7 +1862,7 @@ const FertilizerDashboard: React.FC = () => {
                   <input
                     type="text"
                     className={styles.formInput}
-                    placeholder="npr. Osnovno đubrenje pred oranje / Prva prihrana..."
+                    placeholder="npr. Osnovno đubrenje pred oranje / Prva prihrana / Povrat viška..."
                     value={issueForm.notes}
                     onChange={(e) => setIssueForm({ ...issueForm, notes: e.target.value })}
                   />
@@ -1700,35 +1871,91 @@ const FertilizerDashboard: React.FC = () => {
                 <div className={styles.formFieldFull} style={{ marginTop: '0.4rem' }}>
                   <button
                     type="submit"
-                    className={styles.btnBlue}
+                    className={
+                      issueForm.movementType === 'POVRAT_SA_NJIVE'
+                        ? styles.btnPrimary
+                        : issueForm.movementType === 'OTPIS_KOREKCIJA'
+                          ? styles.btnDanger
+                          : styles.btnBlue
+                    }
                     style={{ width: '100%', padding: '0.8rem' }}
                     disabled={issueLoading || exceedsStock}
                   >
                     {issueLoading ? (
                       <Loader2 size={18} style={{ animation: 'spin 0.8s linear infinite' }} />
+                    ) : issueForm.movementType === 'POVRAT_SA_NJIVE' ? (
+                      <ArrowDownToLine size={18} />
+                    ) : issueForm.movementType === 'OTPIS_KOREKCIJA' ? (
+                      <Trash2 size={18} />
                     ) : (
                       <ArrowUpFromLine size={18} />
                     )}
                     <span>
                       {issueLoading
-                        ? 'Evidentiranje izlaza...'
+                        ? 'Evidentiranje promene...'
                         : issueForm.movementType === 'IZDAVANJE_NJIVA'
-                        ? 'Potvrdi Izdavanje na Njivu i Umanji Zalihe'
-                        : 'Potvrdi Promenu Zaliha'}
+                          ? 'Potvrdi Izdavanje na Njivu i Umanji Zalihe'
+                          : issueForm.movementType === 'POVRAT_SA_NJIVE'
+                            ? 'Potvrdi Povrat sa Njive i Uvećaj Zalihe Magacina'
+                            : 'Potvrdi Otpis'}
                     </span>
                   </button>
                 </div>
               </form>
             </div>
 
-            {/* Desna kolona: Poslednja izdavanja na njivu */}
+            {/* Desna kolona: Poslednja izdavanja i povrati sa parcela */}
             <div className={styles.tableCard}>
               <div className={styles.tableHeader}>
                 <h3>
                   <Sprout size={18} color="#0284c7" />
-                  Poslednja izdavanja na parcele
+                  Poslednje aktivnosti na parcelama (Izdavanja i Povrati)
                 </h3>
               </div>
+
+              {/* Bilans za izabranu parcelu (Izdato / Vraćeno / Neto utrošak) */}
+              {selectedIssueParcelSummary && (
+                <div style={{ padding: '0.75rem 1.25rem 0 1.25rem' }}>
+                  <div className={styles.parcelBalanceCard}>
+                    <div className={styles.parcelBalanceTitle}>
+                      <MapPin size={15} color="#16a34a" />
+                      <span>
+                        Sezonski bilans za parcelu [{selectedIssueParcelSummary.parcelCode}]{' '}
+                        {selectedIssueParcelSummary.parcelName}:
+                      </span>
+                    </div>
+                    <div className={styles.parcelBalanceStats}>
+                      <span className={styles.parcelStatIssued}>
+                        Izdato ukupno:{' '}
+                        <strong>
+                          {(
+                            selectedIssueParcelSummary.totalIssuedKg ??
+                            selectedIssueParcelSummary.totalKgApplied
+                          ).toLocaleString('sr-RS')}{' '}
+                          kg
+                        </strong>
+                      </span>
+                      {Boolean(selectedIssueParcelSummary.totalReturnedKg) && (
+                        <span className={styles.parcelStatReturned}>
+                          Vraćeno u magacin:{' '}
+                          <strong>
+                            {selectedIssueParcelSummary.totalReturnedKg?.toLocaleString('sr-RS')}{' '}
+                            kg
+                          </strong>
+                        </span>
+                      )}
+                      <span className={styles.parcelStatNet}>
+                        Stvarni neto utrošak na njivi:{' '}
+                        <strong>
+                          {selectedIssueParcelSummary.totalKgApplied.toLocaleString('sr-RS')} kg
+                        </strong>{' '}
+                        ({selectedIssueParcelSummary.avgKgPerHa} kg/ha)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className={styles.tableWrapper}>
                 <table className={styles.table}>
                   <thead>
@@ -1736,51 +1963,127 @@ const FertilizerDashboard: React.FC = () => {
                       <th>Datum</th>
                       <th>Parcela</th>
                       <th>Đubrivo & Količina</th>
-                      <th>Doza (kg/ha)</th>
+                      <th>Doza / Tip</th>
+                      <th style={{ textAlign: 'center' }}>Akcije</th>
                     </tr>
                   </thead>
                   <tbody>
                     {movements
-                      .filter((m) => m.movementType === 'IZDAVANJE_NJIVA')
+                      .filter((m) => ['IZDAVANJE_NJIVA', 'POVRAT_SA_NJIVE'].includes(m.movementType))
                       .slice(0, 8)
-                      .map((m) => (
-                        <tr key={m.id}>
-                          <td>{new Date(m.date).toLocaleDateString('sr-RS')}</td>
-                          <td>
-                            <div style={{ fontWeight: 700 }}>
-                              {m.parcel ? `[${m.parcel.code}] ${m.parcel.name}` : '—'}
-                            </div>
-                            {m.receivedWorker && (
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                Preuzeo: {m.receivedWorker.name}
+                      .map((m) => {
+                        const isReturn = m.movementType === 'POVRAT_SA_NJIVE';
+                        return (
+                          <tr key={m.id}>
+                            <td>
+                              <div>{new Date(m.date).toLocaleDateString('sr-RS')}</div>
+                              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                                {new Date(m.date).toLocaleTimeString('sr-RS', {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
                               </div>
-                            )}
-                          </td>
-                          <td>
-                            <div style={{ fontWeight: 700 }}>{m.product?.name}</div>
-                            <div style={{ fontSize: '0.8rem', color: '#0284c7', fontWeight: 700 }}>
-                              -{m.quantity.toLocaleString('sr-RS')} {m.product?.unit}
-                            </div>
-                          </td>
-                          <td>
-                            {m.kgPerHa ? (
-                              <span className={`${styles.badge} ${styles.badgeOut}`}>
-                                {m.kgPerHa} kg/ha
-                              </span>
-                            ) : (
-                              '—'
-                            )}
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 700 }}>
+                                {m.parcel ? `[${m.parcel.code}] ${m.parcel.name}` : '—'}
+                              </div>
+                              {m.receivedWorker && (
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                  {isReturn ? 'Vratio: ' : 'Preuzeo: '}
+                                  {m.receivedWorker.name}
+                                </div>
+                              )}
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 700 }}>{m.product?.name}</div>
+                              <div
+                                style={{
+                                  fontSize: '0.82rem',
+                                  color: isReturn ? '#16a34a' : '#0284c7',
+                                  fontWeight: 800,
+                                }}
+                              >
+                                {isReturn ? '+' : '-'}
+                                {m.quantity.toLocaleString('sr-RS')} {m.product?.unit}
+                                {isReturn && (
+                                  <span
+                                    style={{
+                                      fontSize: '0.74rem',
+                                      fontWeight: 600,
+                                      marginLeft: '0.35rem',
+                                      color: '#15803d',
+                                    }}
+                                  >
+                                    (Povrat)
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              {isReturn ? (
+                                <span className={`${styles.badge} ${styles.badgeReturn}`}>
+                                  ↩ Povrat sa njive
+                                </span>
+                              ) : m.kgPerHa ? (
+                                <span className={`${styles.badge} ${styles.badgeOut}`}>
+                                  {m.kgPerHa} kg/ha
+                                </span>
+                              ) : (
+                                '—'
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              {m.canEdit ? (
+                                <div style={{ display: 'inline-flex', gap: '0.35rem' }}>
+                                  <button
+                                    type="button"
+                                    className={styles.miniBtn}
+                                    title={isReturn ? 'Izmeni povrat' : 'Izmeni izdavanje'}
+                                    onClick={() => openEditMovementModal(m)}
+                                  >
+                                    <Pencil size={14} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`${styles.miniBtn} ${styles.miniBtnRed}`}
+                                    title={
+                                      isReturn
+                                        ? 'Obriši povrat'
+                                        : 'Obriši / Storniraj izdavanje'
+                                    }
+                                    onClick={() => openDeleteMovementModal(m)}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <span
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    fontSize: '0.75rem',
+                                    color: 'var(--text-muted)',
+                                  }}
+                                  title="Izmena zaključana (samo direktor i rukovodilac mogu menjati starije unose)"
+                                >
+                                  <Lock size={13} /> Zaključano
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    {movements.filter((m) =>
+                      ['IZDAVANJE_NJIVA', 'POVRAT_SA_NJIVE'].includes(m.movementType)
+                    ).length === 0 && (
+                        <tr>
+                          <td colSpan={5} className={styles.emptyState}>
+                            Još uvek nema evidentiranih izdavanja i povrata sa njiva.
                           </td>
                         </tr>
-                      ))}
-                    {movements.filter((m) => m.movementType === 'IZDAVANJE_NJIVA').length ===
-                      0 && (
-                      <tr>
-                        <td colSpan={4} className={styles.emptyState}>
-                          Još uvek nema evidentiranih izdavanja na njive.
-                        </td>
-                      </tr>
-                    )}
+                      )}
                   </tbody>
                 </table>
               </div>
@@ -2282,7 +2585,7 @@ const FertilizerDashboard: React.FC = () => {
         )}
 
         {/* =========================================================
-            MODAL: IZMENA ZAPISA KRETANJA (PRIJEMA / DOKUMENTA)
+            MODAL: IZMENA ZAPISA KRETANJA (PRIJEMA / IZDAVANJA)
            ========================================================= */}
         {editMovementModalOpen && editingMovement && (
           <div className={styles.modalOverlay}>
@@ -2290,7 +2593,9 @@ const FertilizerDashboard: React.FC = () => {
               <div className={styles.modalHeader}>
                 <h3>
                   <Pencil size={20} color="#16a34a" />
-                  Izmena zapisa: {editingMovement.product?.name}
+                  {editingMovement.movementType === 'IZDAVANJE_NJIVA'
+                    ? `Izmena izdavanja na njivu: ${editingMovement.product?.name}`
+                    : `Izmena prijema u magacin: ${editingMovement.product?.name}`}
                 </h3>
                 <button
                   type="button"
@@ -2342,102 +2647,179 @@ const FertilizerDashboard: React.FC = () => {
                     </div>
                   </div>
 
-                  {isManager && (
-                    <div className={styles.formField}>
-                      <label>
-                        Nabavna cena po jedinici (RSD/{editingMovement.product?.unit || 'KG'})
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        className={styles.formInput}
-                        placeholder="npr. 75.00"
-                        value={editMovementForm.unitPrice}
-                        onChange={(e) =>
-                          setEditMovementForm({ ...editMovementForm, unitPrice: e.target.value })
-                        }
-                      />
-                      {Number(editMovementForm.quantity) > 0 &&
-                        Number(editMovementForm.unitPrice) > 0 && (
-                          <div
-                            style={{
-                              fontSize: '0.78rem',
-                              fontWeight: 700,
-                              color: '#16a34a',
-                              marginTop: '0.25rem',
-                            }}
-                          >
-                            Ukupna korigovana vrednost:{' '}
-                            {Math.round(
-                              Number(editMovementForm.quantity) * Number(editMovementForm.unitPrice)
-                            ).toLocaleString('sr-RS')}{' '}
-                            RSD
-                          </div>
-                        )}
-                    </div>
+                  {editingMovement.movementType === 'IZDAVANJE_NJIVA' ? (
+                    <>
+                      <div className={styles.formField}>
+                        <label>Parcela na koju se đubrivo odvozi *</label>
+                        <CustomSelect
+                          value={editMovementForm.parcelId}
+                          onChange={handleEditParcelChange}
+                          options={parcelOptions}
+                          placeholder="— Izaberite parcelu —"
+                          searchable={parcels.length > 3}
+                        />
+                      </div>
+
+                      <div className={styles.formField}>
+                        <label>Preuzeo radnik / traktorista *</label>
+                        <CustomSelect
+                          value={editMovementForm.receivedWorkerId}
+                          onChange={(val) =>
+                            setEditMovementForm({ ...editMovementForm, receivedWorkerId: val })
+                          }
+                          options={workerOptions}
+                          placeholder="— Izaberite radnika —"
+                          searchable={workers.length > 3}
+                        />
+                      </div>
+
+                      <div className={styles.formGrid}>
+                        <div className={styles.formField}>
+                          <label>Površina koja se đubri (ha)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            className={styles.formInput}
+                            value={editMovementForm.areaHa}
+                            onChange={(e) =>
+                              setEditMovementForm({ ...editMovementForm, areaHa: e.target.value })
+                            }
+                          />
+                        </div>
+
+                        <div className={styles.formField}>
+                          <label>Kultura na parceli</label>
+                          <input
+                            type="text"
+                            className={styles.formInput}
+                            value={editMovementForm.cropName}
+                            onChange={(e) =>
+                              setEditMovementForm({ ...editMovementForm, cropName: e.target.value })
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      {editQtyNum > 0 && editAreaNum > 0 && (
+                        <div
+                          className={`${styles.dosePreviewBox} ${editExceedsStock ? styles.dosePreviewDanger : ''
+                            }`}
+                        >
+                          {editExceedsStock ? (
+                            <div style={{ color: '#dc2626', fontWeight: 800 }}>
+                              Nedovoljno zaliha u magacinu za ovo povećanje!
+                            </div>
+                          ) : (
+                            <div className={styles.doseRowMain}>
+                              <span className={styles.doseLabel}>
+                                <Calculator
+                                  size={15}
+                                  style={{ verticalAlign: 'middle', marginRight: '0.35rem' }}
+                                />
+                                Preračunata doza po hektaru:
+                              </span>
+                              <span className={styles.doseValueHighlight}>
+                                {editLiveKgPerHa !== null ? `${editLiveKgPerHa} kg/ha` : '—'}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {isManager && (
+                        <div className={styles.formField}>
+                          <label>
+                            Nabavna cena po jedinici (RSD/{editingMovement.product?.unit || 'KG'})
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            className={styles.formInput}
+                            placeholder="npr. 75.00"
+                            value={editMovementForm.unitPrice}
+                            onChange={(e) =>
+                              setEditMovementForm({ ...editMovementForm, unitPrice: e.target.value })
+                            }
+                          />
+                          {Number(editMovementForm.quantity) > 0 &&
+                            Number(editMovementForm.unitPrice) > 0 && (
+                              <div
+                                style={{
+                                  fontSize: '0.78rem',
+                                  fontWeight: 700,
+                                  color: '#16a34a',
+                                  marginTop: '0.25rem',
+                                }}
+                              >
+                                Ukupna korigovana vrednost:{' '}
+                                {Math.round(
+                                  Number(editMovementForm.quantity) * Number(editMovementForm.unitPrice)
+                                ).toLocaleString('sr-RS')}{' '}
+                                RSD
+                              </div>
+                            )}
+                        </div>
+                      )}
+
+                      <div className={styles.formField}>
+                        <label>Dobavljač (iz šifarnika Partnera)</label>
+                        <CustomSelect
+                          value={editMovementForm.supplierId}
+                          onChange={(val) =>
+                            setEditMovementForm({ ...editMovementForm, supplierId: val })
+                          }
+                          options={supplierOptions}
+                          placeholder="— Izaberite dobavljača —"
+                          searchable={suppliers.length > 3}
+                        />
+                      </div>
+
+                      <div className={styles.formGrid}>
+                        <div className={styles.formField}>
+                          <label>Broj dokumenta (Otpremnica / Faktura)</label>
+                          <input
+                            type="text"
+                            className={styles.formInput}
+                            placeholder="npr. OTP-2026-001"
+                            value={editMovementForm.receiptNumber}
+                            onChange={(e) =>
+                              setEditMovementForm({
+                                ...editMovementForm,
+                                receiptNumber: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className={styles.formField}>
+                          <label>Skladišna lokacija</label>
+                          <input
+                            type="text"
+                            className={styles.formInput}
+                            placeholder="npr. Glavni magacin B1"
+                            value={editMovementForm.warehouseLocation}
+                            onChange={(e) =>
+                              setEditMovementForm({
+                                ...editMovementForm,
+                                warehouseLocation: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    </>
                   )}
-
-                  {editingMovement.movementType === 'PRIJEM_NABAVKA' && (
-                    <div className={styles.formField}>
-                      <label>Dobavljač (iz šifarnika Partnera)</label>
-                      <select
-                        className={styles.formSelect}
-                        value={editMovementForm.supplierId}
-                        onChange={(e) =>
-                          setEditMovementForm({ ...editMovementForm, supplierId: e.target.value })
-                        }
-                      >
-                        <option value="">— Izaberite dobavljača —</option>
-                        {suppliers.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name} {s.pib ? `(PIB: ${s.pib})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  <div className={styles.formGrid}>
-                    <div className={styles.formField}>
-                      <label>Broj dokumenta (Otpremnica / Faktura)</label>
-                      <input
-                        type="text"
-                        className={styles.formInput}
-                        placeholder="npr. OTP-2026-001"
-                        value={editMovementForm.receiptNumber}
-                        onChange={(e) =>
-                          setEditMovementForm({
-                            ...editMovementForm,
-                            receiptNumber: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-
-                    <div className={styles.formField}>
-                      <label>Skladišna lokacija</label>
-                      <input
-                        type="text"
-                        className={styles.formInput}
-                        placeholder="npr. Glavni magacin B1"
-                        value={editMovementForm.warehouseLocation}
-                        onChange={(e) =>
-                          setEditMovementForm({
-                            ...editMovementForm,
-                            warehouseLocation: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                  </div>
 
                   <div className={styles.formField}>
                     <label>Napomena</label>
                     <input
                       type="text"
                       className={styles.formInput}
-                      placeholder="npr. Ispravka unete količine sa otpremnice..."
+                      placeholder="npr. Ispravka unetih podataka..."
                       value={editMovementForm.notes}
                       onChange={(e) =>
                         setEditMovementForm({ ...editMovementForm, notes: e.target.value })
@@ -2457,7 +2839,7 @@ const FertilizerDashboard: React.FC = () => {
                   <button
                     type="submit"
                     className={styles.btnPrimary}
-                    disabled={editMovementLoading}
+                    disabled={editMovementLoading || editExceedsStock}
                   >
                     {editMovementLoading ? (
                       <>
@@ -2533,8 +2915,8 @@ const FertilizerDashboard: React.FC = () => {
                     {deletingMovement.movementType === 'PRIJEM_NABAVKA'
                       ? 'Prijem robe u magacin'
                       : deletingMovement.movementType === 'IZDAVANJE_NJIVA'
-                      ? 'Izdavanje na njivu'
-                      : deletingMovement.movementType}
+                        ? 'Izdavanje na njivu'
+                        : deletingMovement.movementType}
                   </div>
                   <div>
                     <strong>Datum:</strong>{' '}
@@ -2550,6 +2932,21 @@ const FertilizerDashboard: React.FC = () => {
                       <strong>Dobavljač:</strong> {deletingMovement.supplier.name}
                     </div>
                   )}
+                  {deletingMovement.parcel && (
+                    <div>
+                      <strong>Parcela:</strong> [{deletingMovement.parcel.code}] {deletingMovement.parcel.name}
+                    </div>
+                  )}
+                  {deletingMovement.receivedWorker && (
+                    <div>
+                      <strong>Preuzeo:</strong> {deletingMovement.receivedWorker.name}
+                    </div>
+                  )}
+                  {deletingMovement.kgPerHa && (
+                    <div>
+                      <strong>Doza:</strong> {deletingMovement.kgPerHa} kg/ha
+                    </div>
+                  )}
                 </div>
 
                 <div
@@ -2561,10 +2958,11 @@ const FertilizerDashboard: React.FC = () => {
                     paddingLeft: '0.65rem',
                   }}
                 >
-                  <strong>Važna napomena:</strong> Brisanje ovog zapisa će automatski stornirati
-                  promenu na stanju magacina. Ako se briše prijem, zalihe će se umanjiti. Ako bi to
-                  dovelo do negativnog stanja, sistem će sprečiti brisanje. Svaka promena se
-                  beleži u revizorski dnevnik (Audit Log).
+                  <strong>Važna napomena:</strong>{' '}
+                  {deletingMovement.movementType === 'IZDAVANJE_NJIVA'
+                    ? `Brisanjem ovog izdavanja na njivu, izdata količina od ${deletingMovement.quantity.toLocaleString('sr-RS')} ${deletingMovement.product?.unit} će automatski biti vraćena (uvećana) na stanje u magacinu.`
+                    : 'Brisanjem ovog prijema robe zalihe u magacinu će automatski biti umanjene za ovu količinu. Ako bi to dovelo do negativnog stanja, sistem će sprečiti brisanje.'}{' '}
+                  Svaka promena se beleži u revizorski dnevnik (Audit Log).
                 </div>
               </div>
 

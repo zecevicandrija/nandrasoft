@@ -12,6 +12,7 @@ import {
   ArrowUpToLine,
 } from 'lucide-react';
 import { useSession } from '../lib/auth-client';
+import CustomSelect from '../components/CustomSelect/CustomSelect';
 import { SlikaRacunaUpload } from './SlikaRacunaUpload';
 import styles from './GorivoDashboard.module.css';
 
@@ -395,19 +396,17 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
               <label className={styles.formLabel}>
                 Radna mašina / Traktor <span className={styles.required}>*</span>
               </label>
-              <select
-                className={styles.formSelect}
+              <CustomSelect
                 value={machineId}
-                onChange={(e) => setMachineId(e.target.value)}
-                required
-              >
-                <option value="">-- Izaberite mašinu --</option>
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} {m.brandModel ? `(${m.brandModel})` : ''} — [Rezervoar: {m.tankCapacityLiters || 200}L]
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setMachineId(val)}
+                options={machines.map((m) => ({
+                  value: m.id,
+                  label: `${m.name}${m.brandModel ? ` (${m.brandModel})` : ''}`,
+                  subLabel: `Rezervoar: ${m.tankCapacityLiters || 200}L • Trenutno: ${m.currentHours || 0} rh`,
+                }))}
+                placeholder="-- Izaberite mašinu --"
+                searchable
+              />
               {selectedMachine && (
                 <div className={styles.machineQuickInfo}>
                   <span>Kapacitet: <strong>{selectedMachine.tankCapacityLiters || 200} L</strong></span>
@@ -422,36 +421,32 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
                 <label className={styles.formLabel}>
                   Radnik / Točilac <span className={styles.required}>*</span>
                 </label>
-                <select
-                  className={styles.formSelect}
+                <CustomSelect
                   value={workerId}
-                  onChange={(e) => setWorkerId(e.target.value)}
-                  required
-                >
-                  <option value="">-- Izaberite radnika --</option>
-                  {workers.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setWorkerId(val)}
+                  options={workers.map((w) => ({
+                    value: w.id,
+                    label: w.name,
+                  }))}
+                  placeholder="-- Izaberite radnika --"
+                  searchable
+                />
               </div>
             )}
 
             {/* Tip goriva / fluida */}
             <div className={styles.formGroup}>
               <label className={styles.formLabel}>Vrsta energenta / maziva</label>
-              <select
-                className={styles.formSelect}
+              <CustomSelect
                 value={fuelType}
-                onChange={(e) => setFuelType(e.target.value)}
-              >
-                {FLUID_TYPES.map((ft) => (
-                  <option key={ft.value} value={ft.value}>
-                    {ft.label}
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setFuelType(val)}
+                options={FLUID_TYPES.map((ft) => ({
+                  value: ft.value,
+                  label: ft.label,
+                }))}
+                placeholder="Izaberite energent"
+                searchable={false}
+              />
             </div>
 
             {/* Datum točenja */}

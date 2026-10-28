@@ -36,6 +36,8 @@
 }
 
 .loginLogo {
+  overflow: hidden;
+  padding: 5px;
   width: 46px;
   height: 46px;
   border-radius: 12px;
@@ -45,6 +47,13 @@
   align-items: center;
   justify-content: center;
   box-shadow: var(--shadow-sm);
+}
+
+.loginLogoImg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .loginBrandText {

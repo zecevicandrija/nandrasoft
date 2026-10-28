@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, X, MapPin, Loader2, AlertCircle } from 'lucide-react';
+import styles from './ParcelQuickModal.module.css';
 
 export interface ParcelItem {
   id: string;
@@ -113,138 +114,49 @@ export const ParcelQuickModal: React.FC<ParcelQuickModalProps> = ({
   };
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'rgba(15, 23, 42, 0.65)',
-        backdropFilter: 'blur(3px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 2500,
-        padding: '1rem',
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          background: '#ffffff',
-          borderRadius: '14px',
-          width: '100%',
-          maxWidth: '480px',
-          boxShadow: '0 20px 40px rgba(15, 23, 42, 0.25)',
-          border: '1px solid #e2e8f0',
-          overflow: 'hidden',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className={styles.modalOverlay} onClick={onClose}>
+      <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '1rem 1.25rem',
-            borderBottom: '1px solid #e2e8f0',
-            background: '#f8fafc',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div className={styles.modalHeader}>
+          <div className={styles.modalHeaderTitle}>
             <MapPin size={19} color="#16a34a" />
-            <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#0f172a' }}>
+            <h3 className={styles.modalTitleText}>
               {isEditing ? `Izmeni parcelu [${parcelToEdit?.code}]` : 'Dodaj novu parcelu'}
             </h3>
           </div>
           <button
             type="button"
             onClick={onClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              color: '#64748b',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '0.25rem',
-              borderRadius: '6px',
-            }}
+            className={styles.modalCloseBtn}
+            title="Zatvori"
           >
             <X size={18} />
           </button>
         </div>
 
         {error && (
-          <div
-            style={{
-              margin: '0.85rem 1.25rem 0',
-              padding: '0.65rem 0.85rem',
-              background: '#fef2f2',
-              border: '1px solid #fecaca',
-              borderRadius: '8px',
-              color: '#b91c1c',
-              fontSize: '0.84rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-            }}
-          >
+          <div className={styles.errorBox}>
             <AlertCircle size={16} style={{ flexShrink: 0 }} />
             <span>{error}</span>
           </div>
         )}
 
-        <form onSubmit={handleSubmit} style={{ padding: '1.15rem 1.25rem' }}>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '0.85rem',
-              marginBottom: '0.85rem',
-            }}
-          >
+        <form onSubmit={handleSubmit} className={styles.modalForm}>
+          <div className={styles.formGrid}>
             <div>
-              <label
-                style={{
-                  display: 'block',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  color: '#334155',
-                  marginBottom: '0.35rem',
-                }}
-              >
-                Šifra parcele *
-              </label>
+              <label className={styles.formLabel}>Šifra parcele *</label>
               <input
                 type="text"
                 placeholder="npr. P-01"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 required
-                style={{
-                  width: '100%',
-                  padding: '0.55rem 0.75rem',
-                  borderRadius: '8px',
-                  border: '1px solid #cbd5e1',
-                  fontSize: '0.9rem',
-                  boxSizing: 'border-box',
-                }}
+                className={styles.formInput}
               />
             </div>
 
             <div>
-              <label
-                style={{
-                  display: 'block',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  color: '#334155',
-                  marginBottom: '0.35rem',
-                }}
-              >
-                Površina (ha) *
-              </label>
+              <label className={styles.formLabel}>Površina (ha) *</label>
               <input
                 type="number"
                 step="0.01"
@@ -253,184 +165,71 @@ export const ParcelQuickModal: React.FC<ParcelQuickModalProps> = ({
                 value={areaHa}
                 onChange={(e) => setAreaHa(e.target.value)}
                 required
-                style={{
-                  width: '100%',
-                  padding: '0.55rem 0.75rem',
-                  borderRadius: '8px',
-                  border: '1px solid #cbd5e1',
-                  fontSize: '0.9rem',
-                  boxSizing: 'border-box',
-                }}
+                className={styles.formInput}
               />
             </div>
           </div>
 
-          <div style={{ marginBottom: '0.85rem' }}>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.8rem',
-                fontWeight: 600,
-                color: '#334155',
-                marginBottom: '0.35rem',
-              }}
-            >
-              Naziv parcele / Njive *
-            </label>
+          <div className={styles.formGroup}>
+            <label className={styles.formLabel}>Naziv parcele / Njive *</label>
             <input
               type="text"
               placeholder="npr. Potes Lug"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
-              style={{
-                width: '100%',
-                padding: '0.55rem 0.75rem',
-                borderRadius: '8px',
-                border: '1px solid #cbd5e1',
-                fontSize: '0.9rem',
-                boxSizing: 'border-box',
-              }}
+              className={styles.formInput}
             />
           </div>
 
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '0.85rem',
-              marginBottom: '0.85rem',
-            }}
-          >
+          <div className={styles.formGrid}>
             <div>
-              <label
-                style={{
-                  display: 'block',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  color: '#334155',
-                  marginBottom: '0.35rem',
-                }}
-              >
-                Lokacija / KO
-              </label>
+              <label className={styles.formLabel}>Lokacija / KO</label>
               <input
                 type="text"
                 placeholder="npr. KO Bački Petrovac"
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '0.55rem 0.75rem',
-                  borderRadius: '8px',
-                  border: '1px solid #cbd5e1',
-                  fontSize: '0.9rem',
-                  boxSizing: 'border-box',
-                }}
+                className={styles.formInput}
               />
             </div>
 
             <div>
-              <label
-                style={{
-                  display: 'block',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  color: '#334155',
-                  marginBottom: '0.35rem',
-                }}
-              >
-                Trenutna kultura
-              </label>
+              <label className={styles.formLabel}>Trenutna kultura</label>
               <input
                 type="text"
                 placeholder="npr. Luk žuti"
                 value={currentCrop}
                 onChange={(e) => setCurrentCrop(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '0.55rem 0.75rem',
-                  borderRadius: '8px',
-                  border: '1px solid #cbd5e1',
-                  fontSize: '0.9rem',
-                  boxSizing: 'border-box',
-                }}
+                className={styles.formInput}
               />
             </div>
           </div>
 
-          <div style={{ marginBottom: '1.15rem' }}>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.8rem',
-                fontWeight: 600,
-                color: '#334155',
-                marginBottom: '0.35rem',
-              }}
-            >
-              Napomena (opciono)
-            </label>
+          <div className={styles.formGroup}>
+            <label className={styles.formLabel}>Napomena (opciono)</label>
             <textarea
               rows={2}
               placeholder="Dodatni opis parcele..."
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '0.55rem 0.75rem',
-                borderRadius: '8px',
-                border: '1px solid #cbd5e1',
-                fontSize: '0.88rem',
-                boxSizing: 'border-box',
-                resize: 'vertical',
-                fontFamily: 'inherit',
-              }}
+              className={styles.formTextarea}
             />
           </div>
 
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              gap: '0.6rem',
-              paddingTop: '0.75rem',
-              borderTop: '1px solid #e2e8f0',
-            }}
-          >
+          <div className={styles.modalFooter}>
             <button
               type="button"
               onClick={onClose}
               disabled={loading}
-              style={{
-                padding: '0.5rem 0.95rem',
-                borderRadius: '8px',
-                border: '1px solid #cbd5e1',
-                background: '#ffffff',
-                color: '#475569',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-              }}
+              className={styles.btnCancel}
             >
               Otkaži
             </button>
             <button
               type="submit"
               disabled={loading}
-              style={{
-                padding: '0.5rem 1.1rem',
-                borderRadius: '8px',
-                border: 'none',
-                background: '#16a34a',
-                color: '#ffffff',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                cursor: loading ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-              }}
+              className={styles.btnSubmit}
             >
               {loading && <Loader2 size={15} className="spin" />}
               <span>{loading ? 'Čuvanje...' : isEditing ? 'Sačuvaj izmene' : 'Dodaj parcelu'}</span>
@@ -454,27 +253,14 @@ export const ParcelQuickActions: React.FC<ParcelQuickActionsProps> = ({
   onEditClick,
 }) => {
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+    <div className={styles.quickActionsContainer}>
       <button
         type="button"
         onClick={onAddClick}
         title="Brzo dodaj novu parcelu"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '0.22rem',
-          padding: '0.18rem 0.5rem',
-          fontSize: '0.72rem',
-          fontWeight: 700,
-          color: '#15803d',
-          background: '#dcfce7',
-          border: '1px solid #86efac',
-          borderRadius: '6px',
-          cursor: 'pointer',
-          lineHeight: 1.2,
-        }}
+        className={styles.actionBtnAdd}
       >
-        <Plus size={12} />
+        <Plus size={12} strokeWidth={2.5} />
         <span>Dodaj parcelu</span>
       </button>
 
@@ -483,26 +269,14 @@ export const ParcelQuickActions: React.FC<ParcelQuickActionsProps> = ({
           type="button"
           onClick={() => onEditClick(selectedParcel)}
           title={`Izmeni parcelu [${selectedParcel.code}] ${selectedParcel.name}`}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.22rem',
-            padding: '0.18rem 0.5rem',
-            fontSize: '0.72rem',
-            fontWeight: 700,
-            color: '#0369a1',
-            background: '#e0f2fe',
-            border: '1px solid #7dd3fc',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            lineHeight: 1.2,
-          }}
+          className={styles.actionBtnEdit}
         >
-          <Pencil size={11} />
-          <span>Izmeni parcelu</span>
+          <Pencil size={11} strokeWidth={2.5} />
+          <span>Izmeni</span>
         </button>
       )}
-    </span>
+    </div>
   );
 };
 
+export default ParcelQuickModal;

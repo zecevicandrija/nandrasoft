@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, Navigate } from 'react-router-dom';
 import {
-  Building2,
   ShieldCheck,
   ClipboardList,
   Package,
@@ -695,7 +694,7 @@ const PocetniEkran: React.FC = () => {
       <div className={styles.loginCard}>
         <div className={styles.loginBrand}>
           <div className={styles.loginLogo}>
-            <Building2 size={24} />
+            <img src="/nandralogo.webp" alt="NANDRA Logo" className={styles.loginLogoImg} />
           </div>
           <div className={styles.loginBrandText}>
             <span className={styles.loginBrandName}>NANDRA</span>

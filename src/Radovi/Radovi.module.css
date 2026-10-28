@@ -299,9 +299,70 @@
 
 .filterControlsRow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.85rem;
+  align-items: flex-start;
+  position: relative;
+  z-index: 10;
+  width: 100%;
+}
+
+.filterControlColumn {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.miniParcelEditBtn {
+  display: inline-flex;
   align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #0284c7;
+  background: rgba(2, 132, 199, 0.1);
+  border: 1px solid rgba(2, 132, 199, 0.3);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.miniParcelEditBtn:hover {
+  background: rgba(2, 132, 199, 0.2);
+  border-color: #0284c7;
+}
+
+:global([data-theme="dark"]) .miniParcelEditBtn {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+:global([data-theme="dark"]) .miniParcelEditBtn:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+}
+
+.columnHeaderBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  min-height: 26px;
+  margin-bottom: 0.4rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.filterFieldLabel {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .searchBox {
@@ -309,9 +370,17 @@
   align-items: center;
   gap: 0.5rem;
   background-color: var(--bg-input);
-  border: 1px solid var(--border-color);
+  border: 1.5px solid var(--border-color);
   border-radius: 9px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.65rem 0.85rem;
+  min-height: 46px;
+  box-sizing: border-box;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.searchBox:focus-within {
+  border-color: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
 }
 
 .searchInput {
@@ -826,4 +895,107 @@
   padding: 0 0.3rem;
   color: var(--text-muted);
   font-size: 0.85rem;
+}
+
+/* ========================================================
+   RESPONSIVNOST NA TELEFONIMA I TABLETIMA
+   ======================================================== */
+@media (max-width: 1180px) and (min-width: 769px) {
+  .filterControlsRow {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .parcelFilterColumn {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 768px) {
+  .headerBar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  .actionBtns {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+
+  .actionBtns > button {
+    flex: 1 1 calc(50% - 0.3rem);
+    min-height: 42px;
+    justify-content: center;
+    font-size: 0.88rem;
+  }
+
+  .actionBtns > a {
+    flex: 1 1 100%;
+    width: 100%;
+    min-height: 46px;
+    justify-content: center;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+
+  .filterPeriodRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .periodButtons {
+    width: 100%;
+    display: flex;
+    overflow-x: auto;
+    padding-bottom: 0.35rem;
+  }
+
+  .periodBtn {
+    flex: 1;
+    text-align: center;
+    padding: 0.5rem 0.5rem;
+    white-space: nowrap;
+  }
+
+  .dateRangeInputs {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .filterControlsRow {
+    grid-template-columns: 1fr;
+  }
+
+  .formRow {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .modalBox {
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .modalBody {
+    padding: 1.1rem;
+    overflow-y: auto;
+  }
+
+  .paginationBar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.85rem;
+  }
+
+  .paginationControls {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .pageNumbers {
+    display: none;
+  }
 }

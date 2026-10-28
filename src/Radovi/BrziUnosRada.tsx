@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import { useSession } from '../lib/auth-client';
 import styles from './BrziUnosRada.module.css';
 
@@ -197,6 +198,73 @@ const BrziUnosRada: React.FC = () => {
 
   const parcelMaxHa = selectedParcelObj ? Math.round(selectedParcelObj.areaHa * 1.2 * 100) / 100 : 0;
   const currentNumericArea = Number(areaDoneHa) || 0;
+
+  // Opcije za CustomSelect
+  const parcelOptions: CustomSelectOption[] = useMemo(() => {
+    return (parcelsData?.parcels || []).map((p: any) => ({
+      value: p.id,
+      label: `[${p.code}] ${p.name}`,
+      subLabel: `${p.areaHa} ha${p.currentCrop ? ` • ${p.currentCrop}` : ''}`,
+    }));
+  }, [parcelsData?.parcels]);
+
+  const workTypeOptions: CustomSelectOption[] = useMemo(() => {
+    return (workTypesData?.workTypes || []).map((wt: any) => ({
+      value: wt.id,
+      label: wt.name,
+      subLabel: wt.category || undefined,
+    }));
+  }, [workTypesData?.workTypes]);
+
+  const machineOptions: CustomSelectOption[] = useMemo(() => {
+    return (machinesData?.machines || [])
+      .filter((m: any) => {
+        if (
+          m.id === machineId ||
+          m.id === userActiveAssignment?.machineId ||
+          m.id === orderData?.workOrder?.machineId
+        ) {
+          return true;
+        }
+        if (m.type === 'PRIKLJUCAK') return false;
+        if (m.isActive === false) return false;
+        return m.status === 'SLOBODNA';
+      })
+      .map((m: any) => ({
+        value: m.id,
+        label: m.name,
+        subLabel: [m.type, m.brandModel].filter(Boolean).join(' • ') || undefined,
+      }));
+  }, [machinesData?.machines, machineId, userActiveAssignment?.machineId, orderData?.workOrder?.machineId]);
+
+  const attachmentOptions: CustomSelectOption[] = useMemo(() => {
+    const list: CustomSelectOption[] = (machinesData?.machines || [])
+      .filter((m: any) => {
+        if (m.id === attachmentId || m.id === orderData?.workOrder?.attachmentId) {
+          return true;
+        }
+        if (m.type !== 'PRIKLJUCAK') return false;
+        if (m.isActive === false) return false;
+        return m.status === 'SLOBODNA';
+      })
+      .map((m: any) => ({
+        value: m.id,
+        label: m.name,
+        subLabel: m.brandModel || 'Priključno oruđe',
+      }));
+    return [
+      { value: '', label: '— Bez priključka / Solo mašina —', subLabel: 'Rad mašine bez oruđa' },
+      ...list,
+    ];
+  }, [machinesData?.machines, attachmentId, orderData?.workOrder?.attachmentId]);
+
+  const workerOptions: CustomSelectOption[] = useMemo(() => {
+    return (workersData?.workers || []).map((w: any) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.type || w.role || undefined,
+    }));
+  }, [workersData?.workers]);
 
   // Računanje radnih sati u realnom vremenu
   const calculateHoursLive = () => {
@@ -570,19 +638,13 @@ const BrziUnosRada: React.FC = () => {
                       )}
                     </span>
                   </label>
-                  <select
-                    className={styles.fieldSelect}
+                  <CustomSelect
                     value={parcelId}
-                    onChange={(e) => setParcelId(e.target.value)}
-                    required
-                  >
-                    <option value="">-- Izaberite parcelu --</option>
-                    {parcelsData?.parcels?.map((p: any) => (
-                      <option key={p.id} value={p.id}>
-                        [{p.code}] {p.name} ({p.areaHa} ha)
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => setParcelId(val)}
+                    options={parcelOptions}
+                    placeholder="— Izaberite parcelu —"
+                    searchable
+                  />
                 </div>
 
                 {/* 3. URAĐENA POVRŠINA (HA) SA BRZIM TASTERIMA */}
@@ -654,19 +716,13 @@ const BrziUnosRada: React.FC = () => {
                 {/* 4. RADNA OPERACIJA */}
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Radna Operacija</label>
-                  <select
-                    className={styles.fieldSelect}
+                  <CustomSelect
                     value={workTypeId}
-                    onChange={(e) => setWorkTypeId(e.target.value)}
-                    required
-                  >
-                    <option value="">-- Izaberite radnu operaciju --</option>
-                    {workTypesData?.workTypes?.map((wt: any) => (
-                      <option key={wt.id} value={wt.id}>
-                        {wt.name} [{wt.category}]
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => setWorkTypeId(val)}
+                    options={workTypeOptions}
+                    placeholder="— Izaberite radnu operaciju —"
+                    searchable
+                  />
                 </div>
 
                 {/* 5. MAŠINA I RADNIK */}
@@ -684,32 +740,13 @@ const BrziUnosRada: React.FC = () => {
                       </span>
                     ) : null}
                   </label>
-                  <select
-                    className={styles.fieldSelect}
+                  <CustomSelect
                     value={machineId}
-                    onChange={(e) => setMachineId(e.target.value)}
-                    required
-                  >
-                    <option value="">-- Izaberite traktor / mašinu --</option>
-                    {machinesData?.machines
-                      ?.filter((m: any) => {
-                        if (
-                          m.id === machineId ||
-                          m.id === userActiveAssignment?.machineId ||
-                          m.id === orderData?.workOrder?.machineId
-                        ) {
-                          return true;
-                        }
-                        if (m.type === 'PRIKLJUCAK') return false;
-                        if (m.isActive === false) return false;
-                        return m.status === 'SLOBODNA';
-                      })
-                      ?.map((m: any) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({m.type})
-                        </option>
-                      ))}
-                  </select>
+                    onChange={(val) => setMachineId(val)}
+                    options={machineOptions}
+                    placeholder="— Izaberite traktor / mašinu —"
+                    searchable
+                  />
                 </div>
 
                 {/* 5.1 PRIKLJUČNA MAŠINA / ORUĐE */}
@@ -723,45 +760,25 @@ const BrziUnosRada: React.FC = () => {
                       </span>
                     )}
                   </label>
-                  <select
-                    className={styles.fieldSelect}
+                  <CustomSelect
                     value={attachmentId}
-                    onChange={(e) => setAttachmentId(e.target.value)}
-                  >
-                    <option value="">-- Bez priključka / Solo mašina --</option>
-                    {machinesData?.machines
-                      ?.filter((m: any) => {
-                        if (m.id === attachmentId || m.id === orderData?.workOrder?.attachmentId) {
-                          return true;
-                        }
-                        if (m.type !== 'PRIKLJUCAK') return false;
-                        if (m.isActive === false) return false;
-                        return m.status === 'SLOBODNA';
-                      })
-                      ?.map((m: any) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} {m.brandModel ? `(${m.brandModel})` : ''}
-                        </option>
-                      ))}
-                  </select>
+                    onChange={(val) => setAttachmentId(val)}
+                    options={attachmentOptions}
+                    placeholder="— Bez priključka / Solo mašina —"
+                    searchable
+                  />
                 </div>
 
                 {!isOperator ? (
                   <div className={styles.fieldGroup}>
                     <label className={styles.fieldLabel}>Radnik (Traktorista / Sezonac)</label>
-                    <select
-                      className={styles.fieldSelect}
+                    <CustomSelect
                       value={workerId}
-                      onChange={(e) => setWorkerId(e.target.value)}
-                      required
-                    >
-                      <option value="">-- Izaberite radnika --</option>
-                      {workersData?.workers?.map((w: any) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name} [{w.type}]
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setWorkerId(val)}
+                      options={workerOptions}
+                      placeholder="— Izaberite radnika —"
+                      searchable
+                    />
                   </div>
                 ) : (
                   <div

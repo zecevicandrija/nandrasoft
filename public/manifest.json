@@ -9,9 +9,9 @@
   "theme_color": "#16a34a",
   "icons": [
     {
-      "src": "/favicon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/nandralogo.webp",
+      "sizes": "192x192 512x512 any",
+      "type": "image/webp",
       "purpose": "any maskable"
     }
   ]

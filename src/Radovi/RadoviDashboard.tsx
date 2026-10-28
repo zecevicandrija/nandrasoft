@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -26,6 +26,7 @@ import autoTable from 'jspdf-autotable';
 import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import { useSession } from '../lib/auth-client';
 import styles from './Radovi.module.css';
 
@@ -109,17 +110,52 @@ const RadoviDashboard: React.FC = () => {
     setTimeout(() => setToast(null), 4000);
   };
 
-  // 1. STATISTIKA RADOVA
+  // Računanje datuma na osnovu izabranog brzog perioda
+  const getDateRange = () => {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const todayStr = `${yyyy}-${mm}-${dd}`;
+
+    if (period === 'danas') {
+      return { from: todayStr, to: todayStr };
+    }
+    if (period === 'nedelja') {
+      const dayOfWeek = today.getDay() === 0 ? 6 : today.getDay() - 1;
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - dayOfWeek);
+      const startStr = startOfWeek.toISOString().slice(0, 10);
+      return { from: startStr, to: todayStr };
+    }
+    if (period === 'mesec') {
+      const startOfMonth = `${yyyy}-${mm}-01`;
+      return { from: startOfMonth, to: todayStr };
+    }
+    if (period === 'custom') {
+      return { from: dateFrom, to: dateTo };
+    }
+    return { from: '', to: '' };
+  };
+
+  const currentRange = getDateRange();
+
+  // 1. STATISTIKA RADOVA (Dinamički se osvežava sa promenom izabranog perioda)
   const { data: statsData } = useQuery({
-    queryKey: ['field-work-stats'],
+    queryKey: ['field-work-stats', period, currentRange.from, currentRange.to],
     queryFn: async () => {
-      const res = await fetch(`${API}/field-work/stats`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška');
+      const params = new URLSearchParams();
+      if (period) params.append('period', period);
+      if (currentRange.from) params.append('dateFrom', currentRange.from);
+      if (currentRange.to) params.append('dateTo', currentRange.to);
+
+      const res = await fetch(`${API}/field-work/stats?${params.toString()}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Greška pri dohvatanju statistike radova');
       return res.json();
     },
   });
 
-  // 2. ŠIFARNICI ZA FILTERE
+  // 2. ŠIFARNICI ZA FILTERE I MODALE
   const { data: parcelsData } = useQuery({
     queryKey: ['parcels-lite'],
     queryFn: async () => {
@@ -152,37 +188,102 @@ const RadoviDashboard: React.FC = () => {
     },
   });
 
-  // Računanje datuma na osnovu izabranog brzog perioda
-  const getDateRange = () => {
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    const todayStr = `${yyyy}-${mm}-${dd}`;
+  // 3. OPOCIJE ZA ELEGANTNE CUSTOMSELECT KOMPONENTE
+  const parcelFilterOptions: CustomSelectOption[] = useMemo(() => {
+    const list: CustomSelectOption[] = (parcelsData?.parcels || []).map((p: any) => ({
+      value: p.id,
+      label: `[${p.code}] ${p.name}`,
+      subLabel: `${p.areaHa} ha${p.currentCrop ? ` • ${p.currentCrop}` : ''}`,
+    }));
+    return [{ value: '', label: 'Sve parcele', subLabel: 'Prikaz svih parcela' }, ...list];
+  }, [parcelsData?.parcels]);
 
-    if (period === 'danas') {
-      return { from: todayStr, to: todayStr };
-    }
-    if (period === 'nedelja') {
-      const dayOfWeek = today.getDay() === 0 ? 6 : today.getDay() - 1;
-      const startOfWeek = new Date(today);
-      startOfWeek.setDate(today.getDate() - dayOfWeek);
-      const startStr = startOfWeek.toISOString().slice(0, 10);
-      return { from: startStr, to: todayStr };
-    }
-    if (period === 'mesec') {
-      const startOfMonth = `${yyyy}-${mm}-01`;
-      return { from: startOfMonth, to: todayStr };
-    }
-    if (period === 'custom') {
-      return { from: dateFrom, to: dateTo };
-    }
-    return { from: '', to: '' };
-  };
+  const machineFilterOptions: CustomSelectOption[] = useMemo(() => {
+    const list: CustomSelectOption[] = (machinesData?.machines || []).map((m: any) => ({
+      value: m.id,
+      label: m.name,
+      subLabel: [m.type, m.brandModel].filter(Boolean).join(' • ') || undefined,
+    }));
+    return [{ value: '', label: 'Sve mašine', subLabel: 'Prikaz svih mašina i traktora' }, ...list];
+  }, [machinesData?.machines]);
 
-  const currentRange = getDateRange();
+  const workerFilterOptions: CustomSelectOption[] = useMemo(() => {
+    const list: CustomSelectOption[] = (workersData?.workers || []).map((w: any) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.type || w.role || undefined,
+    }));
+    return [{ value: '', label: 'Svi radnici', subLabel: 'Prikaz radova svih radnika' }, ...list];
+  }, [workersData?.workers]);
 
-  // 3. GLAVNA TABELA RADOVA (Serverska paginacija i keširanje)
+  const workTypeFilterOptions: CustomSelectOption[] = useMemo(() => {
+    const list: CustomSelectOption[] = (workTypesData?.workTypes || []).map((wt: any) => ({
+      value: wt.id,
+      label: wt.name,
+      subLabel: wt.category || undefined,
+    }));
+    return [{ value: '', label: 'Sve operacije', subLabel: 'Prikaz svih radnih operacija' }, ...list];
+  }, [workTypesData?.workTypes]);
+
+  // Opcije za Edit Modal
+  const parcelEditOptions: CustomSelectOption[] = useMemo(() => {
+    return (parcelsData?.parcels || []).map((p: any) => ({
+      value: p.id,
+      label: `[${p.code}] ${p.name}`,
+      subLabel: `${p.areaHa} ha${p.currentCrop ? ` • ${p.currentCrop}` : ''}`,
+    }));
+  }, [parcelsData?.parcels]);
+
+  const machineEditOptions: CustomSelectOption[] = useMemo(() => {
+    return (machinesData?.machines || [])
+      .filter((m: any) => m.type !== 'PRIKLJUCAK' || m.id === editForm.machineId)
+      .map((m: any) => ({
+        value: m.id,
+        label: m.name,
+        subLabel: [m.type, m.brandModel].filter(Boolean).join(' • ') || undefined,
+      }));
+  }, [machinesData?.machines, editForm.machineId]);
+
+  const workerEditOptions: CustomSelectOption[] = useMemo(() => {
+    return (workersData?.workers || []).map((w: any) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.type || w.role || undefined,
+    }));
+  }, [workersData?.workers]);
+
+  const attachmentEditOptions: CustomSelectOption[] = useMemo(() => {
+    const list: CustomSelectOption[] = (machinesData?.machines || [])
+      .filter((m: any) => m.type === 'PRIKLJUCAK' || m.id === editForm.attachmentId)
+      .map((m: any) => ({
+        value: m.id,
+        label: m.name,
+        subLabel: m.brandModel || 'Priključno oruđe',
+      }));
+    return [
+      { value: '', label: '— Bez priključka —', subLabel: 'Samostalan rad mašine bez oruđa' },
+      ...list,
+    ];
+  }, [machinesData?.machines, editForm.attachmentId]);
+
+  const workTypeEditOptions: CustomSelectOption[] = useMemo(() => {
+    return (workTypesData?.workTypes || []).map((wt: any) => ({
+      value: wt.id,
+      label: wt.name,
+      subLabel: wt.category || undefined,
+    }));
+  }, [workTypesData?.workTypes]);
+
+  const shiftEditOptions: CustomSelectOption[] = useMemo(
+    () => [
+      { value: 'PRVA', label: '1. Smena (Jutarnja)' },
+      { value: 'DRUGA', label: '2. Smena (Popodnevna)' },
+      { value: 'TRECA', label: '3. Smena (Noćna)' },
+    ],
+    []
+  );
+
+  // 4. GLAVNA TABELA RADOVA (Serverska paginacija i keširanje)
   const { data: worksData, isLoading } = useQuery({
     queryKey: [
       'field-works',
@@ -285,6 +386,11 @@ const RadoviDashboard: React.FC = () => {
     e.preventDefault();
     if (!editingWork) return;
 
+    if (!editForm.parcelId || !editForm.machineId || !editForm.workerId || !editForm.workTypeId) {
+      showToast('Molimo izaberite sva obavezna polja (parcela, mašina, radnik, operacija).', 'error');
+      return;
+    }
+
     updateMutation.mutate({
       id: editingWork.id,
       data: {
@@ -301,7 +407,7 @@ const RadoviDashboard: React.FC = () => {
     }
   };
 
-  // EXCEL DOWNLOAD (Izvozi SVE unose koji odgovaraju izabranom filteru perioda, parcele, itd.)
+  // EXCEL DOWNLOAD
   const handleExportExcel = () => {
     const params = new URLSearchParams();
     if (currentRange.from) params.append('dateFrom', currentRange.from);
@@ -315,7 +421,7 @@ const RadoviDashboard: React.FC = () => {
     window.open(`${API}/field-work/export/excel?${params.toString()}`, '_blank');
   };
 
-  // PDF DOWNLOAD (Dohvata sve zapise koji odgovaraju filteru, sa zbirnim redom na dnu)
+  // PDF DOWNLOAD
   const handleExportPdf = async () => {
     try {
       setIsExportingPdf(true);
@@ -327,7 +433,7 @@ const RadoviDashboard: React.FC = () => {
       if (selectedWorker) params.append('workerId', selectedWorker);
       if (selectedWorkType) params.append('workTypeId', selectedWorkType);
       if (search) params.append('search', search);
-      params.append('limit', '5000'); // preuzima sve unose bez sečenja na trenutnu stranu
+      params.append('limit', '5000');
 
       const res = await fetch(`${API}/field-work?${params.toString()}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri preuzimanju podataka za PDF izveštaj.');
@@ -343,10 +449,9 @@ const RadoviDashboard: React.FC = () => {
       const hasUnicodeFont = await applyUnicodeFont(doc);
       const fontName = hasUnicodeFont ? 'Roboto' : 'helvetica';
 
-      // Naslov
       doc.setFont(fontName, 'bold');
       doc.setFontSize(14);
-      doc.setTextColor(22, 101, 52); // Tamno zelena
+      doc.setTextColor(22, 101, 52);
       doc.text('NANDRA — Zvanični Dnevnik Radova na Njivi', 14, 15);
 
       let periodLabel = 'Svi unosi';
@@ -437,33 +542,37 @@ const RadoviDashboard: React.FC = () => {
   const worksList = worksData?.works || [];
   const totalWorks = worksData?.total || 0;
   const totalPages = worksData?.totalPages || 1;
-  const todayStats = statsData?.today || { areaDoneHa: 0, workHours: 0, count: 0, unassignedWarnings: 0 };
-  const weekStats = statsData?.week || { areaDoneHa: 0, workHours: 0, count: 0, unassignedWarnings: 0 };
-  const monthStats = statsData?.month || { areaDoneHa: 0, count: 0, unassignedWarnings: 0 };
 
-  // Dinamičko računanje nezaduženih mašina za trenutno izabrani period
-  let currentPeriodUnassigned = 0;
-  let periodLabelText = 'danas';
+  // Dinamička statistika za trenutno izabrani period (Danas / Ova Nedelja / Ovaj Mesec / Prilagođen raspon)
+  const currentStats = statsData?.current || {
+    areaDoneHa: period === 'danas' ? (statsData?.today?.areaDoneHa || 0) : period === 'nedelja' ? (statsData?.week?.areaDoneHa || 0) : period === 'mesec' ? (statsData?.month?.areaDoneHa || 0) : 0,
+    workHours: period === 'danas' ? (statsData?.today?.workHours || 0) : period === 'nedelja' ? (statsData?.week?.workHours || 0) : 0,
+    count: period === 'danas' ? (statsData?.today?.count || 0) : period === 'nedelja' ? (statsData?.week?.count || 0) : period === 'mesec' ? (statsData?.month?.count || 0) : 0,
+    unassignedWarnings: period === 'danas' ? (statsData?.today?.unassignedWarnings || 0) : period === 'nedelja' ? (statsData?.week?.unassignedWarnings || 0) : period === 'mesec' ? (statsData?.month?.unassignedWarnings || 0) : (statsData?.unassignedWarningsTotal || 0),
+  };
+
+  // Dinamički labeli za KPI kartice na osnovu izabranog perioda
+  const getPeriodLabelText = () => {
+    if (period === 'danas') return 'Danas';
+    if (period === 'nedelja') return 'Ova Nedelja';
+    if (period === 'mesec') return 'Ovaj Mesec';
+    if (period === 'custom') {
+      if (dateFrom && dateTo) return `${dateFrom} — ${dateTo}`;
+      if (dateFrom) return `Od ${dateFrom}`;
+      if (dateTo) return `Do ${dateTo}`;
+      return 'Prilagođen Raspon';
+    }
+    return 'Svi Unosi';
+  };
+
+  const periodLabelText = getPeriodLabelText();
+
   let periodParam = 'danas';
+  if (period === 'nedelja') periodParam = 'nedelja';
+  else if (period === 'mesec') periodParam = 'mesec';
+  else if (period === 'custom' || period === 'sve') periodParam = 'sve';
 
-  if (period === 'danas') {
-    currentPeriodUnassigned = todayStats.unassignedWarnings || 0;
-    periodLabelText = 'danas';
-    periodParam = 'danas';
-  } else if (period === 'nedelja') {
-    currentPeriodUnassigned = weekStats.unassignedWarnings || 0;
-    periodLabelText = 'ove nedelje';
-    periodParam = 'nedelja';
-  } else if (period === 'mesec') {
-    currentPeriodUnassigned = monthStats.unassignedWarnings || 0;
-    periodLabelText = 'ovog meseca';
-    periodParam = 'mesec';
-  } else {
-    // 'sve' ili 'custom'
-    currentPeriodUnassigned = statsData?.unassignedWarningsTotal || 0;
-    periodLabelText = 'u izabranom periodu';
-    periodParam = 'sve';
-  }
+  const currentPeriodUnassigned = currentStats.unassignedWarnings || 0;
 
   return (
     <AppLayout pageTitle="Operativa na Njivi">
@@ -505,6 +614,22 @@ const RadoviDashboard: React.FC = () => {
               <span>{isExportingPdf ? 'Generisanje...' : 'PDF'}</span>
             </button>
 
+            {isManager && (
+              <button
+                type="button"
+                onClick={() => {
+                  setParcelQuickTarget('filter');
+                  setParcelToEdit(null);
+                  setParcelQuickModalOpen(true);
+                }}
+                className={styles.btnSecondary}
+                title="Dodaj novu parcelu u šifarnik"
+              >
+                <Plus size={16} color="#16a34a" />
+                <span>Dodaj Parcelu</span>
+              </button>
+            )}
+
             <Link to="/radovi/novi" className={styles.btnPrimary} title="Unos novog rada sa njive">
               <Plus size={18} />
               <span>Novi Unos Rada</span>
@@ -512,7 +637,7 @@ const RadoviDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* KPI Kartice */}
+        {/* KPI Kartice — Sinhronizovane sa izabranim periodom (Danas, Ova Nedelja, Ovaj Mesec, itd.) */}
         <div className={styles.statsGrid}>
           <div className={styles.statCard}>
             <div className={`${styles.statIcon} ${styles.iconArea}`}>
@@ -520,10 +645,10 @@ const RadoviDashboard: React.FC = () => {
             </div>
             <div className={styles.statInfo}>
               <div className={styles.statValue}>
-                {todayStats.areaDoneHa}
+                {currentStats.areaDoneHa}
                 <span className={styles.statUnit}>ha</span>
               </div>
-              <div className={styles.statLabel}>Urađeno Danas ({todayStats.count} poslova)</div>
+              <div className={styles.statLabel}>Urađeno ({periodLabelText})</div>
             </div>
           </div>
 
@@ -533,10 +658,10 @@ const RadoviDashboard: React.FC = () => {
             </div>
             <div className={styles.statInfo}>
               <div className={styles.statValue}>
-                {todayStats.workHours}
+                {currentStats.workHours}
                 <span className={styles.statUnit}>h</span>
               </div>
-              <div className={styles.statLabel}>Radnih Sati Danas</div>
+              <div className={styles.statLabel}>Radnih Sati ({periodLabelText})</div>
             </div>
           </div>
 
@@ -546,10 +671,10 @@ const RadoviDashboard: React.FC = () => {
             </div>
             <div className={styles.statInfo}>
               <div className={styles.statValue}>
-                {weekStats.areaDoneHa}
-                <span className={styles.statUnit}>ha</span>
+                {currentStats.count}
+                <span className={styles.statUnit}>poslova</span>
               </div>
-              <div className={styles.statLabel}>Ove Nedelje ({weekStats.workHours} h)</div>
+              <div className={styles.statLabel}>Evidentirano ({periodLabelText})</div>
             </div>
           </div>
 
@@ -568,7 +693,7 @@ const RadoviDashboard: React.FC = () => {
                   {currentPeriodUnassigned}
                 </div>
                 <div className={styles.statLabel}>
-                  Radovi bez zaduženja ({period === 'danas' ? 'Danas' : period === 'nedelja' ? 'Ove nedelje' : period === 'mesec' ? 'Ovog meseca' : 'Svi unosi'})
+                  Bez zaduženja ({periodLabelText})
                 </div>
               </div>
             </Link>
@@ -584,7 +709,7 @@ const RadoviDashboard: React.FC = () => {
                 Pažnja: Evidentirano je{' '}
                 <strong>{currentPeriodUnassigned}</strong>{' '}
                 {currentPeriodUnassigned === 1 ? 'unos rada' : currentPeriodUnassigned < 5 ? 'unosa rada' : 'unosa rada'}{' '}
-                gde traktor nije imao zvanično jutarnje zaduženje u sistemu ({periodLabelText}). Radovi su prihvaćeni radi kontinuiteta proizvodnje.
+                gde traktor nije imao zvanično jutarnje zaduženje u sistemu ({periodLabelText.toLowerCase()}). Radovi su prihvaćeni radi kontinuiteta proizvodnje.
               </span>
             </div>
             <Link to={`/masine/neusklađenosti?period=${periodParam}`} className={styles.btnWarningAction}>
@@ -650,87 +775,93 @@ const RadoviDashboard: React.FC = () => {
           </div>
 
           <div className={styles.filterControlsRow}>
-            <div className={styles.searchBox}>
-              <Search size={16} color="var(--text-muted)" />
-              <input
-                type="text"
-                placeholder="Pretraži unose i napomene..."
-                className={styles.searchInput}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+            <div className={styles.filterControlColumn}>
+              <div className={styles.columnHeaderBar}>
+                <span className={styles.filterFieldLabel}>Pretraga</span>
+              </div>
+              <div className={styles.searchBox}>
+                <Search size={16} color="var(--text-muted)" />
+                <input
+                  type="text"
+                  placeholder="Pretraži unose i napomene..."
+                  className={styles.searchInput}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className={styles.filterControlColumn}>
+              <div className={styles.columnHeaderBar}>
+                <span className={styles.filterFieldLabel}>Parcela</span>
+                {isManager && selectedParcel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const found = parcelsData?.parcels?.find((p: any) => p.id === selectedParcel);
+                      if (found) {
+                        setParcelQuickTarget('filter');
+                        setParcelToEdit(found);
+                        setParcelQuickModalOpen(true);
+                      }
+                    }}
+                    className={styles.miniParcelEditBtn}
+                    title="Izmeni selektovanu parcelu"
+                  >
+                    <Pencil size={11} />
+                    <span>Izmeni</span>
+                  </button>
+                )}
+              </div>
+              <CustomSelect
+                value={selectedParcel}
+                onChange={(val) => setSelectedParcel(val)}
+                options={parcelFilterOptions}
+                placeholder="Sve parcele"
+                searchable
               />
             </div>
 
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-              <select
-                className={styles.selectInput}
-                value={selectedParcel}
-                onChange={(e) => setSelectedParcel(e.target.value)}
-              >
-                <option value="">Sve parcele</option>
-                {parcelsData?.parcels?.map((p: any) => (
-                  <option key={p.id} value={p.id}>
-                    [{p.code}] {p.name}
-                  </option>
-                ))}
-              </select>
-              {isManager && (
-                <ParcelQuickActions
-                  selectedParcel={parcelsData?.parcels?.find((p: any) => p.id === selectedParcel) || null}
-                  onAddClick={() => {
-                    setParcelQuickTarget('filter');
-                    setParcelToEdit(null);
-                    setParcelQuickModalOpen(true);
-                  }}
-                  onEditClick={(parcel) => {
-                    setParcelQuickTarget('filter');
-                    setParcelToEdit(parcel);
-                    setParcelQuickModalOpen(true);
-                  }}
-                />
-              )}
+            <div className={styles.filterControlColumn}>
+              <div className={styles.columnHeaderBar}>
+                <span className={styles.filterFieldLabel}>Mašina / Traktor</span>
+              </div>
+              <CustomSelect
+                value={selectedMachine}
+                onChange={(val) => setSelectedMachine(val)}
+                options={machineFilterOptions}
+                placeholder="Sve mašine"
+                searchable
+              />
             </div>
 
-            <select
-              className={styles.selectInput}
-              value={selectedMachine}
-              onChange={(e) => setSelectedMachine(e.target.value)}
-            >
-              <option value="">Sve mašine</option>
-              {machinesData?.machines?.map((m: any) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-
             {!isOperator && (
-              <select
-                className={styles.selectInput}
-                value={selectedWorker}
-                onChange={(e) => setSelectedWorker(e.target.value)}
-              >
-                <option value="">Svi radnici</option>
-                {workersData?.workers?.map((w: any) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
+              <div className={styles.filterControlColumn}>
+                <div className={styles.columnHeaderBar}>
+                  <span className={styles.filterFieldLabel}>Radnik</span>
+                </div>
+                <CustomSelect
+                  value={selectedWorker}
+                  onChange={(val) => setSelectedWorker(val)}
+                  options={workerFilterOptions}
+                  placeholder="Svi radnici"
+                  searchable
+                />
+              </div>
             )}
 
-            <select
-              className={styles.selectInput}
-              value={selectedWorkType}
-              onChange={(e) => setSelectedWorkType(e.target.value)}
-            >
-              <option value="">Sve operacije</option>
-              {workTypesData?.workTypes?.map((wt: any) => (
-                <option key={wt.id} value={wt.id}>
-                  {wt.name}
-                </option>
-              ))}
-            </select>
+            <div className={styles.filterControlColumn}>
+              <div className={styles.columnHeaderBar}>
+                <span className={styles.filterFieldLabel}>Radna operacija</span>
+              </div>
+              <CustomSelect
+                value={selectedWorkType}
+                onChange={(val) => setSelectedWorkType(val)}
+                options={workTypeFilterOptions}
+                placeholder="Sve operacije"
+                searchable
+              />
+            </div>
           </div>
         </div>
 
@@ -968,7 +1099,7 @@ const RadoviDashboard: React.FC = () => {
           )}
         </div>
 
-        {/* Modal za izmenu unosa */}
+        {/* Modal za izmenu unosa sa elegantnim CustomSelect komponentama */}
         {editModalOpen && (
           <div className={styles.modalOverlay} onClick={() => setEditModalOpen(false)}>
             <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
@@ -997,15 +1128,12 @@ const RadoviDashboard: React.FC = () => {
                     </div>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Smena</label>
-                      <select
-                        className={styles.selectInput}
+                      <CustomSelect
                         value={editForm.shift}
-                        onChange={(e) => setEditForm({ ...editForm, shift: e.target.value })}
-                      >
-                        <option value="PRVA">1. Smena</option>
-                        <option value="DRUGA">2. Smena</option>
-                        <option value="TRECA">3. Noćna</option>
-                      </select>
+                        onChange={(val) => setEditForm({ ...editForm, shift: val })}
+                        options={shiftEditOptions}
+                        searchable={false}
+                      />
                     </div>
                   </div>
 
@@ -1029,18 +1157,13 @@ const RadoviDashboard: React.FC = () => {
                           />
                         )}
                       </div>
-                      <select
-                        className={styles.selectInput}
+                      <CustomSelect
                         value={editForm.parcelId}
-                        onChange={(e) => setEditForm({ ...editForm, parcelId: e.target.value })}
-                        required
-                      >
-                        {parcelsData?.parcels?.map((p: any) => (
-                          <option key={p.id} value={p.id}>
-                            [{p.code}] {p.name} ({p.areaHa} ha)
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setEditForm({ ...editForm, parcelId: val })}
+                        options={parcelEditOptions}
+                        placeholder="— Izaberite parcelu —"
+                        searchable
+                      />
                     </div>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Urađena površina (ha)</label>
@@ -1059,71 +1182,49 @@ const RadoviDashboard: React.FC = () => {
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Mašina / Traktor</label>
-                      <select
-                        className={styles.selectInput}
+                      <CustomSelect
                         value={editForm.machineId}
-                        onChange={(e) => setEditForm({ ...editForm, machineId: e.target.value })}
-                        required
-                      >
-                        {machinesData?.machines?.map((m: any) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setEditForm({ ...editForm, machineId: val })}
+                        options={machineEditOptions}
+                        placeholder="— Izaberite mašinu —"
+                        searchable
+                      />
                     </div>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>
                         Radnik {isOperator && '(automatski vezan nalog)'}
                       </label>
-                      <select
-                        className={styles.selectInput}
+                      <CustomSelect
                         value={editForm.workerId}
-                        onChange={(e) => setEditForm({ ...editForm, workerId: e.target.value })}
+                        onChange={(val) => setEditForm({ ...editForm, workerId: val })}
+                        options={workerEditOptions}
+                        placeholder="— Izaberite radnika —"
                         disabled={isOperator}
-                        required
-                      >
-                        {workersData?.workers?.map((w: any) => (
-                          <option key={w.id} value={w.id}>
-                            {w.name}
-                          </option>
-                        ))}
-                      </select>
+                        searchable
+                      />
                     </div>
                   </div>
 
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel}>Priključak / Oruđe (opciono)</label>
-                    <select
-                      className={styles.selectInput}
+                    <CustomSelect
                       value={editForm.attachmentId || ''}
-                      onChange={(e) => setEditForm({ ...editForm, attachmentId: e.target.value })}
-                    >
-                      <option value="">-- Bez priključka --</option>
-                      {machinesData?.machines
-                        ?.filter((m: any) => m.type === 'PRIKLJUCAK' || m.id === editForm.attachmentId)
-                        ?.map((m: any) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name} {m.brandModel ? `(${m.brandModel})` : ''}
-                          </option>
-                        ))}
-                    </select>
+                      onChange={(val) => setEditForm({ ...editForm, attachmentId: val })}
+                      options={attachmentEditOptions}
+                      placeholder="— Bez priključka —"
+                      searchable
+                    />
                   </div>
 
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel}>Radna operacija</label>
-                    <select
-                      className={styles.selectInput}
+                    <CustomSelect
                       value={editForm.workTypeId}
-                      onChange={(e) => setEditForm({ ...editForm, workTypeId: e.target.value })}
-                      required
-                    >
-                      {workTypesData?.workTypes?.map((wt: any) => (
-                        <option key={wt.id} value={wt.id}>
-                          {wt.name}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setEditForm({ ...editForm, workTypeId: val })}
+                      options={workTypeEditOptions}
+                      placeholder="— Izaberite radnu operaciju —"
+                      searchable
+                    />
                   </div>
 
                   <div className={styles.formRow}>
