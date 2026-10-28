@@ -195,29 +195,76 @@ router.get("/", async (req, res) => {
       where.orderDate = { gte: startOfDay, lte: endOfDay };
     }
 
-    const workOrders = await prisma.workOrder.findMany({
-      where,
-      include: {
-        worker: true,
-        machine: true,
-        attachment: true,
-        parcel: true,
-        workType: true,
-        machineAssignments: {
-          orderBy: { assignedAt: "desc" },
-          take: 1,
-        },
-        fieldWork: {
-          select: { id: true, areaDoneHa: true, workHours: true, status: true },
-        },
-        issuedBy: {
-          select: { id: true, name: true, role: true },
-        },
-      },
-      orderBy: [{ orderDate: "desc" }, { createdAt: "desc" }],
-    });
+    // Paginacija (podrazumevano 25 po stranici)
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 25));
+    const skip = (page - 1) * limit;
 
-    res.json({ workOrders });
+    // Za KPI statistiku koristimo iste filtere (datum, mašina, radnik, parcela, tip) osim statusa
+    const statsWhere = { ...where };
+    delete statsWhere.status;
+
+    const [
+      total,
+      totalOrdersCount,
+      pendingOrdersCount,
+      inProgressOrdersCount,
+      completedOrdersCount,
+      workOrders,
+    ] = await Promise.all([
+      prisma.workOrder.count({ where }),
+      prisma.workOrder.count({ where: statsWhere }),
+      prisma.workOrder.count({
+        where: { ...statsWhere, status: { in: ["PLANIRAN", "DODELJEN"] } },
+      }),
+      prisma.workOrder.count({
+        where: { ...statsWhere, status: "U_TOKU" },
+      }),
+      prisma.workOrder.count({
+        where: { ...statsWhere, status: "ZAVRSEN" },
+      }),
+      prisma.workOrder.findMany({
+        where,
+        include: {
+          worker: true,
+          machine: true,
+          attachment: true,
+          parcel: true,
+          workType: true,
+          machineAssignments: {
+            orderBy: { assignedAt: "desc" },
+            take: 1,
+          },
+          fieldWork: {
+            select: { id: true, areaDoneHa: true, workHours: true, status: true },
+          },
+          issuedBy: {
+            select: { id: true, name: true, role: true },
+          },
+        },
+        orderBy: [{ orderDate: "desc" }, { createdAt: "desc" }],
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    res.json({
+      workOrders,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages,
+      },
+      stats: {
+        totalOrders: totalOrdersCount,
+        pendingOrders: pendingOrdersCount,
+        inProgressOrders: inProgressOrdersCount,
+        completedOrders: completedOrdersCount,
+      },
+    });
   } catch (error) {
     console.error("Greška pri dohvatanju radnih naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
@@ -651,22 +698,7 @@ router.put("/:id", requireManager, async (req, res) => {
       return res.status(404).json({ error: "Radni nalog nije pronađen." });
     }
 
-    // Provera za ZAVRŠENE naloge:
-    // Ako je nalog već završen, rukovodilac ga može izmeniti samo do kraja tog dana (do 23:59:59)
-    if (existing.status === "ZAVRSEN") {
-      const now = new Date();
-      const completionDate = new Date(existing.updatedAt);
-      const isSameDay =
-        now.getFullYear() === completionDate.getFullYear() &&
-        now.getMonth() === completionDate.getMonth() &&
-        now.getDate() === completionDate.getDate();
-
-      if (!isSameDay) {
-        return res.status(403).json({
-          error: "Završeni radni nalog možete menjati samo do kraja istog dana (do 23:59h). Nakon toga je zaključan.",
-        });
-      }
-    }
+    // Za direktore i rukovodioce uvek su dozvoljene izmene svih radnih naloga (uključujući i završene naloge od ranije)
 
     const dataToUpdate = {};
     if (parsed.data.orderDate !== undefined) dataToUpdate.orderDate = new Date(parsed.data.orderDate);
@@ -729,17 +761,51 @@ router.put("/:id", requireManager, async (req, res) => {
 });
 
 // ==========================================
-// 5. BRISANJE / OTKAZIVANJE NALOGA
+// 5. BRISANJE RADNOG NALOGA (DIREKTOR / RUKOVODILAC)
 // ==========================================
 router.delete("/:id", requireManager, async (req, res) => {
   try {
+    const existing = await prisma.workOrder.findUnique({
+      where: { id: req.params.id },
+      include: {
+        worker: true,
+        machine: true,
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "Radni nalog nije pronađen." });
+    }
+
+    // 1. Ako postoji povezivanje sa zaduženjem mašine, razdužujemo/otkačinjemo nalog
+    await prisma.machineAssignment.updateMany({
+      where: { workOrderId: existing.id },
+      data: { workOrderId: null },
+    });
+
+    // 2. Trajno brisanje naloga
     await prisma.workOrder.delete({
       where: { id: req.params.id },
     });
+
+    // 3. Upis u revizorski trag (AuditLog)
+    await prisma.auditLog.create({
+      data: {
+        entityType: "WorkOrder",
+        entityId: req.params.id,
+        action: "BRISANJE",
+        userId: req.user.id,
+        userName: req.user.name,
+        userRole: req.user.role,
+        description: `Trajno obrisan radni nalog ${existing.orderNumber} (Status: ${existing.status})`,
+        oldValues: existing,
+      },
+    });
+
     res.json({ message: "Radni nalog uspešno obrisan." });
   } catch (error) {
     console.error("Greška pri brisanju radnog naloga:", error);
-    res.status(500).json({ error: "Greška na serveru." });
+    res.status(500).json({ error: "Greška na serveru pri brisanju radnog naloga." });
   }
 });
 

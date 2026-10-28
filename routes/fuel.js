@@ -950,7 +950,20 @@ router.get("/supplies", async (req, res) => {
       return res.status(403).json({ error: "Nemate pristup evidenciji prijema cisterne. Prijem cisterne je rezervisan za direktora i rukovodioca." });
     }
 
+    const { dateFrom, dateTo } = req.query;
+    const where = {};
+    if (dateFrom || dateTo) {
+      where.date = {};
+      if (dateFrom) where.date.gte = new Date(String(dateFrom));
+      if (dateTo) {
+        const dTo = new Date(String(dateTo));
+        dTo.setHours(23, 59, 59, 999);
+        where.date.lte = dTo;
+      }
+    }
+
     const supplies = await prisma.fuelSupply.findMany({
+      where,
       orderBy: { date: "desc" },
       include: {
         supplier: {
@@ -1085,6 +1098,8 @@ router.get("/analytics/l-per-ha", async (req, res) => {
       return res.status(403).json({ error: "Nemate pristup analitici goriva." });
     }
 
+    const { dateFrom, dateTo } = req.query;
+
     // 1. Dohvati sve radne operacije
     const workTypes = await prisma.workType.findMany({
       where: { isActive: true },
@@ -1092,10 +1107,21 @@ router.get("/analytics/l-per-ha", async (req, res) => {
     });
 
     // 2. Dohvati sva točenja koja su povezana sa radom na njivi
+    const whereFuel = {
+      fieldWorkId: { not: null },
+    };
+    if (dateFrom || dateTo) {
+      whereFuel.date = {};
+      if (dateFrom) whereFuel.date.gte = new Date(String(dateFrom));
+      if (dateTo) {
+        const dTo = new Date(String(dateTo));
+        dTo.setHours(23, 59, 59, 999);
+        whereFuel.date.lte = dTo;
+      }
+    }
+
     const fuelWithWork = await prisma.fuelEntry.findMany({
-      where: {
-        fieldWorkId: { not: null },
-      },
+      where: whereFuel,
       include: {
         fieldWork: {
           include: { workType: true },
@@ -1173,8 +1199,20 @@ router.get("/anomalies", async (req, res) => {
       return res.status(403).json({ error: "Nemate pristup evidenciji upitnih potrošnji." });
     }
 
+    const { dateFrom, dateTo } = req.query;
+    const where = { hasAnomaly: true };
+    if (dateFrom || dateTo) {
+      where.date = {};
+      if (dateFrom) where.date.gte = new Date(String(dateFrom));
+      if (dateTo) {
+        const dTo = new Date(String(dateTo));
+        dTo.setHours(23, 59, 59, 999);
+        where.date.lte = dTo;
+      }
+    }
+
     const anomalies = await prisma.fuelEntry.findMany({
-      where: { hasAnomaly: true },
+      where,
       orderBy: { date: "desc" },
       include: {
         machine: {

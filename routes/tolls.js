@@ -11,7 +11,7 @@ router.use(requireAuth);
 const tollEntrySchema = z.object({
   date: z.string().optional(),
   machineId: z.string().min(1, "Vozilo / mašina je obavezna"),
-  workerId: z.string().min(1, "Vozač / radnik je obavezan"),
+  workerId: z.string().optional().nullable(),
   amount: z.number().positive("Iznos putarine mora biti veći od 0 RSD"),
   paymentMethod: z.enum(["ENP_TAG", "GOTOVINA", "KARTICA"]).default("ENP_TAG"),
   tagNumber: z.string().max(80).optional().nullable(),
@@ -21,6 +21,80 @@ const tollEntrySchema = z.object({
   receiptNumber: z.string().max(80).optional().nullable(),
   notes: z.string().max(500).optional().nullable(),
 });
+
+// Pomoćna funkcija za parsiranje datuma u lokalnoj vremenskoj zoni
+function parseLocalDate(dateStr) {
+  if (!dateStr) return new Date();
+  const s = String(dateStr).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split("-").map(Number);
+    const now = new Date();
+    return new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds());
+  }
+  return new Date(s);
+}
+
+// Pomoćna funkcija: proverava da li je zapis unet danas (do kraja današnjeg dana)
+function isRecordFromToday(entry) {
+  if (!entry) return false;
+  const now = new Date();
+  const d = new Date(entry.date);
+  const c = entry.createdAt ? new Date(entry.createdAt) : d;
+
+  const sameEntryDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+
+  const sameCreatedDay =
+    c.getFullYear() === now.getFullYear() &&
+    c.getMonth() === now.getMonth() &&
+    c.getDate() === now.getDate();
+
+  return sameEntryDay && sameCreatedDay;
+}
+
+// Pronalazi (ili po potrebi kreira) profil radnika za ulogovanog korisnika
+async function resolveWorkerForUser(user, createIfMissing = false) {
+  if (!user?.id) return null;
+
+  let worker = await prisma.worker.findFirst({
+    where: { userId: user.id },
+  });
+
+  if (!worker && user.name) {
+    worker = await prisma.worker.findFirst({
+      where: {
+        name: { equals: user.name.trim(), mode: "insensitive" },
+      },
+    });
+
+    if (worker && !worker.userId) {
+      worker = await prisma.worker
+        .update({
+          where: { id: worker.id },
+          data: { userId: user.id },
+        })
+        .catch(() => worker);
+    }
+  }
+
+  if (!worker && createIfMissing && user.name) {
+    worker = await prisma.worker
+      .create({
+        data: {
+          name: user.name.trim(),
+          type: "STALNI",
+          phone: user.phone || null,
+          isActive: true,
+          userId: user.id,
+        },
+      })
+      .catch(() => null);
+  }
+
+  return worker;
+}
 
 const tollTopUpSchema = z.object({
   date: z.string().optional(),
@@ -37,7 +111,7 @@ const vehicleTagSchema = z.object({
 });
 
 // ==========================================
-// 1. PREGLED PUTARINA, ENP TAGOVA I STATISTIKE
+// 1. PREGLED PUTARINA, ENP TAGOVA I STATISTIKE (PAGINIRANO PO 25)
 // ==========================================
 router.get("/", async (req, res) => {
   try {
@@ -47,40 +121,52 @@ router.get("/", async (req, res) => {
       paymentMethod,
       dateFrom,
       dateTo,
+      page,
+      entriesPage,
+      topUpsPage,
+      limit = 25,
     } = req.query;
 
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
 
+    const takeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+    const entriesPageNum = Math.max(1, Number(entriesPage || page) || 1);
+    const topUpsPageNum = Math.max(1, Number(topUpsPage) || 1);
+
+    const entriesSkip = (entriesPageNum - 1) * takeLimit;
+    const topUpsSkip = (topUpsPageNum - 1) * takeLimit;
+
     const where = {};
     if (machineId) where.machineId = String(machineId);
-    if (workerId) where.workerId = String(workerId);
+    if (isManager && workerId) where.workerId = String(workerId);
     if (paymentMethod) where.paymentMethod = String(paymentMethod);
 
-    // Ako je ulogovan vozač / operater, vidi svoje unose putarina
+    // Izolacija podataka: Radnik vidi isključivo sopstvene unose putarina (ne vidi tuđe)
+    let linkedWorker = null;
     if (!isManager) {
-      const userNameParts = (req.user.name || "").trim().split(" ");
-      const firstName = userNameParts[0] || "";
-      const linkedWorker = await prisma.worker.findFirst({
-        where: {
-          OR: [
-            { userId: req.user.id },
-            ...(firstName ? [{ name: { contains: firstName, mode: "insensitive" } }] : []),
-          ],
-        },
-      });
+      linkedWorker = await resolveWorkerForUser(req.user, true);
       if (linkedWorker) {
-        where.OR = [{ workerId: linkedWorker.id }, { createdById: req.user.id }];
+        where.AND = [
+          ...(where.AND || []),
+          {
+            OR: [{ createdById: req.user.id }, { workerId: linkedWorker.id }],
+          },
+        ];
       } else {
         where.createdById = req.user.id;
       }
+    } else {
+      linkedWorker = await resolveWorkerForUser(req.user, false);
     }
 
     const dateFilter = {};
     if (dateFrom) {
-      dateFilter.gte = new Date(String(dateFrom));
+      const dFrom = parseLocalDate(String(dateFrom));
+      dFrom.setHours(0, 0, 0, 0);
+      dateFilter.gte = dFrom;
     }
     if (dateTo) {
-      const dTo = new Date(String(dateTo));
+      const dTo = parseLocalDate(String(dateTo));
       dTo.setHours(23, 59, 59, 999);
       dateFilter.lte = dTo;
     }
@@ -94,11 +180,20 @@ router.get("/", async (req, res) => {
       topUpWhere.date = dateFilter;
     }
 
-    const [entries, topUps, vehicles] = await Promise.all([
+    const [
+      rawEntries,
+      totalEntriesCount,
+      entriesByMethod,
+      topUps,
+      totalTopUpsCount,
+      topUpsAgg,
+      vehicles,
+    ] = await Promise.all([
       prisma.tollEntry.findMany({
         where,
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        take: 300,
+        skip: entriesSkip,
+        take: takeLimit,
         include: {
           machine: {
             select: {
@@ -115,6 +210,7 @@ router.get("/", async (req, res) => {
             select: {
               id: true,
               name: true,
+              userId: true,
             },
           },
           createdBy: {
@@ -126,11 +222,19 @@ router.get("/", async (req, res) => {
           },
         },
       }),
+      prisma.tollEntry.count({ where }),
+      prisma.tollEntry.groupBy({
+        by: ["paymentMethod"],
+        where,
+        _sum: { amount: true },
+        _count: { id: true },
+      }),
       isManager
         ? prisma.tollTopUp.findMany({
             where: topUpWhere,
             orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-            take: 100,
+            skip: topUpsSkip,
+            take: takeLimit,
             include: {
               machine: {
                 select: {
@@ -150,6 +254,13 @@ router.get("/", async (req, res) => {
             },
           })
         : Promise.resolve([]),
+      isManager ? prisma.tollTopUp.count({ where: topUpWhere }) : Promise.resolve(0),
+      isManager
+        ? prisma.tollTopUp.aggregate({
+            where: topUpWhere,
+            _sum: { amount: true },
+          })
+        : Promise.resolve({ _sum: { amount: 0 } }),
       prisma.machine.findMany({
         where: { isActive: true },
         orderBy: [{ type: "asc" }, { name: "asc" }],
@@ -165,22 +276,36 @@ router.get("/", async (req, res) => {
       }),
     ]);
 
-    // Statistika za izabrani period
+    // Dodaj zastavice isToday i canEdit za svaki zapis
+    const entries = rawEntries.map((entry) => {
+      const isToday = isRecordFromToday(entry);
+      const isOwner =
+        entry.createdById === req.user.id ||
+        (linkedWorker && entry.workerId === linkedWorker.id);
+      const canEdit = isManager || (isOwner && isToday);
+      return {
+        ...entry,
+        isToday,
+        canEdit,
+      };
+    });
+
+    // Statistika iz baze za ceo filtrirani opseg (bez učitavanja svih redova u memoriju)
     let totalCostPeriod = 0;
     let enpCostPeriod = 0;
     let cashCardCostPeriod = 0;
 
-    for (const entry of entries) {
-      const amt = Number(entry.amount || 0);
+    for (const grp of entriesByMethod) {
+      const amt = Number(grp._sum?.amount || 0);
       totalCostPeriod += amt;
-      if (entry.paymentMethod === "ENP_TAG") {
+      if (grp.paymentMethod === "ENP_TAG") {
         enpCostPeriod += amt;
       } else {
         cashCardCostPeriod += amt;
       }
     }
 
-    const totalTopUpsPeriod = topUps.reduce((acc, t) => acc + Number(t.amount || 0), 0);
+    const totalTopUpsPeriod = Number(topUpsAgg?._sum?.amount || 0);
 
     // Zbirno stanje na svim ENP tagovima (kamioni i mašine koje imaju ENP tag ili su tipa KAMION)
     const taggedVehicles = vehicles.filter(
@@ -193,11 +318,25 @@ router.get("/", async (req, res) => {
       topUps,
       vehicles,
       taggedVehicles,
+      currentWorker: linkedWorker ? { id: linkedWorker.id, name: linkedWorker.name } : null,
+      entriesPagination: {
+        total: totalEntriesCount,
+        page: entriesPageNum,
+        limit: takeLimit,
+        totalPages: Math.max(1, Math.ceil(totalEntriesCount / takeLimit)),
+      },
+      topUpsPagination: {
+        total: totalTopUpsCount,
+        page: topUpsPageNum,
+        limit: takeLimit,
+        totalPages: Math.max(1, Math.ceil(totalTopUpsCount / takeLimit)),
+      },
       stats: {
         totalCostPeriod: Math.round(totalCostPeriod),
         enpCostPeriod: Math.round(enpCostPeriod),
         cashCardCostPeriod: Math.round(cashCardCostPeriod),
-        totalEntriesCount: entries.length,
+        totalEntriesCount,
+        totalTopUpsCount,
         totalTopUpsPeriod: Math.round(totalTopUpsPeriod),
         totalTagBalance: Math.round(totalTagBalance),
       },
@@ -225,10 +364,34 @@ router.post("/", async (req, res) => {
     }
 
     const data = parsed.data;
+    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
+
     const machine = await prisma.machine.findUnique({ where: { id: data.machineId } });
     if (!machine) {
       return res.status(404).json({ error: "Izabrano vozilo nije pronađeno." });
     }
+
+    // Za radnika (ne-menadžera) uvek vezujemo unos za njegov sopstveni profil radnika
+    let finalWorkerId = data.workerId;
+    if (!isManager) {
+      const linkedWorker = await resolveWorkerForUser(req.user, true);
+      if (!linkedWorker) {
+        return res.status(400).json({ error: "Nije moguće povezati profil radnika za vaš nalog." });
+      }
+      finalWorkerId = linkedWorker.id;
+    } else if (!finalWorkerId) {
+      const linkedWorker = await resolveWorkerForUser(req.user, true);
+      if (linkedWorker) {
+        finalWorkerId = linkedWorker.id;
+      }
+    }
+
+    if (!finalWorkerId) {
+      return res.status(400).json({ error: "Vozač / radnik je obavezan." });
+    }
+
+    // Radnik unosi putarinu za tekući (današnji) dan; menadžer može izabrati bilo koji datum
+    const entryDate = isManager && data.date ? parseLocalDate(data.date) : new Date();
 
     const resolvedTagNumber = data.tagNumber?.trim() || machine.enpTagNumber || null;
     const resolvedRoute =
@@ -240,9 +403,9 @@ router.post("/", async (req, res) => {
     const entry = await prisma.$transaction(async (tx) => {
       const created = await tx.tollEntry.create({
         data: {
-          date: data.date ? new Date(data.date) : new Date(),
+          date: entryDate,
           machineId: data.machineId,
-          workerId: data.workerId,
+          workerId: finalWorkerId,
           amount: data.amount,
           paymentMethod: data.paymentMethod,
           tagNumber: resolvedTagNumber,
@@ -306,9 +469,9 @@ router.post("/", async (req, res) => {
 });
 
 // ==========================================
-// 3. IZMENA PUTARINE (DIREKTOR I RUKOVODILAC)
+// 3. IZMENA PUTARINE (MENADŽERI UVEK, RADNIK SAMO SVOJ UNOS DO KRAJA DANA)
 // ==========================================
-router.put("/:id", requireManager, async (req, res) => {
+router.put("/:id", async (req, res) => {
   try {
     const existing = await prisma.tollEntry.findUnique({
       where: { id: req.params.id },
@@ -317,6 +480,28 @@ router.put("/:id", requireManager, async (req, res) => {
 
     if (!existing) {
       return res.status(404).json({ error: "Zapis o putarini nije pronađen." });
+    }
+
+    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
+
+    if (!isManager) {
+      const linkedWorker = await resolveWorkerForUser(req.user, false);
+      const isOwner =
+        existing.createdById === req.user.id ||
+        (linkedWorker && existing.workerId === linkedWorker.id);
+
+      if (!isOwner) {
+        return res.status(403).json({
+          error: "Možete menjati isključivo sopstvene unose putarina.",
+        });
+      }
+
+      if (!isRecordFromToday(existing)) {
+        return res.status(403).json({
+          error:
+            "Rok za izmenu je istekao. Putarinu možete menjati samo do kraja dana u kojem je uneta.",
+        });
+      }
     }
 
     const parsed = tollEntrySchema.partial().safeParse({
@@ -371,9 +556,9 @@ router.put("/:id", requireManager, async (req, res) => {
       const record = await tx.tollEntry.update({
         where: { id: existing.id },
         data: {
-          ...(data.date ? { date: new Date(data.date) } : {}),
+          ...(isManager && data.date ? { date: parseLocalDate(data.date) } : {}),
           machineId: newMachineId,
-          ...(data.workerId ? { workerId: data.workerId } : {}),
+          ...(isManager && data.workerId ? { workerId: data.workerId } : {}),
           amount: newAmount,
           paymentMethod: newPaymentMethod,
           ...(data.tagNumber !== undefined ? { tagNumber: data.tagNumber?.trim() || null } : {}),
@@ -414,9 +599,9 @@ router.put("/:id", requireManager, async (req, res) => {
 });
 
 // ==========================================
-// 4. BRISANJE PUTARINE (DIREKTOR I RUKOVODILAC)
+// 4. BRISANJE PUTARINE (MENADŽERI UVEK, RADNIK SAMO SVOJ UNOS DO KRAJA DANA)
 // ==========================================
-router.delete("/:id", requireManager, async (req, res) => {
+router.delete("/:id", async (req, res) => {
   try {
     const existing = await prisma.tollEntry.findUnique({
       where: { id: req.params.id },
@@ -425,6 +610,28 @@ router.delete("/:id", requireManager, async (req, res) => {
 
     if (!existing) {
       return res.status(404).json({ error: "Zapis o putarini nije pronađen." });
+    }
+
+    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
+
+    if (!isManager) {
+      const linkedWorker = await resolveWorkerForUser(req.user, false);
+      const isOwner =
+        existing.createdById === req.user.id ||
+        (linkedWorker && existing.workerId === linkedWorker.id);
+
+      if (!isOwner) {
+        return res.status(403).json({
+          error: "Možete brisati isključivo sopstvene unose putarina.",
+        });
+      }
+
+      if (!isRecordFromToday(existing)) {
+        return res.status(403).json({
+          error:
+            "Rok za brisanje je istekao. Putarinu možete obrisati samo do kraja dana u kojem je uneta.",
+        });
+      }
     }
 
     await prisma.$transaction(async (tx) => {

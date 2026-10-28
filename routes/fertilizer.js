@@ -488,6 +488,10 @@ const updateMovementSchema = z.object({
   warehouseLocation: z.string().max(120).optional().nullable(),
   date: z.string().optional().nullable(),
   notes: z.string().max(500).optional().nullable(),
+  parcelId: z.string().optional().nullable(),
+  receivedWorkerId: z.string().optional().nullable(),
+  cropName: z.string().max(120).optional().nullable(),
+  areaHa: z.number().positive("Površina parcele mora biti veća od 0 ha").optional().nullable(),
 });
 
 router.put("/movements/:id", async (req, res) => {
@@ -584,6 +588,14 @@ router.put("/movements/:id", async (req, res) => {
         }
       }
 
+      // Ažuriraj dozu kg/ha ako je u pitanju izdavanje na njivu
+      let newKgPerHa = existing.kgPerHa;
+      const targetAreaHa = data.areaHa !== undefined ? data.areaHa : existing.areaHa;
+      if (existing.movementType === "IZDAVANJE_NJIVA" && targetAreaHa && targetAreaHa > 0) {
+        const baseQty = toBaseKgOrL(newQty, product.unit);
+        newKgPerHa = Number((baseQty / targetAreaHa).toFixed(2));
+      }
+
       const updated = await tx.fertilizerMovement.update({
         where: { id: existing.id },
         data: {
@@ -594,6 +606,11 @@ router.put("/movements/:id", async (req, res) => {
           ...(data.receiptNumber !== undefined && { receiptNumber: data.receiptNumber?.trim() || null }),
           ...(data.warehouseLocation !== undefined && { warehouseLocation: data.warehouseLocation?.trim() || null }),
           ...(data.notes !== undefined && { notes: data.notes?.trim() || null }),
+          ...(data.parcelId !== undefined && { parcelId: data.parcelId || null }),
+          ...(data.receivedWorkerId !== undefined && { receivedWorkerId: data.receivedWorkerId || null }),
+          ...(data.cropName !== undefined && { cropName: data.cropName?.trim() || null }),
+          ...(data.areaHa !== undefined && { areaHa: data.areaHa || null }),
+          ...(newKgPerHa !== undefined && { kgPerHa: newKgPerHa }),
           ...(movementDate && { date: movementDate }),
         },
         include: {
@@ -601,7 +618,7 @@ router.put("/movements/:id", async (req, res) => {
           supplier: true,
           parcel: true,
           issuedBy: { select: { id: true, name: true, role: true } },
-          receivedWorker: { select: { id: true, name: true } },
+          receivedWorker: { select: { id: true, name: true, type: true } },
         },
       });
 
@@ -1040,7 +1057,9 @@ router.post("/issue", requireWarehouseAccess, async (req, res) => {
       message:
         data.movementType === "IZDAVANJE_NJIVA"
           ? `Izdato ${data.quantity} ${product.unit} đubriva „${product.name}” za parcelu „${parcel?.name}” (Doza: ${calculatedKgPerHa} kg/ha).`
-          : `Promena zaliha uspešno evidentirana. Novo stanje: ${result.updatedProduct.currentStock} ${product.unit}.`,
+          : data.movementType === "POVRAT_SA_NJIVE"
+          ? `Uspešno evidentiran povrat sa njive: +${data.quantity} ${product.unit} đubriva „${product.name}” vraćeno sa parcele „${parcel?.name || ''}”. Novo stanje u magacinu: ${result.updatedProduct.currentStock} ${product.unit}.`
+          : `Uspešno evidentiran otpis/kalo: -${data.quantity} ${product.unit} đubriva „${product.name}”. Novo stanje u magacinu: ${result.updatedProduct.currentStock} ${product.unit}.`,
       movement: result.movement,
       product: result.updatedProduct,
       isBelowMinWarning: isBelowMinAfter,
@@ -1098,6 +1117,8 @@ router.get("/parcel-summary", async (req, res) => {
           parcelName: m.parcel.name,
           areaHa: m.parcel.areaHa,
           currentCrop: m.cropName || m.parcel.currentCrop || "Nije navedeno",
+          totalIssuedKg: 0,
+          totalReturnedKg: 0,
           totalKgApplied: 0,
           totalCostRSD: 0,
           applicationsCount: 0,
@@ -1107,15 +1128,21 @@ router.get("/parcel-summary", async (req, res) => {
       }
 
       const entry = parcelMap.get(pId);
-      const sign = m.movementType === "POVRAT_SA_NJIVE" ? -1 : 1;
-      const qtyKg = toBaseKgOrL(m.quantity, m.product.unit) * sign;
+      const isReturn = m.movementType === "POVRAT_SA_NJIVE";
+      const sign = isReturn ? -1 : 1;
+      const baseQty = toBaseKgOrL(m.quantity, m.product.unit);
+      const qtyKg = baseQty * sign;
       const cost = (m.totalCost || 0) * sign;
+
+      if (isReturn) {
+        entry.totalReturnedKg = Number((entry.totalReturnedKg + baseQty).toFixed(2));
+      } else {
+        entry.totalIssuedKg = Number((entry.totalIssuedKg + baseQty).toFixed(2));
+        entry.applicationsCount += 1;
+      }
 
       entry.totalKgApplied = Math.max(0, Number((entry.totalKgApplied + qtyKg).toFixed(2)));
       entry.totalCostRSD = Math.max(0, Math.round(entry.totalCostRSD + cost));
-      if (m.movementType === "IZDAVANJE_NJIVA") {
-        entry.applicationsCount += 1;
-      }
 
       const prodName = m.product.name;
       if (!entry.productsBreakdown[prodName]) {
@@ -1146,6 +1173,8 @@ router.get("/parcel-summary", async (req, res) => {
         parcelName: item.parcelName,
         areaHa: item.areaHa,
         currentCrop: item.currentCrop,
+        totalIssuedKg: item.totalIssuedKg,
+        totalReturnedKg: item.totalReturnedKg,
         totalKgApplied: item.totalKgApplied,
         avgKgPerHa,
         applicationsCount: item.applicationsCount,

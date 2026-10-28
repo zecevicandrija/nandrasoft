@@ -50,8 +50,11 @@ async function getOperatorFilter(userId) {
 // ==========================================
 router.get("/stats", async (req, res) => {
   try {
+    const { dateFrom, dateTo, period } = req.query;
+
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
     // Početak tekuće nedelje (ponedeljak)
     const dayOfWeek = now.getDay() === 0 ? 6 : now.getDay() - 1;
@@ -68,29 +71,55 @@ router.get("/stats", async (req, res) => {
     }
 
     const todayWhere = {
-      date: { gte: todayStart },
+      date: { gte: todayStart, lte: todayEnd },
       status: { not: "STORNO" },
       ...(operatorFilter ? operatorFilter : {}),
     };
 
     const weekWhere = {
-      date: { gte: weekStart },
+      date: { gte: weekStart, lte: todayEnd },
       status: { not: "STORNO" },
       ...(operatorFilter ? operatorFilter : {}),
     };
 
     const monthWhere = {
-      date: { gte: monthStart },
+      date: { gte: monthStart, lte: todayEnd },
       status: { not: "STORNO" },
       ...(operatorFilter ? operatorFilter : {}),
     };
+
+    // Dinamički filter za izabrani raspon (Danas / Ova Nedelja / Ovaj Mesec / Prilagođen raspon / Svi unosi)
+    const currentWhere = {
+      status: { not: "STORNO" },
+      ...(operatorFilter ? operatorFilter : {}),
+    };
+
+    if (dateFrom || dateTo) {
+      currentWhere.date = {};
+      if (dateFrom) {
+        const start = new Date(String(dateFrom));
+        start.setHours(0, 0, 0, 0);
+        currentWhere.date.gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(String(dateTo));
+        end.setHours(23, 59, 59, 999);
+        currentWhere.date.lte = end;
+      }
+    } else if (period === "danas") {
+      currentWhere.date = { gte: todayStart, lte: todayEnd };
+    } else if (period === "nedelja") {
+      currentWhere.date = { gte: weekStart, lte: todayEnd };
+    } else if (period === "mesec") {
+      currentWhere.date = { gte: monthStart, lte: todayEnd };
+    }
 
     const groupWhere = {
       status: { not: "STORNO" },
       ...(operatorFilter ? operatorFilter : {}),
     };
 
-    const [allWorksToday, allWorksWeek, allWorksMonth, workTypesBreakdown] = await Promise.all([
+    const [allWorksToday, allWorksWeek, allWorksMonth, currentWorks, workTypesBreakdown] = await Promise.all([
       prisma.fieldWork.findMany({
         where: todayWhere,
         include: {
@@ -107,6 +136,10 @@ router.get("/stats", async (req, res) => {
       prisma.fieldWork.findMany({
         where: monthWhere,
       }),
+      prisma.fieldWork.findMany({
+        where: currentWhere,
+        select: { id: true, date: true, areaDoneHa: true, workHours: true, machineId: true },
+      }),
       prisma.fieldWork.groupBy({
         by: ["workTypeId"],
         where: groupWhere,
@@ -122,6 +155,10 @@ router.get("/stats", async (req, res) => {
     const totalHoursWeek = allWorksWeek.reduce((sum, w) => sum + (w.workHours || 0), 0);
 
     const totalAreaMonth = allWorksMonth.reduce((sum, w) => sum + (w.areaDoneHa || 0), 0);
+
+    const currentArea = currentWorks.reduce((sum, w) => sum + (w.areaDoneHa || 0), 0);
+    const currentHours = currentWorks.reduce((sum, w) => sum + (w.workHours || 0), 0);
+    const currentCount = currentWorks.length;
 
     // Detekcija radova gde traktor nije imao zaduženje (današnji i ukupni nerešeni)
     const [allActiveWorks, allAssignments] = await Promise.all([
@@ -141,7 +178,10 @@ router.get("/stats", async (req, res) => {
     let unassignedWorksWeek = 0;
     let unassignedWorksMonth = 0;
     let unassignedWorksTotal = 0;
+    let unassignedWorksCurrent = 0;
     const todayDateStr = todayStart.toDateString();
+
+    const currentWorkIds = new Set(currentWorks.map((w) => w.id));
 
     for (const w of allActiveWorks) {
       const wDate = new Date(w.date);
@@ -154,17 +194,26 @@ router.get("/stats", async (req, res) => {
         if (workDateStr === todayDateStr) {
           unassignedWorksToday++;
         }
-        if (wDate >= weekStart) {
+        if (wDate >= weekStart && wDate <= todayEnd) {
           unassignedWorksWeek++;
         }
-        if (wDate >= monthStart) {
+        if (wDate >= monthStart && wDate <= todayEnd) {
           unassignedWorksMonth++;
+        }
+        if (currentWorkIds.has(w.id)) {
+          unassignedWorksCurrent++;
         }
       }
     }
 
     res.json({
       unassignedWarningsTotal: unassignedWorksTotal,
+      current: {
+        count: currentCount,
+        areaDoneHa: Math.round(currentArea * 100) / 100,
+        workHours: Math.round(currentHours * 10) / 10,
+        unassignedWarnings: unassignedWorksCurrent,
+      },
       today: {
         count: allWorksToday.length,
         areaDoneHa: Math.round(totalAreaToday * 100) / 100,
@@ -471,7 +520,7 @@ router.post("/", async (req, res) => {
     const maxAllowedHa = Math.round(parcel.areaHa * 1.2 * 100) / 100;
     if (areaDoneHa > maxAllowedHa) {
       return res.status(400).json({
-        error: `Uneti hektari (${areaDoneHa} ha) prelaze maksimalno dozvoljenu površinu za parcelu "${parcel.name}" od ${maxAllowedHa} ha (ukupna površina ${parcel.areaHa} ha + 20% tolerancije). Molimo proverite unos.`,
+        error: `Uneti hektari (${areaDoneHa} ha) prelaze maksimalnu dozvoljenu površinu za parcelu "${parcel.name}" od ${maxAllowedHa} ha (ukupna površina ${parcel.areaHa} ha + 20% tolerancije). Molimo proverite unos.`,
       });
     }
 
@@ -704,9 +753,6 @@ router.post("/", async (req, res) => {
   }
 });
 
-// ==========================================
-// 4. IZMENA RADA NA NJIVI
-// ==========================================
 // ==========================================
 // 4. IZMENA RADA NA NJIVI (UZ PROVERU PRAVA I AUDIT LOG)
 // ==========================================
