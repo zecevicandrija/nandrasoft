@@ -172,7 +172,11 @@ router.get("/stats", async (req, res) => {
 // ==========================================
 router.get("/issues", async (req, res) => {
   try {
-    const { status, machineId, priority, serviceType, search } = req.query;
+    const { status, machineId, priority, serviceType, search, page, limit } = req.query;
+
+    const takeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+    const pageNum = Math.max(1, Number(page) || 1);
+    const skip = (pageNum - 1) * takeLimit;
 
     const where = {};
 
@@ -197,21 +201,34 @@ router.get("/issues", async (req, res) => {
       ];
     }
 
-    const issues = await prisma.maintenanceIssue.findMany({
-      where,
-      include: {
-        machine: true,
-        reportedBy: { select: { id: true, name: true, phone: true } },
-        mechanic: { select: { id: true, name: true, phone: true } },
-        servicePartner: { select: { id: true, name: true, phone: true } },
-        parcel: { select: { id: true, code: true, name: true } },
-        workOrder: { select: { id: true, orderNumber: true, status: true } },
-        createdBy: { select: { id: true, name: true, role: true } },
-      },
-      orderBy: [{ dateReported: "desc" }, { createdAt: "desc" }],
-    });
+    const [issues, total] = await Promise.all([
+      prisma.maintenanceIssue.findMany({
+        where,
+        include: {
+          machine: true,
+          reportedBy: { select: { id: true, name: true, phone: true } },
+          mechanic: { select: { id: true, name: true, phone: true } },
+          servicePartner: { select: { id: true, name: true, phone: true } },
+          parcel: { select: { id: true, code: true, name: true } },
+          workOrder: { select: { id: true, orderNumber: true, status: true } },
+          createdBy: { select: { id: true, name: true, role: true } },
+        },
+        orderBy: [{ dateReported: "desc" }, { createdAt: "desc" }],
+        skip,
+        take: takeLimit,
+      }),
+      prisma.maintenanceIssue.count({ where }),
+    ]);
 
-    res.json({ issues });
+    const totalPages = Math.max(1, Math.ceil(total / takeLimit));
+
+    res.json({
+      issues,
+      total,
+      page: pageNum,
+      limit: takeLimit,
+      totalPages,
+    });
   } catch (error) {
     console.error("Greška pri dohvatanju kvarova:", error);
     res.status(500).json({ error: "Greška na serveru." });
@@ -304,12 +321,18 @@ router.post("/issues", async (req, res) => {
 // ==========================================
 router.get("/remont-orders", async (req, res) => {
   try {
+    const { page, limit, machineId, workerId, search } = req.query;
+
+    const takeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+    const pageNum = Math.max(1, Number(page) || 1);
+    const skip = (pageNum - 1) * takeLimit;
+
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
-    let orders = await prisma.workOrder.findMany({
-      where: {
-        orderType: "REMONT_SERVIS",
+    const andConditions = [
+      { orderType: "REMONT_SERVIS" },
+      {
         OR: [
           // 1. Svi nalozi koji još uvek nisu završeni ili otkazani
           { status: { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] } },
@@ -320,15 +343,39 @@ router.get("/remont-orders", async (req, res) => {
           },
         ],
       },
-      include: {
-        machine: true,
-        attachment: true,
-        worker: true,
-        issuedBy: { select: { id: true, name: true, role: true } },
-        maintenance: true,
-      },
-      orderBy: [{ orderDate: "desc" }, { createdAt: "desc" }],
-    });
+    ];
+
+    if (machineId) andConditions.push({ machineId: String(machineId) });
+    if (workerId) andConditions.push({ workerId: String(workerId) });
+    if (search) {
+      andConditions.push({
+        OR: [
+          { orderNumber: { contains: String(search), mode: "insensitive" } },
+          { instructions: { contains: String(search), mode: "insensitive" } },
+          { machine: { name: { contains: String(search), mode: "insensitive" } } },
+          { worker: { name: { contains: String(search), mode: "insensitive" } } },
+        ],
+      });
+    }
+
+    const where = { AND: andConditions };
+
+    const [orders, total] = await Promise.all([
+      prisma.workOrder.findMany({
+        where,
+        include: {
+          machine: true,
+          attachment: true,
+          worker: true,
+          issuedBy: { select: { id: true, name: true, role: true } },
+          maintenance: true,
+        },
+        orderBy: [{ orderDate: "desc" }, { createdAt: "desc" }],
+        skip,
+        take: takeLimit,
+      }),
+      prisma.workOrder.count({ where }),
+    ]);
 
     // Automatska sinhronizacija: ako neki nalog za remont nema povezan MaintenanceIssue, kreiraj ga odmah
     for (let i = 0; i < orders.length; i++) {
@@ -392,7 +439,15 @@ router.get("/remont-orders", async (req, res) => {
       }
     }
 
-    res.json({ orders });
+    const totalPages = Math.max(1, Math.ceil(total / takeLimit));
+
+    res.json({
+      orders,
+      total,
+      page: pageNum,
+      limit: takeLimit,
+      totalPages,
+    });
   } catch (error) {
     console.error("Greška pri dohvatanju naloga za remont:", error);
     res.status(500).json({ error: "Greška na serveru." });
@@ -899,7 +954,11 @@ router.put("/issues/:id/resolve", async (req, res) => {
 // ==========================================
 router.get("/history", async (req, res) => {
   try {
-    const { machineId, dateFrom, dateTo } = req.query;
+    const { machineId, dateFrom, dateTo, search, page, limit } = req.query;
+
+    const takeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+    const pageNum = Math.max(1, Number(page) || 1);
+    const skip = (pageNum - 1) * takeLimit;
 
     const where = {
       status: "POPRAVLJENO",
@@ -917,19 +976,42 @@ router.get("/history", async (req, res) => {
       }
     }
 
-    const history = await prisma.maintenanceIssue.findMany({
-      where,
-      include: {
-        machine: true,
-        mechanic: { select: { id: true, name: true, phone: true } },
-        reportedBy: { select: { id: true, name: true } },
-        servicePartner: { select: { id: true, name: true } },
-        workOrder: { select: { id: true, orderNumber: true } },
-      },
-      orderBy: { repairedAt: "desc" },
-    });
+    if (search) {
+      where.OR = [
+        { title: { contains: String(search), mode: "insensitive" } },
+        { repairNotes: { contains: String(search), mode: "insensitive" } },
+        { partsReplaced: { contains: String(search), mode: "insensitive" } },
+        { lubricantType: { contains: String(search), mode: "insensitive" } },
+        { machine: { name: { contains: String(search), mode: "insensitive" } } },
+      ];
+    }
 
-    res.json({ history });
+    const [history, total] = await Promise.all([
+      prisma.maintenanceIssue.findMany({
+        where,
+        include: {
+          machine: true,
+          mechanic: { select: { id: true, name: true, phone: true } },
+          reportedBy: { select: { id: true, name: true } },
+          servicePartner: { select: { id: true, name: true } },
+          workOrder: { select: { id: true, orderNumber: true } },
+        },
+        orderBy: { repairedAt: "desc" },
+        skip,
+        take: takeLimit,
+      }),
+      prisma.maintenanceIssue.count({ where }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / takeLimit));
+
+    res.json({
+      history,
+      total,
+      page: pageNum,
+      limit: takeLimit,
+      totalPages,
+    });
   } catch (error) {
     console.error("Greška pri dohvatanju istorijata popravki:", error);
     res.status(500).json({ error: "Greška na serveru." });

@@ -477,6 +477,13 @@ const machines = [
 
 const workers = [
   {
+    name: "Bojan Ćorović",
+    type: "STALNI",
+    role: "MAGACIN",
+    phone: "+381 64 333 4455",
+    hourlyRate: 600,
+  },
+  {
     name: "Marko Operater",
     type: "STALNI",
     phone: "+381 64 555 6677",
@@ -682,8 +689,10 @@ async function seed() {
   console.log("\n8️⃣ Kreiranje operativnih podataka za Fazu 2...");
   const adminUser = await prisma.user.findFirst({ where: { role: "DIREKTOR" } });
   const jdMachine = await prisma.machine.findFirst({ where: { name: { contains: "John Deere" } } });
-  const pumaMachine = await prisma.machine.findFirst({ where: { name: { contains: "Puma" } } });
-  const imtMachine = await prisma.machine.findFirst({ where: { name: { contains: "IMT" } } });
+  const pumaMachine =
+    (await prisma.machine.findFirst({ where: { name: { contains: "Claas" } } })) || jdMachine;
+  const imtMachine =
+    (await prisma.machine.findFirst({ where: { name: { contains: "Fendt" } } })) || jdMachine;
 
   const markoWorker = await prisma.worker.findFirst({ where: { name: { contains: "Marko" } } });
   const radovanWorker = await prisma.worker.findFirst({ where: { name: { contains: "Radovan" } } });
@@ -792,6 +801,266 @@ async function seed() {
         ],
       });
       console.log(`  🌾 Kreirani početni operativni radovi na njivi (4 zapisa)`);
+    }
+  }
+
+  // 9. FAZA 5: MODUL LUK & HLADNJAČA (6 komora x 720 boksova = 4.800t luka, Bojan Ćorović, Pakerica 4 žene, 10kg i 5kg džakovi)
+  if (adminUser && parcelP01) {
+    console.log("\n9️⃣ Ažuriranje podataka za Modul LUK prema stvarnom stanju hladnjače (6 komora / 4.800t)...");
+    const magacinUser =
+      (await prisma.user.findFirst({ where: { role: "MAGACIN" } })) || adminUser;
+
+    // Postavi ime magacionera na Bojan Ćorović (zadužen za ulaz, izlaz i pakovanje luka)
+    if (magacinUser && magacinUser.email === "magacin@nandra.rs" && magacinUser.name !== "Bojan Ćorović") {
+      await prisma.user.update({
+        where: { id: magacinUser.id },
+        data: { name: "Bojan Ćorović" },
+      });
+    }
+
+    const bojanWorker = await prisma.worker.findFirst({
+      where: { name: { contains: "Bojan" } },
+    });
+
+    const buyerPartner =
+      (await prisma.partner.findFirst({ where: { type: { in: ["KUPAC", "OBA"] } } })) ||
+      (await prisma.partner.create({
+        data: {
+          name: "Delta Agrar / Maxi Market",
+          type: "KUPAC",
+          pib: "101699205",
+          address: "Novi Beograd",
+        },
+      }));
+
+    // Očisti prethodne demo podatke ako ih je bilo manje od 6 komora da bi se kreiralo tačnih 6 komora i 4.800t
+    const currentStorageCount = await prisma.onionStorageEntry.count();
+    if (currentStorageCount < 6) {
+      await prisma.onionShipmentItem.deleteMany({});
+      await prisma.onionShipment.deleteMany({});
+      await prisma.onionPackaging.deleteMany({});
+      await prisma.onionSorting.deleteMany({});
+      await prisma.onionWaste.deleteMany({});
+      await prisma.onionStorageEntry.deleteMany({});
+      await prisma.onionHarvestArrival.deleteMany({});
+      await prisma.onionLot.deleteMany({});
+
+      const parcelP03 = (await prisma.parcel.findUnique({ where: { code: "P-03" } })) || parcelP01;
+      const parcelP04 = (await prisma.parcel.findUnique({ where: { code: "P-04" } })) || parcelP01;
+      const parcelP06 = (await prisma.parcel.findUnique({ where: { code: "P-06" } })) || parcelP01;
+
+      // Kreiramo 6 komora po 720 boks paleta (dim 160x120x120 cm, 1100 kg u boks, 800 t po komori = 4.800 t ukupno u hladnjači)
+      // + dodatnih 30 tona koje su prošle kroz sortiranje, pakericu (4 žene, 100 džakova po 10kg na paleti i 200 džakova po 5kg) i isporuku
+      const chamberConfigs = [
+        {
+          lotNumber: "LOT-20261029-P01-01",
+          chamberName: "Komora 1",
+          hasEquipment: true,
+          parcel: parcelP01,
+          variety: "Žuti holandski (Rijnsburger)",
+          boxCount: 720,
+          currentStoKg: 800000, // 800 t trenutno u Komori 1
+          extraSortedKg: 20000, // 20 t već sortirano i spakovano na pakerici
+          temp: 1.5,
+          hum: 72,
+        },
+        {
+          lotNumber: "LOT-20261029-P02-01",
+          chamberName: "Komora 2",
+          hasEquipment: true,
+          parcel: parcelP02 || parcelP01,
+          variety: "Žuti holandski (Rijnsburger)",
+          boxCount: 720,
+          currentStoKg: 800000, // 800 t u Komori 2 (sa opremom)
+          extraSortedKg: 0,
+          temp: 1.5,
+          hum: 72,
+        },
+        {
+          lotNumber: "LOT-20261029-P03-01",
+          chamberName: "Komora 3",
+          hasEquipment: true,
+          parcel: parcelP03,
+          variety: "Žuti holandski (Rijnsburger)",
+          boxCount: 720,
+          currentStoKg: 800000, // 800 t u Komori 3 (sa opremom) -> Ukupno Komore 1-3 = 2.400 t
+          extraSortedKg: 0,
+          temp: 1.6,
+          hum: 73,
+        },
+        {
+          lotNumber: "LOT-20261029-P04-01",
+          chamberName: "Komora 4",
+          hasEquipment: false,
+          parcel: parcelP04,
+          variety: "Žuti holandski",
+          boxCount: 720,
+          currentStoKg: 800000, // 800 t u Komori 4 (bez opreme)
+          extraSortedKg: 0,
+          temp: 4.0,
+          hum: 68,
+        },
+        {
+          lotNumber: "LOT-20261029-P05-01",
+          chamberName: "Komora 5",
+          hasEquipment: false,
+          parcel: parcelP05 || parcelP01,
+          variety: "Crveni luk (Ptujski)",
+          boxCount: 720,
+          currentStoKg: 800000, // 800 t u Komori 5 (bez opreme)
+          extraSortedKg: 0,
+          temp: 4.2,
+          hum: 68,
+        },
+        {
+          lotNumber: "LOT-20261029-P06-01",
+          chamberName: "Komora 6",
+          hasEquipment: false,
+          parcel: parcelP06,
+          variety: "Žuti holandski",
+          boxCount: 720,
+          currentStoKg: 800000, // 800 t u Komori 6 (bez opreme) -> Ukupno Komore 4-6 = 2.400 t (Sve ukupno = 4.800 t!)
+          extraSortedKg: 0,
+          temp: 4.0,
+          hum: 69,
+        },
+      ];
+
+      for (const cfg of chamberConfigs) {
+        const initialKg = cfg.currentStoKg + cfg.extraSortedKg;
+        const isFirst = cfg.extraSortedKg > 0;
+
+        const lot = await prisma.onionLot.create({
+          data: {
+            lotNumber: cfg.lotNumber,
+            status: isFirst ? "U_OBRADI" : "NA_STANJU",
+            parcelId: cfg.parcel.id,
+            cropVariety: cfg.variety,
+            initialQuantityKg: initialKg,
+            rawStockKg: cfg.currentStoKg,
+            sortedQualityKg: isFirst ? 18000 : 0,
+            sortedSmallKg: isFirst ? 1200 : 0,
+            sortedWasteKg: isFirst ? 800 : 0,
+            packagedStockKg: isFirst ? 10000 : 0,
+            shippedKg: isFirst ? 8000 : 0,
+            totalWasteKg: isFirst ? 800 : 0,
+            notes: `${cfg.chamberName} (${cfg.hasEquipment ? "Sa opremom" : "Bez opreme"}) — 720 boks paleta dim. 160x120x120 cm (1.100 kg u boks)`,
+          },
+        });
+
+        await prisma.onionHarvestArrival.create({
+          data: {
+            lotId: lot.id,
+            parcelId: cfg.parcel.id,
+            quantityKg: initialKg,
+            vehicleId: jdMachine?.id || null,
+            driverId: bojanWorker?.id || markoWorker?.id || null,
+            trailerInfo: `${cfg.boxCount} boks paleta (160x120x120 cm)`,
+            supervisorId: magacinUser.id,
+            notes: `Prijem u hladnjaču (${cfg.chamberName}) — Zadužen: Bojan Ćorović`,
+          },
+        });
+
+        const stEntry = await prisma.onionStorageEntry.create({
+          data: {
+            lotId: lot.id,
+            storageType: "HLADNJACA",
+            locationOrChamber: cfg.chamberName,
+            hasEquipment: cfg.hasEquipment,
+            boxCount: cfg.boxCount,
+            quantityKg: initialKg,
+            currentQuantityKg: cfg.currentStoKg,
+            temperatureC: cfg.temp,
+            humidityPercent: cfg.hum,
+            supervisorId: magacinUser.id,
+            notes: `${cfg.boxCount} boksova dim. 160x120x120 cm (~1.100 kg/boks) | ${cfg.hasEquipment ? "Komora sa opremom" : "Komora bez opreme"}`,
+          },
+        });
+
+        if (isFirst) {
+          await prisma.onionSorting.create({
+            data: {
+              lotId: lot.id,
+              storageEntryId: stEntry.id,
+              inputQuantityKg: 20000,
+              qualityQuantityKg: 18000,
+              smallQuantityKg: 1200,
+              wasteQuantityKg: 800,
+              wastePercentage: 4.0,
+              supervisorId: magacinUser.id,
+              notes: "Kalibracija za pakericu — I klasa za džakove 10kg i 5kg",
+            },
+          });
+
+          // Pakovanje 1: Džakovi 10 kg (100 džakova po paleti = 1.000 kg po paleti) -> 1.400 džakova = 14 paleta (14.000 kg)
+          const pkg10kg = await prisma.onionPackaging.create({
+            data: {
+              lotId: lot.id,
+              packageType: "DZAK_10KG",
+              unitWeightKg: 10,
+              packageCount: 1400,
+              totalWeightKg: 14000,
+              availableCount: 600, // 6 paleta po 100 džakova na stanju
+              availableWeightKg: 6000,
+              palletsCount: 14,
+              palletNumber: "PAL-10KG-01..14 (100 džakova/paleti)",
+              packerCount: 4,
+              packerNotes: "Pakerica: 4 žene u smeni",
+              responsiblePerson: "Bojan Ćorović",
+              supervisorId: magacinUser.id,
+              notes: "Na paleti spakovanog luka staje 100 džakova po 10kg (1.000 kg/paleta)",
+            },
+          });
+
+          // Pakovanje 2: Džakovi 5 kg (200 džakova po paleti = 1.000 kg po paleti) -> 800 džakova = 4 palete (4.000 kg)
+          await prisma.onionPackaging.create({
+            data: {
+              lotId: lot.id,
+              packageType: "DZAK_5KG",
+              unitWeightKg: 5,
+              packageCount: 800,
+              totalWeightKg: 4000,
+              availableCount: 800, // 4 palete po 200 džakova na stanju
+              availableWeightKg: 4000,
+              palletsCount: 4,
+              palletNumber: "PAL-5KG-01..04 (200 džakova/paleti)",
+              packerCount: 4,
+              packerNotes: "Pakerica: 4 žene u smeni (pakovanje po 5kg)",
+              responsiblePerson: "Bojan Ćorović",
+              supervisorId: magacinUser.id,
+              notes: "Pakovanje u mrežaste džakove po 5kg (200 džakova na paleti = 1.000 kg)",
+            },
+          });
+
+          // Otpremnica kupcu za 800 džakova od 10kg (8 paleta = 8.000 kg)
+          await prisma.onionShipment.create({
+            data: {
+              dispatchNumber: "OTP-2026-0001",
+              buyerId: buyerPartner.id,
+              lotId: lot.id,
+              totalWeightKg: 8000,
+              totalPackagesCount: 800,
+              pricePerKg: 48,
+              totalValue: 384000,
+              vehicleReg: "VS-051-CK",
+              driverName: "Bojan Ćorović / Stefan",
+              supervisorId: magacinUser.id,
+              notes: "Isporučeno 8 paleta (800 džakova x 10kg) — Zadužen: Bojan Ćorović",
+              items: {
+                create: [
+                  {
+                    packagingId: pkg10kg.id,
+                    packageCount: 800,
+                    totalWeightKg: 8000,
+                  },
+                ],
+              },
+            },
+          });
+        }
+      }
+
+      console.log("  🧅 Kreirano svih 6 komora hladnjače (3 sa opremom + 3 bez opreme = 4.320 boksova / 4.800 tona luka) + Pakerica (4 žene, 10kg i 5kg)!");
     }
   }
 

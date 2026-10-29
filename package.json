@@ -3,7 +3,9 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch-path=routes --watch-path=middlewares --watch-path=lib --watch-path=index.js index.js",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "db:push": "prisma db push",
+    "db:generate": "prisma generate"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

@@ -388,7 +388,8 @@ router.get("/movements", async (req, res) => {
       workerId,
       dateFrom,
       dateTo,
-      limit = 100,
+      page,
+      limit = 25,
     } = req.query;
 
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
@@ -410,11 +411,17 @@ router.get("/movements", async (req, res) => {
       }
     }
 
-    const movements = await prisma.fertilizerMovement.findMany({
-      where,
-      take: Math.min(500, Math.max(1, Number(limit))),
-      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-      include: {
+    const pageNum = page ? Math.max(1, Number(page)) : null;
+    const limitNum = Math.min(500, Math.max(1, Number(limit) || 25));
+    const skip = pageNum ? (pageNum - 1) * limitNum : 0;
+
+    const [total, movements] = await Promise.all([
+      prisma.fertilizerMovement.count({ where }),
+      prisma.fertilizerMovement.findMany({
+        where,
+        ...(pageNum ? { skip, take: limitNum } : { take: limitNum }),
+        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+        include: {
         product: {
           select: {
             id: true,
@@ -448,15 +455,16 @@ router.get("/movements", async (req, res) => {
             role: true,
           },
         },
-        receivedWorker: {
-          select: {
-            id: true,
-            name: true,
-            type: true,
+          receivedWorker: {
+            select: {
+              id: true,
+              name: true,
+              type: true,
+            },
           },
         },
-      },
-    });
+      }),
+    ]);
 
     const todayStr = new Date().toDateString();
     const sanitized = movements.map((m) => {
@@ -469,7 +477,13 @@ router.get("/movements", async (req, res) => {
       return { ...rest, isToday, canEdit };
     });
 
-    res.json({ movements: sanitized });
+    res.json({
+      movements: sanitized,
+      total,
+      totalPages: Math.ceil(total / limitNum) || 1,
+      page: pageNum || 1,
+      limit: limitNum,
+    });
   } catch (error) {
     console.error("Greška pri dohvatanju kretanja đubriva:", error);
     res.status(500).json({ error: "Greška na serveru pri učitavanju istorijata kretanja." });

@@ -49,20 +49,41 @@ router.get("/stats", async (req, res) => {
 // ==========================================
 router.get("/active", async (req, res) => {
   try {
-    const active = await prisma.machineAssignment.findMany({
-      where: { status: "ZADUZENA" },
-      include: {
-        machine: true,
-        worker: true,
-        parcel: true,
-        createdBy: {
-          select: { id: true, name: true, role: true },
-        },
-      },
-      orderBy: { assignedAt: "desc" },
-    });
+    const { page = 1, limit = 25 } = req.query;
+    const where = { status: "ZADUZENA" };
 
-    res.json({ assignments: active });
+    if (req.user.role === "OPERATER") {
+      const opFilter = await getOperatorFilter(req.user.id);
+      where.AND = [opFilter];
+    }
+
+    const take = Math.min(Number(limit) || 25, 100);
+    const skip = ((Number(page) || 1) - 1) * take;
+
+    const [total, active] = await Promise.all([
+      prisma.machineAssignment.count({ where }),
+      prisma.machineAssignment.findMany({
+        where,
+        include: {
+          machine: true,
+          worker: true,
+          parcel: true,
+          createdBy: {
+            select: { id: true, name: true, role: true },
+          },
+        },
+        orderBy: { assignedAt: "desc" },
+        skip,
+        take,
+      }),
+    ]);
+
+    res.json({
+      total,
+      page: Number(page) || 1,
+      totalPages: Math.ceil(total / take),
+      assignments: active,
+    });
   } catch (error) {
     console.error("Greška pri dohvatanju aktivnih zaduženja:", error);
     res.status(500).json({ error: "Greška na serveru." });
@@ -88,7 +109,7 @@ async function getOperatorFilter(userId) {
 // ==========================================
 router.get("/", async (req, res) => {
   try {
-    const { machineId, workerId, parcelId, status, dateFrom, dateTo, limit = 50, page = 1 } = req.query;
+    const { machineId, workerId, parcelId, status, dateFrom, dateTo, limit = 25, page = 1 } = req.query;
 
     const where = {};
     if (machineId) where.machineId = String(machineId);
@@ -113,7 +134,7 @@ router.get("/", async (req, res) => {
       where.AND.push(opFilter);
     }
 
-    const take = Math.min(Number(limit) || 50, 100);
+    const take = Math.min(Number(limit) || 25, 100);
     const skip = ((Number(page) || 1) - 1) * take;
 
     const [total, assignments] = await Promise.all([

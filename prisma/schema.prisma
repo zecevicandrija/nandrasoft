@@ -44,7 +44,16 @@ model User {
   pushSubscriptions   PushSubscription[]
 
   // Faza 4 relacije
-  fertilizerMovements FertilizerMovement[]
+  fertilizerMovements    FertilizerMovement[]
+  supervisedSeasonalLogs SeasonalWorkLog[]    @relation("SeasonalSupervisor")
+
+  // Faza 5 relacije (Modul Luk)
+  onionHarvestArrivals   OnionHarvestArrival[]
+  onionStorageEntries    OnionStorageEntry[]
+  onionSortings          OnionSorting[]
+  onionPackagings        OnionPackaging[]
+  onionShipments         OnionShipment[]
+  onionWastes            OnionWaste[]
 
   @@map("user")
 }
@@ -60,6 +69,9 @@ model Worker {
   id         String     @id @default(cuid())
   name       String
   type       WorkerType @default(STALNI)
+  role       Role?      // RUKOVODILAC, MAGACIN, MEHANICAR, OPERATER
+  city       String?    // Grad / Mesto stanovanja
+  dailyWage  Float?     // Dnevnica u RSD (za sezonce)
   jmbg       String?
   phone      String?
   hourlyRate Float?     @default(0)
@@ -81,6 +93,9 @@ model Worker {
 
   // Faza 4 relacije
   fertilizerMovements FertilizerMovement[]
+
+  // Faza 5 relacije (Modul Luk)
+  onionHarvestArrivals OnionHarvestArrival[]
 
   @@map("worker")
 }
@@ -106,6 +121,11 @@ model Parcel {
 
   // Faza 4 relacije
   fertilizerMovements FertilizerMovement[]
+  seasonalWorkLogs    SeasonalWorkLog[]
+
+  // Faza 5 relacije (Modul Luk)
+  onionLots            OnionLot[]
+  onionHarvestArrivals OnionHarvestArrival[]
 
   @@map("parcel")
 }
@@ -159,6 +179,9 @@ model Machine {
   maintenanceIssues      MaintenanceIssue[]
   tollEntries            TollEntry[]
   tollTopUps             TollTopUp[]
+
+  // Faza 5 relacije (Modul Luk)
+  onionHarvestArrivals   OnionHarvestArrival[]
 
   @@map("machine")
 }
@@ -231,6 +254,9 @@ model Partner {
 
   // Faza 4 relacije
   fertilizerMovements FertilizerMovement[]
+
+  // Faza 5 relacije (Modul Luk)
+  onionShipments      OnionShipment[]
 
   @@map("partner")
 }
@@ -802,4 +828,346 @@ model FertilizerMovement {
   @@index([parcelId, date])
   @@index([movementType])
   @@map("fertilizer_movement")
+}
+
+// ==========================================
+// FAZA 4: SEZONSKI RADNICI & EVIDENCIJA RADA
+// ==========================================
+
+model SeasonalGroup {
+  id          String   @id @default(cuid())
+  name        String   @unique           // Jedinstveni naziv grupe (npr. "Grupa Kulpin")
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("seasonal_group")
+}
+
+model SeasonalWorker {
+  id              String            @id @default(cuid())
+  name            String            // Ime i prezime sezonca
+  phone           String?           // Broj telefona
+  city            String?           // Mesto / grad
+  
+  groupName       String?           // Naziv posade/grupe (opciono, npr. "Grupa Agim")
+  dailyWage       Float?            // Dnevnica u RSD (opciono)
+  
+  isActive        Boolean           @default(true)
+  notes           String?
+  
+  workLogs        SeasonalWorkLog[]
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([name])
+  @@index([groupName])
+  @@map("seasonal_worker")
+}
+
+model SeasonalWorkLog {
+  id                String          @id @default(cuid())
+  date              DateTime        @default(now())
+  
+  seasonalWorkerId  String
+  seasonalWorker    SeasonalWorker  @relation(fields: [seasonalWorkerId], references: [id], onDelete: Cascade)
+  
+  parcelId          String?
+  parcel            Parcel?         @relation(fields: [parcelId], references: [id], onDelete: SetNull)
+  
+  jobDescription    String          // npr. "Plevljenje luka", "Sečenje peruške", "Vađenje i pakovanje"
+  
+  // Radno vreme
+  startTime         String?         // npr. "07:00"
+  endTime           String?         // npr. "15:30"
+  breakMinutes      Int             @default(0) // Opciona pauza u minutima (npr. 30)
+  hoursWorked       Float           // Efektivni sati rada (npr. 8.0)
+  
+  // Finansije (opciono)
+  dailyWageApplied  Float?          // Dnevnica za taj dan (opciono)
+  
+  // Nadzor
+  supervisorId      String          // Poslovođa / rukovodilac sa terena
+  supervisor        User            @relation("SeasonalSupervisor", fields: [supervisorId], references: [id])
+  
+  // Podaci o posadi / grupi
+  groupName         String?         // Naziv posade ako je rad unet kao deo grupe
+  groupCount        Int?            // Broj ljudi u posadi tog dana
+  
+  notes             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([seasonalWorkerId, date])
+  @@index([parcelId, date])
+  @@index([date])
+  @@map("seasonal_work_log")
+}
+
+// ==========================================
+// FAZA 5: MODUL LUK — TOK ROBE & SLEDLJIVOST
+// ==========================================
+
+enum OnionLotStatus {
+  NA_STANJU      // Luk je na stanju (sirovina ili gotov proizvod)
+  U_OBRADI       // U procesu sortiranja / pakovanja
+  ISPORUCEN      // Ceo LOT je isporučen kupcima
+  ARHIVIRAN      // Završena sezona
+}
+
+enum OnionStorageType {
+  HLADNJACA
+  MAGACIN
+}
+
+enum OnionPackageType {
+  DZAK_5KG
+  DZAK_10KG
+  DZAK_25KG
+  DZAMBO_VRECA
+  BOKS_PALETA
+  RINFUZ
+  DRUGO
+}
+
+enum OnionWasteReason {
+  TRULEZ
+  MEHANICKO_OSTECENJE
+  KALO_SUSENJE
+  PROKLIJAO
+  PRLJAVSTINA_ZEMLJA
+  OSTALO
+}
+
+// 1. Centralni LOT Zapis
+model OnionLot {
+  id                  String          @id @default(cuid())
+  lotNumber           String          @unique // npr. "LOT-20261029-P01-01"
+  status              OnionLotStatus  @default(NA_STANJU)
+  
+  // Veza sa njivom
+  parcelId            String
+  parcel              Parcel          @relation(fields: [parcelId], references: [id])
+  cropVariety         String?         // npr. "Žuti holandski", "Srebrenac", "Crveni"
+  
+  // Početna masa i trenutni zbirovi
+  initialQuantityKg   Float           // Ukupno dovezeno sa njive
+  rawStockKg          Float           // Trenutno preostalo nesortiranog luka (hladnjača + magacin)
+  sortedQualityKg     Float           @default(0) // Ukupno sortirano I klase
+  sortedSmallKg       Float           @default(0) // Ukupno sitnog luka
+  sortedWasteKg       Float           @default(0) // Ukupno škarta/otpada na sortiranju
+  packagedStockKg     Float           @default(0) // Trenutno na stanju spakovanog (neshipped)
+  shippedKg           Float           @default(0) // Ukupno isporučeno kupcima
+  totalWasteKg        Float           @default(0) // Ukupan otpis (sortiranje + skladište)
+
+  notes               String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  harvestArrivals     OnionHarvestArrival[]
+  storageEntries      OnionStorageEntry[]
+  sortings            OnionSorting[]
+  packagings          OnionPackaging[]
+  shipments           OnionShipment[]
+  wastes              OnionWaste[]
+
+  @@index([lotNumber])
+  @@index([parcelId])
+  @@index([status])
+  @@map("onion_lot")
+}
+
+// 2. Dovoz sa njive
+model OnionHarvestArrival {
+  id              String    @id @default(cuid())
+  date            DateTime  @default(now())
+  
+  lotId           String
+  lot             OnionLot  @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  
+  parcelId        String
+  parcel          Parcel    @relation(fields: [parcelId], references: [id])
+  
+  quantityKg      Float     // Količina ture (kg)
+  
+  // Prevoz
+  vehicleId       String?   // Mašina / Kamion / Traktor
+  vehicle         Machine?  @relation(fields: [vehicleId], references: [id])
+  driverId        String?   // Vozač / Traktorista
+  driver          Worker?   @relation(fields: [driverId], references: [id])
+  trailerInfo     String?   // Broj prikolice / registracija
+  
+  supervisorId    String    // Ko je evidentirao ulaz
+  supervisor      User      @relation(fields: [supervisorId], references: [id])
+  
+  notes           String?
+  createdAt       DateTime  @default(now())
+
+  @@index([lotId, date])
+  @@index([parcelId])
+  @@map("onion_harvest_arrival")
+}
+
+// 3. Skladištenje u Hladnjaču / Magacin
+model OnionStorageEntry {
+  id                  String            @id @default(cuid())
+  date                DateTime          @default(now())
+  
+  lotId               String
+  lot                 OnionLot          @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  
+  storageType         OnionStorageType  @default(HLADNJACA)
+  locationOrChamber   String            // npr. "Komora 1", "Komora 2", "Komora 4"
+  hasEquipment        Boolean           @default(true) // Komore 1-3 sa opremom, Komore 4-6 bez opreme
+  boxCount            Int?              // Broj boks paleta (dim 160x120x120, ~1100kg po boksu, max 720 po komori)
+  
+  quantityKg          Float             // Količina uneta u lokaciju
+  currentQuantityKg   Float             // Koliko je trenutno ostalo na toj lokaciji
+  
+  temperatureC        Float?            // Temperatura komore (°C)
+  humidityPercent     Float?            // Vlažnost vazduha (%)
+  
+  supervisorId        String
+  supervisor          User              @relation(fields: [supervisorId], references: [id])
+  
+  notes               String?
+  createdAt           DateTime          @default(now())
+
+  @@index([lotId, storageType])
+  @@map("onion_storage_entry")
+}
+
+// 4. Sortiranje & Kalibracija
+model OnionSorting {
+  id                  String    @id @default(cuid())
+  date                DateTime  @default(now())
+  
+  lotId               String
+  lot                 OnionLot  @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  
+  inputQuantityKg     Float     // Koliko sirovog luka je ubačeno na liniju
+  
+  // Izlazne frakcije
+  qualityQuantityKg   Float     // I Klasa (Kvalitetan, krupan luk za pakovanje)
+  smallQuantityKg     Float     @default(0) // II Klasa (Sitan luk / Arpadžik / Industrija)
+  wasteQuantityKg     Float     @default(0) // Loš / Truo / Zemlja / Škart
+  wastePercentage     Float     @default(0) // (wasteQuantityKg / inputQuantityKg) * 100
+  
+  storageEntryId      String?   // Sa koje lokacije/komore je uzet luk
+  
+  supervisorId        String
+  supervisor          User      @relation(fields: [supervisorId], references: [id])
+  
+  notes               String?
+  createdAt           DateTime  @default(now())
+
+  @@index([lotId, date])
+  @@map("onion_sorting")
+}
+
+// 5. Pakovanje
+model OnionPackaging {
+  id                  String            @id @default(cuid())
+  date                DateTime          @default(now())
+  
+  lotId               String
+  lot                 OnionLot          @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  
+  packageType         OnionPackageType  @default(DZAK_10KG)
+  unitWeightKg        Float             // 5, 10, 25, itd.
+  packageCount        Int               // Broj vreća/džakova (npr. 500)
+  totalWeightKg       Float             // packageCount * unitWeightKg (npr. 5.000 kg)
+  
+  availableCount      Int               // Preostalo neshipped komada
+  availableWeightKg   Float             // Preostalo neshipped kg
+  
+  palletsCount        Float?            // Broj paleta (npr. 1 paleta = 100 džakova x 10kg ili 200 džakova x 5kg)
+  palletNumber        String?           // Broj palete / oznaka lokacije gotove robe
+  packerCount         Int               @default(4) // Broj radnika/žena na pakerici (default 4, izmenljivo)
+  packerNotes         String?           // Napomena za pakericu / postavu
+  responsiblePerson   String?           @default("Bojan Ćorović") // Zadužen za ulaz, izlaz i pakovanje luka
+  
+  supervisorId        String
+  supervisor          User              @relation(fields: [supervisorId], references: [id])
+  
+  notes               String?
+  createdAt           DateTime          @default(now())
+
+  shipmentItems       OnionShipmentItem[]
+
+  @@index([lotId, packageType])
+  @@map("onion_packaging")
+}
+
+// 6. Isporuka Kupcu & Otpremnica
+model OnionShipment {
+  id                  String              @id @default(cuid())
+  date                DateTime            @default(now())
+  dispatchNumber      String              @unique // Broj otpremnice (npr. "OTP-2026/001")
+  
+  buyerId             String              // Kupac iz šifarnika partnera
+  buyer               Partner             @relation(fields: [buyerId], references: [id])
+  
+  lotId               String              // Povezani LOT
+  lot                 OnionLot            @relation(fields: [lotId], references: [id])
+  
+  totalWeightKg       Float               // Ukupna neto masa isporuke
+  totalPackagesCount  Int                 // Ukupan broj džakova/vreća
+  pricePerKg          Float?              // Ugovorena prodajna cena po kg (RSD ili EUR)
+  totalValue          Float?              // totalWeightKg * pricePerKg
+  
+  // Transport i vozač
+  vehicleReg          String?             // Kamion / kombi kupca ili naš
+  driverName          String?             // Vozač koji je preuzeo robu
+  
+  supervisorId        String              // Ko je izdao robu
+  supervisor          User                @relation(fields: [supervisorId], references: [id])
+  
+  notes               String?
+  createdAt           DateTime            @default(now())
+
+  items               OnionShipmentItem[]
+
+  @@index([buyerId, date])
+  @@index([lotId])
+  @@map("onion_shipment")
+}
+
+model OnionShipmentItem {
+  id                  String          @id @default(cuid())
+  shipmentId          String
+  shipment            OnionShipment   @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  
+  packagingId         String
+  packaging           OnionPackaging  @relation(fields: [packagingId], references: [id])
+  
+  packageCount        Int             // Koliko džakova ovog pakovanja je otišlo
+  totalWeightKg       Float           // Ukupno kg
+  
+  @@map("onion_shipment_item")
+}
+
+// 7. Otpis & Kalo
+model OnionWaste {
+  id                  String            @id @default(cuid())
+  date                DateTime          @default(now())
+  
+  lotId               String
+  lot                 OnionLot          @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  
+  quantityKg          Float             // Količina otpisa u kg
+  reason              OnionWasteReason  @default(TRULEZ)
+  description         String?           // Detaljan opis razloga
+  
+  location            String?           // Gde je uočen otpis (npr. "Komora 2")
+  
+  supervisorId        String
+  supervisor          User              @relation(fields: [supervisorId], references: [id])
+  
+  notes               String?
+  createdAt           DateTime          @default(now())
+
+  @@index([lotId, reason])
+  @@map("onion_waste")
 }
