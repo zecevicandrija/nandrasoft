@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Package,
@@ -23,7 +23,8 @@ import {
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { useSession } from '../lib/auth-client';
-import { CustomSelect } from './CustomSelect';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import TablePagination from '../components/TablePagination/TablePagination';
 import styles from './FertilizerDashboard.module.css';
 
 const API = '/api';
@@ -132,6 +133,59 @@ const MOVEMENT_LABELS: Record<StockMovementType, string> = {
   OTPIS_KOREKCIJA: 'Otpis / Korekcija',
 };
 
+const STOCK_PAGE_SIZE = 25;
+const HISTORY_PAGE_SIZE = 25;
+
+const FERTILIZER_TYPE_FILTER_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Svi tipovi đubriva' },
+  { value: 'MINERALNO_GRANULISANO', label: 'Mineralno granulisano (NPK, UREA, KAN)' },
+  { value: 'VODOTOPIVO_FERTIRIGACIJA', label: 'Vodotopivo / Fertirigacija' },
+  { value: 'TECNI_BIOSTIMULATOR', label: 'Tečni biostimulator' },
+  { value: 'ORGANSKO_PELETIRANO', label: 'Organsko / Peletirano' },
+];
+
+const ISSUE_MOVEMENT_TYPE_OPTIONS: CustomSelectOption[] = [
+  {
+    value: 'IZDAVANJE_NJIVA',
+    label: 'Izdavanje na njivu (Redovan izlaz)',
+    badge: 'Izlaz',
+    badgeType: 'warning',
+  },
+  {
+    value: 'POVRAT_SA_NJIVE',
+    label: 'Povrat neiskorišćenog đubriva sa njive',
+    badge: 'Ulaz / Povrat',
+    badgeType: 'success',
+  },
+  {
+    value: 'OTPIS_KOREKCIJA',
+    label: 'Otpis / Oštećena ambalaža',
+    badge: 'Otpis',
+    badgeType: 'danger',
+  },
+];
+
+const HIST_MOVEMENT_TYPE_FILTER_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Sva kretanja (Ulaz + Izlaz)' },
+  { value: 'PRIJEM_NABAVKA', label: 'Prijem u magacin (Nabavka)', badge: '+ Ulaz', badgeType: 'success' },
+  { value: 'IZDAVANJE_NJIVA', label: 'Izdavanje na njivu', badge: '→ Izlaz', badgeType: 'warning' },
+  { value: 'POVRAT_SA_NJIVE', label: 'Povrat sa njive', badge: '↩ Povrat', badgeType: 'success' },
+  { value: 'OTPIS_KOREKCIJA', label: 'Otpis / Korekcija', badge: '✕ Otpis', badgeType: 'danger' },
+];
+
+const PRODUCT_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: 'MINERALNO_GRANULISANO', label: 'Mineralno granulisano' },
+  { value: 'VODOTOPIVO_FERTIRIGACIJA', label: 'Vodotopivo / Fertirigacija' },
+  { value: 'TECNI_BIOSTIMULATOR', label: 'Tečni biostimulator' },
+  { value: 'ORGANSKO_PELETIRANO', label: 'Organsko / Peletirano' },
+];
+
+const PRODUCT_UNIT_OPTIONS: CustomSelectOption[] = [
+  { value: 'KG', label: 'Kilogram (KG)' },
+  { value: 'L', label: 'Litar (L)' },
+  { value: 'TONA', label: 'Tona (TONA)' },
+];
+
 const FertilizerDashboard: React.FC = () => {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
@@ -142,17 +196,28 @@ const FertilizerDashboard: React.FC = () => {
   // Aktivni tab
   const [activeTab, setActiveTab] = useState<'stock' | 'receive' | 'issue' | 'analytics'>('stock');
 
-  // Filteri na tabu Stanje Zaliha
+  // Filteri i paginacija na tabu Stanje Zaliha
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('');
   const [onlyLowStock, setOnlyLowStock] = useState(false);
+  const [stockPage, setStockPage] = useState(1);
 
-  // Filteri na tabu Istorijat & Analitika
+  // Filteri i paginacija na tabu Istorijat & Analitika
   const [histProductId, setHistProductId] = useState('');
   const [histParcelId, setHistParcelId] = useState('');
   const [histMovementType, setHistMovementType] = useState('');
   const [histDateFrom, setHistDateFrom] = useState('');
   const [histDateTo, setHistDateTo] = useState('');
+  const [histPage, setHistPage] = useState(1);
+
+  // Resetovanje na prvu stranicu pri promeni filtera
+  useEffect(() => {
+    setStockPage(1);
+  }, [searchQuery, filterType, onlyLowStock]);
+
+  useEffect(() => {
+    setHistPage(1);
+  }, [histProductId, histParcelId, histMovementType, histDateFrom, histDateTo]);
 
   // Toast poruka
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -227,7 +292,7 @@ const FertilizerDashboard: React.FC = () => {
     partnersData?.partners || []
   ).filter((pt: any) => pt.isActive !== false && ['DOBAVLJAC', 'OBA'].includes(pt.type));
 
-  // 3. Dohvatanje kretanja (dnevnik)
+  // 3. Dohvatanje kretanja za Istorijat (sa paginacijom)
   const { data: movementsData, isLoading: loadingMovements } = useQuery({
     queryKey: [
       'fertilizer-movements',
@@ -236,9 +301,12 @@ const FertilizerDashboard: React.FC = () => {
       histMovementType,
       histDateFrom,
       histDateTo,
+      histPage,
     ],
     queryFn: async () => {
       const params = new URLSearchParams();
+      params.append('page', String(histPage));
+      params.append('limit', String(HISTORY_PAGE_SIZE));
       if (histProductId) params.append('productId', histProductId);
       if (histParcelId) params.append('parcelId', histParcelId);
       if (histMovementType) params.append('movementType', histMovementType);
@@ -253,6 +321,21 @@ const FertilizerDashboard: React.FC = () => {
     },
   });
   const movements: FertilizerMovement[] = movementsData?.movements || [];
+  const histTotalItems: number = movementsData?.total || 0;
+  const histTotalPages: number = movementsData?.totalPages || 1;
+
+  // 3b. Dohvatanje skorašnjih kretanja za brzi prikaz na Tabovima 2 i 3
+  const { data: recentMovementsData } = useQuery({
+    queryKey: ['fertilizer-movements-recent'],
+    queryFn: async () => {
+      const res = await fetch(`${API}/fertilizer/movements?limit=15`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Greška pri učitavanju skorašnjih kretanja.');
+      return res.json();
+    },
+  });
+  const recentMovements: FertilizerMovement[] = recentMovementsData?.movements || [];
 
   // 4. Dohvatanje sumarnog utroška po parcelama
   const { data: parcelSummaryData } = useQuery({
@@ -265,7 +348,7 @@ const FertilizerDashboard: React.FC = () => {
   });
   const parcelSummary: ParcelSummaryItem[] = parcelSummaryData?.parcelSummary || [];
 
-  // Filtrirani proizvodi za Tab 1
+  // Filtrirani proizvodi za Tab 1 sa paginacijom
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
       if (onlyLowStock && !p.isBelowMin) return false;
@@ -280,6 +363,12 @@ const FertilizerDashboard: React.FC = () => {
       return true;
     });
   }, [products, onlyLowStock, filterType, searchQuery]);
+
+  const totalStockPages = Math.ceil(filteredProducts.length / STOCK_PAGE_SIZE) || 1;
+  const paginatedProducts = useMemo(() => {
+    const start = (stockPage - 1) * STOCK_PAGE_SIZE;
+    return filteredProducts.slice(start, start + STOCK_PAGE_SIZE);
+  }, [filteredProducts, stockPage]);
 
   // Opcije za prilagođene Dropdown selektore (potpuno responsive na svim ekranima)
   const fertilizerProductOptions = useMemo(() => {
@@ -327,6 +416,28 @@ const FertilizerDashboard: React.FC = () => {
       })),
     ];
   }, [workers]);
+
+  const histProductFilterOptions = useMemo(() => {
+    return [
+      { value: '', label: 'Sva đubriva (svi artikli)' },
+      ...products.map((p) => ({
+        value: p.id,
+        label: p.name,
+        subLabel: `Stanje: ${p.currentStock.toLocaleString('sr-RS')} ${p.unit}`,
+      })),
+    ];
+  }, [products]);
+
+  const histParcelFilterOptions = useMemo(() => {
+    return [
+      { value: '', label: 'Sve parcele' },
+      ...parcels.map((p) => ({
+        value: p.id,
+        label: `[${p.code}] ${p.name}`,
+        subLabel: `${p.areaHa} ha${p.currentCrop ? ` • ${p.currentCrop}` : ''}`,
+      })),
+    ];
+  }, [parcels]);
 
   // ==========================================
   // FORMA ZA PRIJEM ROBE U MAGACIN (TAB 2)
@@ -407,6 +518,7 @@ const FertilizerDashboard: React.FC = () => {
 
       queryClient.invalidateQueries({ queryKey: ['fertilizer-products'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['fertilizer-movements-recent'] });
     } catch (err: any) {
       showToast(err.message || 'Greška pri prijemu robe.', 'error');
     } finally {
@@ -521,6 +633,7 @@ const FertilizerDashboard: React.FC = () => {
 
       queryClient.invalidateQueries({ queryKey: ['fertilizer-products'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['fertilizer-movements-recent'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-parcel-summary'] });
     } catch (err: any) {
       showToast(err.message || 'Greška prilikom izdavanja đubriva.', 'error');
@@ -624,6 +737,7 @@ const FertilizerDashboard: React.FC = () => {
 
       queryClient.invalidateQueries({ queryKey: ['fertilizer-products'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['fertilizer-movements-recent'] });
       setProductModalOpen(false);
       showToast(
         editingProduct
@@ -754,6 +868,7 @@ const FertilizerDashboard: React.FC = () => {
 
       queryClient.invalidateQueries({ queryKey: ['fertilizer-products'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['fertilizer-movements-recent'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-parcel-summary'] });
       setEditMovementModalOpen(false);
       showToast(
@@ -788,6 +903,7 @@ const FertilizerDashboard: React.FC = () => {
 
       queryClient.invalidateQueries({ queryKey: ['fertilizer-products'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['fertilizer-movements-recent'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-parcel-summary'] });
       setDeleteMovementModalOpen(false);
       showToast(
@@ -1073,17 +1189,13 @@ const FertilizerDashboard: React.FC = () => {
 
               <div className={styles.filterGroup}>
                 <label>Tip đubriva</label>
-                <select
-                  className={styles.filterSelect}
+                <CustomSelect
                   value={filterType}
-                  onChange={(e) => setFilterType(e.target.value)}
-                >
-                  <option value="">Svi tipovi đubriva</option>
-                  <option value="MINERALNO_GRANULISANO">Mineralno granulisano (NPK, UREA, KAN)</option>
-                  <option value="VODOTOPIVO_FERTIRIGACIJA">Vodotopivo / Fertirigacija</option>
-                  <option value="TECNI_BIOSTIMULATOR">Tečni biostimulator</option>
-                  <option value="ORGANSKO_PELETIRANO">Organsko / Peletirano</option>
-                </select>
+                  onChange={(val) => setFilterType(val)}
+                  options={FERTILIZER_TYPE_FILTER_OPTIONS}
+                  searchable={false}
+                  placeholder="Svi tipovi đubriva"
+                />
               </div>
 
               <div className={styles.filterGroup} style={{ flex: '0 0 auto' }}>
@@ -1136,7 +1248,7 @@ const FertilizerDashboard: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredProducts.map((prod) => (
+                      {paginatedProducts.map((prod) => (
                         <tr
                           key={prod.id}
                           className={prod.isBelowMin ? styles.rowBelowMin : undefined}
@@ -1250,6 +1362,17 @@ const FertilizerDashboard: React.FC = () => {
                     </tbody>
                   </table>
                 </div>
+              )}
+
+              {!loadingProducts && filteredProducts.length > 0 && (
+                <TablePagination
+                  currentPage={stockPage}
+                  totalPages={totalStockPages}
+                  totalItems={filteredProducts.length}
+                  pageSize={STOCK_PAGE_SIZE}
+                  onPageChange={setStockPage}
+                  itemName="artikala"
+                />
               )}
             </div>
           </>
@@ -1508,7 +1631,7 @@ const FertilizerDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {movements
+                    {recentMovements
                       .filter((m) => m.movementType === 'PRIJEM_NABAVKA')
                       .slice(0, 8)
                       .map((m) => (
@@ -1563,7 +1686,7 @@ const FertilizerDashboard: React.FC = () => {
                           </td>
                         </tr>
                       ))}
-                    {movements.filter((m) => m.movementType === 'PRIJEM_NABAVKA').length ===
+                    {recentMovements.filter((m) => m.movementType === 'PRIJEM_NABAVKA').length ===
                       0 && (
                         <tr>
                           <td colSpan={5} className={styles.emptyState}>
@@ -1596,20 +1719,17 @@ const FertilizerDashboard: React.FC = () => {
               <form onSubmit={handleIssueSubmit} className={styles.formGrid}>
                 <div className={styles.formField}>
                   <label>Vrsta promene *</label>
-                  <select
-                    className={styles.formSelect}
+                  <CustomSelect
                     value={issueForm.movementType}
-                    onChange={(e) =>
+                    onChange={(val) =>
                       setIssueForm({
                         ...issueForm,
-                        movementType: e.target.value as any,
+                        movementType: val as any,
                       })
                     }
-                  >
-                    <option value="IZDAVANJE_NJIVA">Izdavanje na njivu (Redovan izlaz)</option>
-                    <option value="POVRAT_SA_NJIVE">Povrat neiskorišćenog đubriva sa njive</option>
-                    <option value="OTPIS_KOREKCIJA">Otpis / Oštećena ambalaža</option>
-                  </select>
+                    options={ISSUE_MOVEMENT_TYPE_OPTIONS}
+                    searchable={false}
+                  />
                 </div>
 
                 <div className={styles.formField}>
@@ -1968,7 +2088,7 @@ const FertilizerDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {movements
+                    {recentMovements
                       .filter((m) => ['IZDAVANJE_NJIVA', 'POVRAT_SA_NJIVE'].includes(m.movementType))
                       .slice(0, 8)
                       .map((m) => {
@@ -2075,7 +2195,7 @@ const FertilizerDashboard: React.FC = () => {
                           </tr>
                         );
                       })}
-                    {movements.filter((m) =>
+                    {recentMovements.filter((m) =>
                       ['IZDAVANJE_NJIVA', 'POVRAT_SA_NJIVE'].includes(m.movementType)
                     ).length === 0 && (
                         <tr>
@@ -2180,49 +2300,35 @@ const FertilizerDashboard: React.FC = () => {
             <div className={styles.filterCard}>
               <div className={styles.filterGroup}>
                 <label>Artikal đubriva</label>
-                <select
-                  className={styles.filterSelect}
+                <CustomSelect
                   value={histProductId}
-                  onChange={(e) => setHistProductId(e.target.value)}
-                >
-                  <option value="">Sva đubriva</option>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setHistProductId(val)}
+                  options={histProductFilterOptions}
+                  searchable={products.length > 3}
+                  placeholder="Sva đubriva"
+                />
               </div>
 
               <div className={styles.filterGroup}>
                 <label>Parcela</label>
-                <select
-                  className={styles.filterSelect}
+                <CustomSelect
                   value={histParcelId}
-                  onChange={(e) => setHistParcelId(e.target.value)}
-                >
-                  <option value="">Sve parcele</option>
-                  {parcels.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      [{p.code}] {p.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setHistParcelId(val)}
+                  options={histParcelFilterOptions}
+                  searchable={parcels.length > 3}
+                  placeholder="Sve parcele"
+                />
               </div>
 
               <div className={styles.filterGroup}>
                 <label>Vrsta kretanja</label>
-                <select
-                  className={styles.filterSelect}
+                <CustomSelect
                   value={histMovementType}
-                  onChange={(e) => setHistMovementType(e.target.value)}
-                >
-                  <option value="">Sva kretanja (Ulaz + Izlaz)</option>
-                  <option value="PRIJEM_NABAVKA">Prijem u magacin (Nabavka)</option>
-                  <option value="IZDAVANJE_NJIVA">Izdavanje na njivu</option>
-                  <option value="POVRAT_SA_NJIVE">Povrat sa njive</option>
-                  <option value="OTPIS_KOREKCIJA">Otpis / Korekcija</option>
-                </select>
+                  onChange={(val) => setHistMovementType(val)}
+                  options={HIST_MOVEMENT_TYPE_FILTER_OPTIONS}
+                  searchable={false}
+                  placeholder="Sva kretanja"
+                />
               </div>
 
               <div className={styles.filterGroup}>
@@ -2251,7 +2357,7 @@ const FertilizerDashboard: React.FC = () => {
               <div className={styles.tableHeader}>
                 <h3>
                   <History size={18} color="#0284c7" />
-                  Hronološki dnevnik ulaza i izlaza đubriva ({movements.length})
+                  Hronološki dnevnik ulaza i izlaza đubriva ({histTotalItems})
                 </h3>
               </div>
 
@@ -2400,6 +2506,17 @@ const FertilizerDashboard: React.FC = () => {
                   </table>
                 </div>
               )}
+
+              {!loadingMovements && movements.length > 0 && (
+                <TablePagination
+                  currentPage={histPage}
+                  totalPages={histTotalPages}
+                  totalItems={histTotalItems}
+                  pageSize={HISTORY_PAGE_SIZE}
+                  onPageChange={setHistPage}
+                  itemName="kretanja"
+                />
+              )}
             </div>
           </>
         )}
@@ -2450,41 +2567,32 @@ const FertilizerDashboard: React.FC = () => {
                   <div className={styles.formGrid}>
                     <div className={styles.formField}>
                       <label>Vrsta / Kategorija đubriva</label>
-                      <select
-                        className={styles.formSelect}
+                      <CustomSelect
                         value={productForm.type}
-                        onChange={(e) =>
+                        onChange={(val) =>
                           setProductForm({
                             ...productForm,
-                            type: e.target.value as FertilizerType,
+                            type: val as FertilizerType,
                           })
                         }
-                      >
-                        <option value="MINERALNO_GRANULISANO">Mineralno granulisano</option>
-                        <option value="VODOTOPIVO_FERTIRIGACIJA">
-                          Vodotopivo / Fertirigacija
-                        </option>
-                        <option value="TECNI_BIOSTIMULATOR">Tečni biostimulator</option>
-                        <option value="ORGANSKO_PELETIRANO">Organsko / Peletirano</option>
-                      </select>
+                        options={PRODUCT_TYPE_OPTIONS}
+                        searchable={false}
+                      />
                     </div>
 
                     <div className={styles.formField}>
                       <label>Jedinica mere</label>
-                      <select
-                        className={styles.formSelect}
+                      <CustomSelect
                         value={productForm.unit}
-                        onChange={(e) =>
+                        onChange={(val) =>
                           setProductForm({
                             ...productForm,
-                            unit: e.target.value as FertilizerUnit,
+                            unit: val as FertilizerUnit,
                           })
                         }
-                      >
-                        <option value="KG">Kilogram (KG)</option>
-                        <option value="L">Litar (L)</option>
-                        <option value="TONA">Tona (TONA)</option>
-                      </select>
+                        options={PRODUCT_UNIT_OPTIONS}
+                        searchable={false}
+                      />
                     </div>
                   </div>
 

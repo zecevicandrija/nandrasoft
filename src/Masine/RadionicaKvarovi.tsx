@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Wrench,
@@ -20,10 +20,13 @@ import {
   Pencil,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import TablePagination from '../components/TablePagination/TablePagination';
 import { useSession } from '../lib/auth-client';
 import styles from './RadionicaKvarovi.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
+const PAGE_SIZE = 25;
 
 type TabType = 'kvarovi' | 'nalozi' | 'istorijat';
 
@@ -69,22 +72,46 @@ const RadionicaKvarovi: React.FC = () => {
   const [machines, setMachines] = useState<any[]>([]);
   const [workers, setWorkers] = useState<any[]>([]);
 
-  // Tab 1: Kvarovi
+  // ==========================================
+  // TAB 1: Kvarovi sa terena (Paginacija 25)
+  // ==========================================
   const [issues, setIssues] = useState<any[]>([]);
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [issueStatusFilter, setIssueStatusFilter] = useState('AKTIVNI');
   const [issuePriorityFilter, setIssuePriorityFilter] = useState('');
   const [issueMachineFilter, setIssueMachineFilter] = useState('');
   const [issueSearch, setIssueSearch] = useState('');
+  const [debouncedIssueSearch, setDebouncedIssueSearch] = useState('');
+  const [issuesPage, setIssuesPage] = useState(1);
+  const [issuesTotal, setIssuesTotal] = useState(0);
+  const [issuesTotalPages, setIssuesTotalPages] = useState(1);
 
-  // Tab 2: Remont Orders
+  // ==========================================
+  // TAB 2: Nalozi za remont (Paginacija 25)
+  // ==========================================
   const [remontOrders, setRemontOrders] = useState<any[]>([]);
   const [loadingRemontOrders, setLoadingRemontOrders] = useState(false);
+  const [remontMachineFilter, setRemontMachineFilter] = useState('');
+  const [remontWorkerFilter, setRemontWorkerFilter] = useState('');
+  const [remontSearch, setRemontSearch] = useState('');
+  const [debouncedRemontSearch, setDebouncedRemontSearch] = useState('');
+  const [remontPage, setRemontPage] = useState(1);
+  const [remontTotal, setRemontTotal] = useState(0);
+  const [remontTotalPages, setRemontTotalPages] = useState(1);
 
-  // Tab 3: History
+  // ==========================================
+  // TAB 3: Servisna knjižica (Paginacija 25)
+  // ==========================================
   const [historyItems, setHistoryItems] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [historyMachineFilter, setHistoryMachineFilter] = useState('');
+  const [historyDateFrom, setHistoryDateFrom] = useState('');
+  const [historyDateTo, setHistoryDateTo] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
+  const [debouncedHistorySearch, setDebouncedHistorySearch] = useState('');
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyTotalPages, setHistoryTotalPages] = useState(1);
 
   // Resolve Modal State
   const [selectedIssueToResolve, setSelectedIssueToResolve] = useState<any | null>(null);
@@ -121,6 +148,22 @@ const RadionicaKvarovi: React.FC = () => {
     setTimeout(() => setToast(null), 4000);
   };
 
+  // Debounce za pretrage (300ms)
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedIssueSearch(issueSearch), 300);
+    return () => clearTimeout(t);
+  }, [issueSearch]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedRemontSearch(remontSearch), 300);
+    return () => clearTimeout(t);
+  }, [remontSearch]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedHistorySearch(historySearch), 300);
+    return () => clearTimeout(t);
+  }, [historySearch]);
+
   // Učitaj statistiku
   const fetchStats = async () => {
     try {
@@ -154,15 +197,19 @@ const RadionicaKvarovi: React.FC = () => {
     }
   };
 
-  // Učitaj kvarove (Tab 1)
-  const fetchIssues = async (isSilent = false) => {
+  // ==========================================
+  // FETCH TAB 1: KVAROVI (Server-side 25 po strani)
+  // ==========================================
+  const fetchIssues = async (page = issuesPage, isSilent = false) => {
     if (!isSilent && issues.length === 0) setLoadingIssues(true);
     try {
       const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(PAGE_SIZE));
       if (issueStatusFilter) params.append('status', issueStatusFilter);
       if (issuePriorityFilter) params.append('priority', issuePriorityFilter);
       if (issueMachineFilter) params.append('machineId', issueMachineFilter);
-      if (issueSearch) params.append('search', issueSearch);
+      if (debouncedIssueSearch.trim()) params.append('search', debouncedIssueSearch.trim());
 
       const res = await fetch(`${API}/maintenance/issues?${params.toString()}`, {
         credentials: 'include',
@@ -170,6 +217,8 @@ const RadionicaKvarovi: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         setIssues(data.issues || []);
+        setIssuesTotal(data.total ?? (data.issues?.length || 0));
+        setIssuesTotalPages(data.totalPages || 1);
       }
     } catch (err) {
       console.error('Greška pri dohvatanju kvarova:', err);
@@ -178,16 +227,27 @@ const RadionicaKvarovi: React.FC = () => {
     }
   };
 
-  // Učitaj naloge za remont (Tab 2)
-  const fetchRemontOrders = async (isSilent = false) => {
+  // ==========================================
+  // FETCH TAB 2: REMONT NALOZI (Server-side 25 po strani)
+  // ==========================================
+  const fetchRemontOrders = async (page = remontPage, isSilent = false) => {
     if (!isSilent && remontOrders.length === 0) setLoadingRemontOrders(true);
     try {
-      const res = await fetch(`${API}/maintenance/remont-orders`, {
+      const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(PAGE_SIZE));
+      if (remontMachineFilter) params.append('machineId', remontMachineFilter);
+      if (remontWorkerFilter) params.append('workerId', remontWorkerFilter);
+      if (debouncedRemontSearch.trim()) params.append('search', debouncedRemontSearch.trim());
+
+      const res = await fetch(`${API}/maintenance/remont-orders?${params.toString()}`, {
         credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();
         setRemontOrders(data.orders || []);
+        setRemontTotal(data.total ?? (data.orders?.length || 0));
+        setRemontTotalPages(data.totalPages || 1);
       }
     } catch (err) {
       console.error('Greška pri dohvatanju naloga za remont:', err);
@@ -196,12 +256,19 @@ const RadionicaKvarovi: React.FC = () => {
     }
   };
 
-  // Učitaj istorijat popravki (Tab 3)
-  const fetchHistory = async (isSilent = false) => {
+  // ==========================================
+  // FETCH TAB 3: SERVISNA KNJIŽICA (Server-side 25 po strani)
+  // ==========================================
+  const fetchHistory = async (page = historyPage, isSilent = false) => {
     if (!isSilent && historyItems.length === 0) setLoadingHistory(true);
     try {
       const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(PAGE_SIZE));
       if (historyMachineFilter) params.append('machineId', historyMachineFilter);
+      if (historyDateFrom) params.append('dateFrom', historyDateFrom);
+      if (historyDateTo) params.append('dateTo', historyDateTo);
+      if (debouncedHistorySearch.trim()) params.append('search', debouncedHistorySearch.trim());
 
       const res = await fetch(`${API}/maintenance/history?${params.toString()}`, {
         credentials: 'include',
@@ -209,15 +276,17 @@ const RadionicaKvarovi: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         setHistoryItems(data.history || []);
+        setHistoryTotal(data.total ?? (data.history?.length || 0));
+        setHistoryTotalPages(data.totalPages || 1);
       }
     } catch (err) {
-      console.error('Greška pri dohvatanju istorijata popravki:', err);
+      console.error('Greška pri dohvatanju servisne knjižice:', err);
     } finally {
       setLoadingHistory(false);
     }
   };
 
-  // Inicijalno učitavanje i reagovanje na query parametre
+  // Inicijalno učitavanje
   useEffect(() => {
     fetchStats();
     fetchMasterData();
@@ -232,22 +301,59 @@ const RadionicaKvarovi: React.FC = () => {
     }
   }, [searchParams]);
 
+  // Tab 1: Reagovanje na filtere i pretragu -> reset na stranu 1
   useEffect(() => {
     if (activeTab === 'kvarovi') {
-      fetchIssues();
-    } else if (activeTab === 'nalozi') {
-      fetchRemontOrders();
-    } else if (activeTab === 'istorijat') {
-      fetchHistory();
+      setIssuesPage(1);
+      fetchIssues(1, true);
     }
-  }, [
-    activeTab,
-    issueStatusFilter,
-    issuePriorityFilter,
-    issueMachineFilter,
-    issueSearch,
-    historyMachineFilter,
-  ]);
+  }, [issueStatusFilter, issuePriorityFilter, issueMachineFilter, debouncedIssueSearch]);
+
+  // Tab 2: Reagovanje na filtere i pretragu -> reset na stranu 1
+  useEffect(() => {
+    if (activeTab === 'nalozi') {
+      setRemontPage(1);
+      fetchRemontOrders(1, true);
+    }
+  }, [remontMachineFilter, remontWorkerFilter, debouncedRemontSearch]);
+
+  // Tab 3: Reagovanje na filtere i pretragu -> reset na stranu 1
+  useEffect(() => {
+    if (activeTab === 'istorijat') {
+      setHistoryPage(1);
+      fetchHistory(1, true);
+    }
+  }, [historyMachineFilter, historyDateFrom, historyDateTo, debouncedHistorySearch]);
+
+  // Promena taba
+  useEffect(() => {
+    if (activeTab === 'kvarovi') {
+      fetchIssues(issuesPage, true);
+    } else if (activeTab === 'nalozi') {
+      fetchRemontOrders(remontPage, true);
+    } else if (activeTab === 'istorijat') {
+      fetchHistory(historyPage, true);
+    }
+  }, [activeTab]);
+
+  // Paginacija hendleri
+  const handleIssuesPageChange = (newPage: number) => {
+    setIssuesPage(newPage);
+    fetchIssues(newPage);
+    window.scrollTo({ top: 380, behavior: 'smooth' });
+  };
+
+  const handleRemontPageChange = (newPage: number) => {
+    setRemontPage(newPage);
+    fetchRemontOrders(newPage);
+    window.scrollTo({ top: 380, behavior: 'smooth' });
+  };
+
+  const handleHistoryPageChange = (newPage: number) => {
+    setHistoryPage(newPage);
+    fetchHistory(newPage);
+    window.scrollTo({ top: 380, behavior: 'smooth' });
+  };
 
   // Promena statusa kvara (Preuzmi u rad / Čeka delove)
   const handleUpdateStatus = async (issueId: string, newStatus: string) => {
@@ -262,8 +368,8 @@ const RadionicaKvarovi: React.FC = () => {
       if (res.ok) {
         showToast(`Status uspešno promenjen na: ${newStatus}`);
         fetchStats();
-        fetchIssues();
-        if (activeTab === 'nalozi') fetchRemontOrders();
+        fetchIssues(issuesPage, true);
+        if (activeTab === 'nalozi') fetchRemontOrders(remontPage, true);
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri promeni statusa.', 'error');
@@ -273,7 +379,7 @@ const RadionicaKvarovi: React.FC = () => {
     }
   };
 
-  // Pomoćna funkcija: proverava da li je nalog završen DANAS (isti kalendarski dan)
+  // Pomoćna funkcija: proverava da li je nalog završen DANAS
   const isFinishedToday = (order: any) => {
     if (order.status !== 'ZAVRSEN') return false;
     const dateVal = order.maintenance?.repairedAt || order.updatedAt || order.orderDate;
@@ -287,11 +393,6 @@ const RadionicaKvarovi: React.FC = () => {
     );
   };
 
-  const displayedRemontOrders = remontOrders.filter((order) => {
-    if (order.status !== 'ZAVRSEN') return true;
-    return isFinishedToday(order);
-  });
-
   // Otvaranje modala za završetak popravke
   const handleOpenResolveModal = (issue: any) => {
     setSelectedIssueToResolve(issue);
@@ -304,7 +405,7 @@ const RadionicaKvarovi: React.FC = () => {
     setIsEditingCompletedReport(false);
   };
 
-  // Otvaranje modala za izmenu postojećeg izveštaja završenog servisa
+  // Otvaranje modala za izmenu postojećeg izveštaja
   const handleOpenEditResolveModal = (order: any) => {
     const issue = order.maintenance || order;
     setSelectedIssueToResolve(issue);
@@ -325,7 +426,7 @@ const RadionicaKvarovi: React.FC = () => {
     setIsEditingCompletedReport(true);
   };
 
-  // Poništavanje završetka popravke (vrati nalog u rad i mašinu u servis)
+  // Poništavanje završetka popravke
   const handleReopenRemont = async (order: any) => {
     const issueId = order.maintenance?.id || order.id;
     if (!issueId) return;
@@ -347,9 +448,9 @@ const RadionicaKvarovi: React.FC = () => {
       if (res.ok) {
         showToast(data.message || 'Nalog je uspešno vraćen u rad!');
         fetchStats();
-        fetchIssues();
-        fetchRemontOrders();
-        fetchHistory();
+        fetchIssues(issuesPage, true);
+        fetchRemontOrders(remontPage, true);
+        fetchHistory(historyPage, true);
       } else {
         showToast(data.error || 'Greška pri vraćanju naloga u rad.', 'error');
       }
@@ -368,7 +469,6 @@ const RadionicaKvarovi: React.FC = () => {
       return;
     }
 
-    // Automatsko izračunavanje zastoja u satima na osnovu vremena prijave i trenutka popravke
     const reportedMs = selectedIssueToResolve.dateReported
       ? new Date(selectedIssueToResolve.dateReported).getTime()
       : Date.now();
@@ -403,9 +503,9 @@ const RadionicaKvarovi: React.FC = () => {
         setSelectedIssueToResolve(null);
         setIsEditingCompletedReport(false);
         fetchStats();
-        fetchIssues();
-        if (activeTab === 'nalozi') fetchRemontOrders();
-        if (activeTab === 'istorijat') fetchHistory();
+        fetchIssues(issuesPage, true);
+        if (activeTab === 'nalozi') fetchRemontOrders(remontPage, true);
+        if (activeTab === 'istorijat') fetchHistory(historyPage, true);
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri obradi popravke.', 'error');
@@ -447,8 +547,8 @@ const RadionicaKvarovi: React.FC = () => {
         setIsRemontModalOpen(false);
         setRemontInstructions('');
         fetchStats();
-        fetchRemontOrders();
-        fetchIssues();
+        fetchRemontOrders(1, true);
+        fetchIssues(1, true);
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri izdavanju radnog naloga.', 'error');
@@ -490,7 +590,7 @@ const RadionicaKvarovi: React.FC = () => {
         setNewIssueTitle('');
         setNewIssueDesc('');
         fetchStats();
-        fetchIssues();
+        fetchIssues(1, true);
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri prijavi kvara.', 'error');
@@ -502,7 +602,7 @@ const RadionicaKvarovi: React.FC = () => {
     }
   };
 
-  // Pomoćna funkcija za formatiranje datuma
+  // Formatiranje datuma
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return '-';
     const d = new Date(dateStr);
@@ -515,6 +615,116 @@ const RadionicaKvarovi: React.FC = () => {
     });
   };
 
+  // ==========================================
+  // CustomSelect Opcije
+  // ==========================================
+  const machineFilterOptions: CustomSelectOption[] = useMemo(() => [
+    { value: '', label: 'Sve mašine (kompletna mehanizacija)' },
+    ...machines.map((m) => {
+      let bType: 'default' | 'danger' | 'warning' | 'success' = 'default';
+      if (m.status === 'U_KVARU') bType = 'danger';
+      else if (m.status === 'SERVIS') bType = 'warning';
+      else if (m.status === 'SLOBODNA') bType = 'success';
+
+      return {
+        value: m.id,
+        label: m.name,
+        subLabel: m.brandModel ? `${m.brandModel} • ${m.type}` : m.type,
+        badge: m.status,
+        badgeType: bType,
+      };
+    }),
+  ], [machines]);
+
+  const modalMachineOptions: CustomSelectOption[] = useMemo(() => [
+    ...machines.map((m) => {
+      let bType: 'default' | 'danger' | 'warning' | 'success' = 'default';
+      if (m.status === 'U_KVARU') bType = 'danger';
+      else if (m.status === 'SERVIS') bType = 'warning';
+      else if (m.status === 'SLOBODNA') bType = 'success';
+
+      return {
+        value: m.id,
+        label: m.name,
+        subLabel: `${m.brandModel || m.type} • Trenutno: ${m.status}`,
+        badge: m.status,
+        badgeType: bType,
+      };
+    }),
+  ], [machines]);
+
+  const workerFilterOptions: CustomSelectOption[] = useMemo(() => [
+    { value: '', label: 'Svi radnici i serviseri' },
+    ...workers.map((w) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.type || w.role || 'Radnik',
+    })),
+  ], [workers]);
+
+  const modalWorkerOptions: CustomSelectOption[] = useMemo(() => [
+    ...workers.map((w) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.type || w.role || 'Radnik / Mehaničar',
+    })),
+  ], [workers]);
+
+  const issueStatusOptions: CustomSelectOption[] = [
+    { value: 'AKTIVNI', label: 'Svi aktivni kvarovi', badge: 'AKTIVNO', badgeType: 'warning' },
+    { value: 'OTVOREN', label: 'Prijavljeni (Otvoreni)', badge: 'OTVOREN', badgeType: 'danger' },
+    { value: 'U_RADU', label: 'U radu (Mehaničar radi)', badge: 'U RADU', badgeType: 'warning' },
+    { value: 'CEKA_DELOVE', label: 'Čeka rezervne delove', badge: 'ČEKA DELOVE', badgeType: 'warning' },
+    { value: 'POPRAVLJENO', label: 'Popravljeno (Arhiva)', badge: 'POPRAVLJENO', badgeType: 'success' },
+    { value: 'SVE', label: 'Svi statusi (uključujući završene)' },
+  ];
+
+  const priorityOptions: CustomSelectOption[] = [
+    { value: '', label: 'Svi prioriteti' },
+    { value: 'KRITICNA', label: 'Kritičan prioritet', badge: 'KRITIČNO', badgeType: 'danger' },
+    { value: 'VISOKA', label: 'Visok prioritet', badge: 'VISOK', badgeType: 'warning' },
+    { value: 'SREDNJA', label: 'Srednji prioritet', badge: 'SREDNJI', badgeType: 'default' },
+    { value: 'NISKA', label: 'Nizak prioritet', badge: 'NIZAK', badgeType: 'default' },
+  ];
+
+  const modalPriorityOptions: CustomSelectOption[] = [
+    { value: 'KRITICNA', label: 'Kritičan prioritet', badge: 'KRITIČNO', badgeType: 'danger' },
+    { value: 'VISOKA', label: 'Visok prioritet', badge: 'VISOK', badgeType: 'warning' },
+    { value: 'SREDNJA', label: 'Srednji prioritet', badge: 'SREDNJI', badgeType: 'default' },
+    { value: 'NISKA', label: 'Nizak prioritet', badge: 'NIZAK', badgeType: 'default' },
+  ];
+
+  const serviceTypeOptions: CustomSelectOption[] = [
+    { value: 'REDOVAN_SERVIS', label: 'Redovan servis (zamena ulja/filtera)', badge: 'REDOVAN' },
+    { value: 'GENERALNI_REMONT', label: 'Generalni remont mehanizacije', badge: 'REMONT' },
+    { value: 'KVAR_NJIVA', label: 'Vanredni kvar sa terena/njive', badge: 'KVAR', badgeType: 'danger' },
+  ];
+
+  const lubricantSelectOptions: CustomSelectOption[] = LUBRICANT_OPTIONS.map((opt) => ({
+    value: opt,
+    label: opt,
+    badge: opt.startsWith('BEZ') ? 'BEZ MAZIVA' : 'ULJE / MAST',
+    badgeType: opt.startsWith('BEZ') ? 'default' : 'success',
+  }));
+
+  // Pomoćna provera aktivnih filtera za Reset dugmad
+  const hasActiveIssueFilters =
+    issueStatusFilter !== 'AKTIVNI' ||
+    Boolean(issuePriorityFilter) ||
+    Boolean(issueMachineFilter) ||
+    Boolean(issueSearch);
+
+  const hasActiveRemontFilters =
+    Boolean(remontMachineFilter) ||
+    Boolean(remontWorkerFilter) ||
+    Boolean(remontSearch);
+
+  const hasActiveHistoryFilters =
+    Boolean(historyMachineFilter) ||
+    Boolean(historyDateFrom) ||
+    Boolean(historyDateTo) ||
+    Boolean(historySearch);
+
   return (
     <AppLayout pageTitle="Radionica & Održavanje Mašina">
       <div className={styles.container}>
@@ -522,18 +732,23 @@ const RadionicaKvarovi: React.FC = () => {
         <div className={styles.headerBar}>
           <div className={styles.titleArea}>
             <h2>
-              <Wrench size={26} />
+              <span className={styles.titleIcon}>
+                <Wrench size={26} />
+              </span>
               Servisna Radionica & Kvarovi
             </h2>
+            <p className={styles.subtitle}>
+              Evidencija kvarova, servisni nalozi za remont i digitalna servisna knjižica mehanizacije.
+            </p>
           </div>
 
           <div className={styles.headerActions}>
             <button
               onClick={() => {
                 fetchStats();
-                if (activeTab === 'kvarovi') fetchIssues(true);
-                if (activeTab === 'nalozi') fetchRemontOrders(true);
-                if (activeTab === 'istorijat') fetchHistory(true);
+                if (activeTab === 'kvarovi') fetchIssues(issuesPage, true);
+                if (activeTab === 'nalozi') fetchRemontOrders(remontPage, true);
+                if (activeTab === 'istorijat') fetchHistory(historyPage, true);
               }}
               className={styles.btnSecondary}
               title="Osveži podatke u radionici"
@@ -547,7 +762,7 @@ const RadionicaKvarovi: React.FC = () => {
               className={styles.btnSecondary}
               title="Direktna prijava kvara ili servisa"
             >
-              <AlertTriangle size={18} />
+              <AlertTriangle size={18} style={{ color: '#ea580c' }} />
               <span>Prijavi kvar</span>
             </button>
 
@@ -564,7 +779,7 @@ const RadionicaKvarovi: React.FC = () => {
           </div>
         </div>
 
-        {/* Dashboard Stats Grid */}
+        {/* Dashboard Stats Grid (KPI Cards) */}
         <div className={styles.statsGrid}>
           <div className={styles.statCard}>
             <div className={`${styles.statIcon} ${styles.iconBroken}`}>
@@ -636,7 +851,7 @@ const RadionicaKvarovi: React.FC = () => {
           >
             <ClipboardList size={18} />
             <span>Nalozi za remont</span>
-            <span className={`${styles.tabCount} ${styles.countPurple}`}>
+            <span className={`${styles.tabCount} ${styles.countBlue}`}>
               {stats.remontOrders}
             </span>
           </button>
@@ -658,68 +873,87 @@ const RadionicaKvarovi: React.FC = () => {
         {/* ============================================================ */}
         {activeTab === 'kvarovi' && (
           <>
-            {/* Filter Bar */}
+            {/* Filter Bar sa CustomSelect */}
             <div className={styles.filterBar}>
               <div className={styles.searchInputWrapper}>
                 <Search size={16} />
                 <input
                   type="text"
-                  placeholder="Pretraži po nazivu mašine, opisu kvara..."
+                  placeholder="Pretraži kvarove, mašine, opis..."
                   value={issueSearch}
                   onChange={(e) => setIssueSearch(e.target.value)}
                 />
+                {issueSearch && (
+                  <button
+                    type="button"
+                    className={styles.searchClearBtn}
+                    onClick={() => setIssueSearch('')}
+                    title="Obriši pretragu"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
               </div>
 
-              <select
-                className={styles.filterSelect}
-                value={issueStatusFilter}
-                onChange={(e) => setIssueStatusFilter(e.target.value)}
-              >
-                <option value="AKTIVNI">Svi aktivni kvarovi</option>
-                <option value="OTVOREN">Prijavljeni (Otvoreni)</option>
-                <option value="U_RADU">U radu (Mehaničar radi)</option>
-                <option value="CEKA_DELOVE">Čeka rezervne delove</option>
-                <option value="SVE">Svi statusi (uključujući završene)</option>
-              </select>
+              <div className={styles.filterSelectWrapper}>
+                <CustomSelect
+                  value={issueStatusFilter}
+                  onChange={(val) => setIssueStatusFilter(val)}
+                  options={issueStatusOptions}
+                  placeholder="Izaberite status..."
+                />
+              </div>
 
-              <select
-                className={styles.filterSelect}
-                value={issuePriorityFilter}
-                onChange={(e) => setIssuePriorityFilter(e.target.value)}
-              >
-                <option value="">Svi prioriteti</option>
-                <option value="KRITICNA">🔴 Kritičan</option>
-                <option value="VISOKA">🟠 Visok</option>
-                <option value="SREDNJA">🟡 Srednji</option>
-                <option value="NISKA">🔵 Nizak</option>
-              </select>
+              <div className={styles.filterSelectWrapper}>
+                <CustomSelect
+                  value={issuePriorityFilter}
+                  onChange={(val) => setIssuePriorityFilter(val)}
+                  options={priorityOptions}
+                  placeholder="Svi prioriteti"
+                />
+              </div>
 
-              <select
-                className={styles.filterSelect}
-                value={issueMachineFilter}
-                onChange={(e) => setIssueMachineFilter(e.target.value)}
-              >
-                <option value="">Sve mašine</option>
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} ({m.type})
-                  </option>
-                ))}
-              </select>
+              <div className={styles.filterSelectWrapper}>
+                <CustomSelect
+                  value={issueMachineFilter}
+                  onChange={(val) => setIssueMachineFilter(val)}
+                  options={machineFilterOptions}
+                  placeholder="Sve mašine"
+                  searchable
+                />
+              </div>
+
+              {hasActiveIssueFilters && (
+                <button
+                  type="button"
+                  className={styles.filterResetBtn}
+                  onClick={() => {
+                    setIssueStatusFilter('AKTIVNI');
+                    setIssuePriorityFilter('');
+                    setIssueMachineFilter('');
+                    setIssueSearch('');
+                  }}
+                  title="Poništi sve filtere"
+                >
+                  <RotateCcw size={14} />
+                  <span>Poništi</span>
+                </button>
+              )}
             </div>
 
             {/* Lista Kvarova */}
             {loadingIssues ? (
               <div className={styles.emptyState}>
-                <p>Učitavanje prijavljenih kvarova...</p>
+                <RefreshCw size={26} className="animate-spin" style={{ color: '#0284c7' }} />
+                <p>Učitavanje prijavljenih kvarova (stranica {issuesPage})...</p>
               </div>
             ) : issues.length === 0 ? (
               <div className={styles.emptyState}>
                 <div className={styles.emptyStateIcon}>
                   <CheckCircle2 size={32} />
                 </div>
-                <h4>Nema aktivnih kvarova</h4>
-                <p>Sva mehanizacija je u ispravnom stanju i spremna za rad na njivi!</p>
+                <h4>Nema prijavljenih kvarova za izabrane filtere</h4>
+                <p>Sva mehanizacija je u ispravnom stanju i spremna za rad na terenu.</p>
               </div>
             ) : (
               <div className={styles.cardsGrid}>
@@ -749,11 +983,13 @@ const RadionicaKvarovi: React.FC = () => {
                           <div>
                             <div className={styles.machineName}>{issue.machine?.name}</div>
                             <div className={styles.machineMeta}>
-                              <span>{issue.machine?.brandModel || issue.machine?.type}</span>
+                              <span className={styles.machineMetaTag}>
+                                {issue.machine?.brandModel || issue.machine?.type}
+                              </span>
                               {issue.machine?.regNumber && (
                                 <span>• Reg: {issue.machine.regNumber}</span>
                               )}
-                              <span>• {issue.machine?.currentHours || 0} rh</span>
+                              <span>• {issue.machine?.currentHours || 0} radnih sati</span>
                             </div>
                           </div>
                         </div>
@@ -807,7 +1043,7 @@ const RadionicaKvarovi: React.FC = () => {
                           </div>
                           <div className={styles.reporterItem}>
                             <Calendar size={14} />
-                            <span>Datum: {formatDate(issue.dateReported)}</span>
+                            <span>Datum prijave: {formatDate(issue.dateReported)}</span>
                           </div>
                           {issue.parcel && (
                             <div className={styles.reporterItem}>
@@ -830,7 +1066,7 @@ const RadionicaKvarovi: React.FC = () => {
                           {issue.mechanic && (
                             <div className={styles.mechanicWorking}>
                               <Wrench size={14} />
-                              <span>Radi: {issue.mechanic.name}</span>
+                              <span>Dodeljeni mehaničar: {issue.mechanic.name}</span>
                             </div>
                           )}
                         </div>
@@ -899,6 +1135,20 @@ const RadionicaKvarovi: React.FC = () => {
                 })}
               </div>
             )}
+
+            {/* Paginacija za Tab 1 (25 po strani) */}
+            {issuesTotal > 0 && (
+              <div className={styles.paginationWrapper}>
+                <TablePagination
+                  currentPage={issuesPage}
+                  totalPages={issuesTotalPages}
+                  totalItems={issuesTotal}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={handleIssuesPageChange}
+                  itemName="kvarova"
+                />
+              </div>
+            )}
           </>
         )}
 
@@ -907,21 +1157,84 @@ const RadionicaKvarovi: React.FC = () => {
         {/* ============================================================ */}
         {activeTab === 'nalozi' && (
           <>
+            {/* Filter Bar sa CustomSelect */}
+            <div className={styles.filterBar}>
+              <div className={styles.searchInputWrapper}>
+                <Search size={16} />
+                <input
+                  type="text"
+                  placeholder="Pretraži naloge, instrukcije, broj..."
+                  value={remontSearch}
+                  onChange={(e) => setRemontSearch(e.target.value)}
+                />
+                {remontSearch && (
+                  <button
+                    type="button"
+                    className={styles.searchClearBtn}
+                    onClick={() => setRemontSearch('')}
+                    title="Obriši pretragu"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              <div className={styles.filterSelectWrapper}>
+                <CustomSelect
+                  value={remontMachineFilter}
+                  onChange={(val) => setRemontMachineFilter(val)}
+                  options={machineFilterOptions}
+                  placeholder="Sve mašine"
+                  searchable
+                />
+              </div>
+
+              <div className={styles.filterSelectWrapper}>
+                <CustomSelect
+                  value={remontWorkerFilter}
+                  onChange={(val) => setRemontWorkerFilter(val)}
+                  options={workerFilterOptions}
+                  placeholder="Svi serviseri"
+                  searchable
+                />
+              </div>
+
+              {hasActiveRemontFilters && (
+                <button
+                  type="button"
+                  className={styles.filterResetBtn}
+                  onClick={() => {
+                    setRemontMachineFilter('');
+                    setRemontWorkerFilter('');
+                    setRemontSearch('');
+                  }}
+                  title="Poništi filtere"
+                >
+                  <RotateCcw size={14} />
+                  <span>Poništi</span>
+                </button>
+              )}
+            </div>
+
             {loadingRemontOrders ? (
               <div className={styles.emptyState}>
-                <p>Učitavanje servisnih radnih naloga...</p>
+                <RefreshCw size={26} className="animate-spin" style={{ color: '#0284c7' }} />
+                <p>Učitavanje servisnih radnih naloga (stranica {remontPage})...</p>
               </div>
-            ) : displayedRemontOrders.length === 0 ? (
+            ) : remontOrders.length === 0 ? (
               <div className={styles.emptyState}>
                 <div className={styles.emptyStateIcon}>
                   <ClipboardList size={32} />
                 </div>
                 <h4>Nema otvorenih naloga za remont</h4>
-                <p>Trenutno nema aktivnih naloga niti naloga završenih danas. Prethodni završeni servisi nalaze se u Tabu 3: Servisna knjižica.</p>
+                <p>
+                  Trenutno nema aktivnih naloga niti naloga završenih danas. Prethodni završeni servisi nalaze se u
+                  Tabu 3: Servisna knjižica.
+                </p>
               </div>
             ) : (
               <div className={styles.cardsGrid}>
-                {displayedRemontOrders.map((order) => {
+                {remontOrders.map((order) => {
                   const isDone = order.status === 'ZAVRSEN';
                   const isTodayDone = isFinishedToday(order);
 
@@ -942,7 +1255,9 @@ const RadionicaKvarovi: React.FC = () => {
                               {order.orderNumber} — {order.machine?.name}
                             </div>
                             <div className={styles.machineMeta}>
-                              <span>Dodeljeno: <strong>{order.worker?.name}</strong></span>
+                              <span>
+                                Dodeljeno: <strong>{order.worker?.name || 'Nije dodeljeno'}</strong>
+                              </span>
                               <span>• Datum: {formatDate(order.orderDate)}</span>
                               <span>• Prioritet: {order.priority}</span>
                             </div>
@@ -983,7 +1298,7 @@ const RadionicaKvarovi: React.FC = () => {
                         <div className={styles.reporterDetails}>
                           <div className={styles.reporterItem}>
                             <User size={14} />
-                            <span>Izdao nalog: {order.issuedBy?.name}</span>
+                            <span>Izdao nalog: {order.issuedBy?.name || 'Rukovodilac'}</span>
                           </div>
                           {order.maintenance && (
                             <div className={styles.reporterItem}>
@@ -1006,7 +1321,7 @@ const RadionicaKvarovi: React.FC = () => {
                       <div className={styles.cardFooter}>
                         <div className={styles.mechanicWorking}>
                           <User size={14} />
-                          <span>Mehaničar: {order.worker?.name}</span>
+                          <span>Mehaničar: {order.worker?.name || '-'}</span>
                         </div>
 
                         <div className={styles.actionButtons}>
@@ -1095,11 +1410,6 @@ const RadionicaKvarovi: React.FC = () => {
                                 className={styles.btnActionWait}
                                 onClick={() => handleReopenRemont(order)}
                                 title="Poništi završetak i vrati mašinu u status SERVIS"
-                                style={{
-                                  backgroundColor: '#fef3c7',
-                                  color: '#b45309',
-                                  border: '1px solid #fde68a',
-                                }}
                               >
                                 <RotateCcw size={14} />
                                 <span>Vrati u rad (Poništi)</span>
@@ -1122,6 +1432,20 @@ const RadionicaKvarovi: React.FC = () => {
                 })}
               </div>
             )}
+
+            {/* Paginacija za Tab 2 (25 po strani) */}
+            {remontTotal > 0 && (
+              <div className={styles.paginationWrapper}>
+                <TablePagination
+                  currentPage={remontPage}
+                  totalPages={remontTotalPages}
+                  totalItems={remontTotal}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={handleRemontPageChange}
+                  itemName="naloga za remont"
+                />
+              </div>
+            )}
           </>
         )}
 
@@ -1131,34 +1455,88 @@ const RadionicaKvarovi: React.FC = () => {
         {activeTab === 'istorijat' && (
           <>
             <div className={styles.filterBar}>
-              <select
-                className={styles.filterSelect}
-                value={historyMachineFilter}
-                onChange={(e) => setHistoryMachineFilter(e.target.value)}
-              >
-                <option value="">Sva mehanizacija (kompletan istorijat)</option>
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} ({m.type})
-                  </option>
-                ))}
-              </select>
+              <div className={styles.searchInputWrapper}>
+                <Search size={16} />
+                <input
+                  type="text"
+                  placeholder="Pretraži istorijat radova, delove, ulje..."
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                />
+                {historySearch && (
+                  <button
+                    type="button"
+                    className={styles.searchClearBtn}
+                    onClick={() => setHistorySearch('')}
+                    title="Obriši pretragu"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              <div className={styles.filterSelectWrapper}>
+                <CustomSelect
+                  value={historyMachineFilter}
+                  onChange={(val) => setHistoryMachineFilter(val)}
+                  options={machineFilterOptions}
+                  placeholder="Sva mehanizacija"
+                  searchable
+                />
+              </div>
+
+              <div className={styles.filterDateGroup}>
+                <input
+                  type="date"
+                  className={styles.dateInput}
+                  value={historyDateFrom}
+                  onChange={(e) => setHistoryDateFrom(e.target.value)}
+                  title="Od datuma"
+                />
+                <span className={styles.dateSeparator}>do</span>
+                <input
+                  type="date"
+                  className={styles.dateInput}
+                  value={historyDateTo}
+                  onChange={(e) => setHistoryDateTo(e.target.value)}
+                  title="Do datuma"
+                />
+              </div>
+
+              {hasActiveHistoryFilters && (
+                <button
+                  type="button"
+                  className={styles.filterResetBtn}
+                  onClick={() => {
+                    setHistoryMachineFilter('');
+                    setHistoryDateFrom('');
+                    setHistoryDateTo('');
+                    setHistorySearch('');
+                  }}
+                  title="Poništi filtere"
+                >
+                  <RotateCcw size={14} />
+                  <span>Poništi</span>
+                </button>
+              )}
             </div>
 
             {loadingHistory ? (
               <div className={styles.emptyState}>
-                <p>Učitavanje servisne knjižice...</p>
+                <RefreshCw size={26} className="animate-spin" style={{ color: '#0284c7' }} />
+                <p>Učitavanje servisne knjižice (stranica {historyPage})...</p>
               </div>
             ) : historyItems.length === 0 ? (
               <div className={styles.emptyState}>
                 <div className={styles.emptyStateIcon}>
                   <History size={32} />
                 </div>
-                <h4>Nema zabeleženih završenih popravki</h4>
+                <h4>Nema zabeleženih popravki u servisnoj knjižici</h4>
                 <p>Istorijat se automatski puni svakim završetkom servisa ili popravke kvara.</p>
               </div>
             ) : (
               <>
+                {/* Desktop Table View */}
                 <div className={styles.historyTableContainer}>
                   <table className={styles.historyTable}>
                     <thead>
@@ -1176,35 +1554,45 @@ const RadionicaKvarovi: React.FC = () => {
                       {historyItems.map((item) => (
                         <tr key={item.id}>
                           <td>
-                            <strong>{formatDate(item.repairedAt || item.updatedAt)}</strong>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                              Zastoj: {item.downtimeHours || 0} h
+                            <div className={styles.historyDateCell}>
+                              <strong>{formatDate(item.repairedAt || item.updatedAt)}</strong>
+                              <span className={styles.historyDowntime}>
+                                Zastoj: {item.downtimeHours || 0} h
+                              </span>
                             </div>
                           </td>
                           <td>
-                            <strong>{item.machine?.name}</strong>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                              {item.machine?.brandModel || item.machine?.type}
+                            <div className={styles.historyMachineCell}>
+                              <strong>{item.machine?.name}</strong>
+                              <span>{item.machine?.brandModel || item.machine?.type}</span>
                             </div>
                           </td>
-                          <td>{item.mechanic?.name || item.reportedBy?.name || '-'}</td>
                           <td>
-                            <strong>{item.title}</strong>
-                            {item.repairNotes && (
-                              <div style={{ fontSize: '0.82rem', marginTop: '0.2rem' }}>
-                                {item.repairNotes}
-                              </div>
-                            )}
+                            <div style={{ fontWeight: 600 }}>
+                              {item.mechanic?.name || item.reportedBy?.name || '-'}
+                            </div>
                           </td>
-                          <td>{item.partsReplaced || 'Bez novih delova'}</td>
+                          <td>
+                            <div className={styles.historyWorkCell}>
+                              <strong>{item.title}</strong>
+                              {item.repairNotes && (
+                                <div className={styles.historyWorkNotes}>
+                                  {item.repairNotes}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ fontSize: '0.86rem' }}>
+                              {item.partsReplaced || 'Bez novih delova'}
+                            </div>
+                          </td>
                           <td>
                             {item.lubricantType ? (
-                              <div>
-                                <strong>{item.lubricantType}</strong>
+                              <div className={styles.historyLubricantTag}>
+                                <span>{item.lubricantType}</span>
                                 {item.lubricantLiters && (
-                                  <div style={{ color: '#16a34a', fontWeight: 700 }}>
-                                    {item.lubricantLiters} L
-                                  </div>
+                                  <strong>• {item.lubricantLiters} L</strong>
                                 )}
                               </div>
                             ) : (
@@ -1212,16 +1600,18 @@ const RadionicaKvarovi: React.FC = () => {
                             )}
                           </td>
                           <td>
-                            {item.totalCost && item.totalCost > 0 ? (
-                              <div>
-                                <strong>{item.totalCost.toLocaleString('sr-RS')} RSD</strong>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                  Delovi: {item.partsCost || 0} RSD
-                                </div>
-                              </div>
-                            ) : (
-                              <span style={{ color: 'var(--text-muted)' }}>0 RSD</span>
-                            )}
+                            <div className={styles.historyCostCell}>
+                              {item.totalCost && item.totalCost > 0 ? (
+                                <>
+                                  <strong>{item.totalCost.toLocaleString('sr-RS')} RSD</strong>
+                                  <div className={styles.historyCostParts}>
+                                    Delovi: {(item.partsCost || 0).toLocaleString('sr-RS')} RSD
+                                  </div>
+                                </>
+                              ) : (
+                                <span style={{ color: 'var(--text-muted)' }}>0 RSD</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1289,7 +1679,7 @@ const RadionicaKvarovi: React.FC = () => {
                               <span className={styles.historyDetailVal}>
                                 {item.lubricantType}
                                 {item.lubricantLiters && (
-                                  <strong style={{ color: '#16a34a', marginLeft: '0.35rem' }}>
+                                  <strong style={{ color: '#059669', marginLeft: '0.35rem' }}>
                                     ({item.lubricantLiters} L)
                                   </strong>
                                 )}
@@ -1319,6 +1709,20 @@ const RadionicaKvarovi: React.FC = () => {
                 </div>
               </>
             )}
+
+            {/* Paginacija za Tab 3 (25 po strani) */}
+            {historyTotal > 0 && (
+              <div className={styles.paginationWrapper}>
+                <TablePagination
+                  currentPage={historyPage}
+                  totalPages={historyTotalPages}
+                  totalItems={historyTotal}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={handleHistoryPageChange}
+                  itemName="servisa u knjižici"
+                />
+              </div>
+            )}
           </>
         )}
 
@@ -1337,7 +1741,7 @@ const RadionicaKvarovi: React.FC = () => {
                     </>
                   ) : (
                     <>
-                      <CheckCircle2 size={22} style={{ color: '#16a34a' }} />
+                      <CheckCircle2 size={22} style={{ color: '#10b981' }} />
                       <span>Evidentiraj popravku i oslobodi mašinu</span>
                     </>
                   )}
@@ -1357,7 +1761,7 @@ const RadionicaKvarovi: React.FC = () => {
                       🚜 {selectedIssueToResolve.machine?.name}
                     </div>
                     <div className={styles.resolveSummaryIssue}>
-                      Kvar: {selectedIssueToResolve.title}
+                      Kvar / Radni nalog: {selectedIssueToResolve.title}
                     </div>
                   </div>
 
@@ -1385,16 +1789,11 @@ const RadionicaKvarovi: React.FC = () => {
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label>Utrošeno ulje / mazivo</label>
-                      <select
+                      <CustomSelect
                         value={resolveLubricantType}
-                        onChange={(e) => setResolveLubricantType(e.target.value)}
-                      >
-                        {LUBRICANT_OPTIONS.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setResolveLubricantType(val)}
+                        options={lubricantSelectOptions}
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
@@ -1469,7 +1868,7 @@ const RadionicaKvarovi: React.FC = () => {
             <div className={styles.modalCard}>
               <div className={styles.modalHeader}>
                 <h3>
-                  <Plus size={22} style={{ color: '#7c3aed' }} />
+                  <Plus size={22} style={{ color: '#0284c7' }} />
                   Izdavanje radnog naloga za remont
                 </h3>
                 <button
@@ -1484,60 +1883,43 @@ const RadionicaKvarovi: React.FC = () => {
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
                     <label>Mašina ili priključak za remont *</label>
-                    <select
+                    <CustomSelect
                       value={remontMachineId}
-                      onChange={(e) => setRemontMachineId(e.target.value)}
-                      required
-                    >
-                      <option value="">Izaberite mašinu...</option>
-                      {machines.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} [{m.type}] — trenutno: {m.status}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setRemontMachineId(val)}
+                      options={modalMachineOptions}
+                      placeholder="Izaberite mašinu za remont..."
+                      searchable
+                    />
                   </div>
 
                   <div className={styles.formGroup}>
-                    <label>Dodeljeni mehaničar *</label>
-                    <select
+                    <label>Dodeljeni mehaničar / serviser *</label>
+                    <CustomSelect
                       value={remontWorkerId}
-                      onChange={(e) => setRemontWorkerId(e.target.value)}
-                      required
-                    >
-                      <option value="">Izaberite servisera / mehaničara...</option>
-                      {workers.map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name} [{w.type}]
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setRemontWorkerId(val)}
+                      options={modalWorkerOptions}
+                      placeholder="Izaberite mehaničara..."
+                      searchable
+                    />
                   </div>
 
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label>Tip servisa *</label>
-                      <select
+                      <CustomSelect
                         value={remontServiceType}
-                        onChange={(e) => setRemontServiceType(e.target.value)}
-                      >
-                        <option value="REDOVAN_SERVIS">Redovan servis (zamena ulja/filtera)</option>
-                        <option value="GENERALNI_REMONT">Generalni remont pred sezonu</option>
-                        <option value="KVAR_NJIVA">Vanredna popravka</option>
-                      </select>
+                        onChange={(val) => setRemontServiceType(val)}
+                        options={serviceTypeOptions}
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
                       <label>Prioritet *</label>
-                      <select
+                      <CustomSelect
                         value={remontPriority}
-                        onChange={(e) => setRemontPriority(e.target.value)}
-                      >
-                        <option value="KRITICNA">🔴 Kritičan</option>
-                        <option value="VISOKA">🟠 Visok</option>
-                        <option value="SREDNJA">🟡 Srednji</option>
-                        <option value="NISKA">🔵 Nizak</option>
-                      </select>
+                        onChange={(val) => setRemontPriority(val)}
+                        options={modalPriorityOptions}
+                      />
                     </div>
                   </div>
 
@@ -1594,7 +1976,7 @@ const RadionicaKvarovi: React.FC = () => {
             <div className={styles.modalCard}>
               <div className={styles.modalHeader}>
                 <h3>
-                  <AlertTriangle size={22} style={{ color: '#ef4444' }} />
+                  <AlertTriangle size={22} style={{ color: '#dc2626' }} />
                   Prijava kvara ili slanje u radionicu
                 </h3>
                 <button
@@ -1609,44 +1991,32 @@ const RadionicaKvarovi: React.FC = () => {
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
                     <label>Mašina *</label>
-                    <select
+                    <CustomSelect
                       value={newIssueMachineId}
-                      onChange={(e) => setNewIssueMachineId(e.target.value)}
-                      required
-                    >
-                      <option value="">Izaberite mašinu...</option>
-                      {machines.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} [{m.type}] — status: {m.status}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setNewIssueMachineId(val)}
+                      options={modalMachineOptions}
+                      placeholder="Izaberite mašinu sa problemom..."
+                      searchable
+                    />
                   </div>
 
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label>Tip servisa *</label>
-                      <select
+                      <CustomSelect
                         value={newIssueServiceType}
-                        onChange={(e) => setNewIssueServiceType(e.target.value)}
-                      >
-                        <option value="KVAR_NJIVA">Vanredni kvar sa njive</option>
-                        <option value="REDOVAN_SERVIS">Redovan servis</option>
-                        <option value="GENERALNI_REMONT">Generalni remont</option>
-                      </select>
+                        onChange={(val) => setNewIssueServiceType(val)}
+                        options={serviceTypeOptions}
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
                       <label>Prioritet *</label>
-                      <select
+                      <CustomSelect
                         value={newIssuePriority}
-                        onChange={(e) => setNewIssuePriority(e.target.value)}
-                      >
-                        <option value="KRITICNA">🔴 Kritičan</option>
-                        <option value="VISOKA">🟠 Visok</option>
-                        <option value="SREDNJA">🟡 Srednji</option>
-                        <option value="NISKA">🔵 Nizak</option>
-                      </select>
+                        onChange={(val) => setNewIssuePriority(val)}
+                        options={modalPriorityOptions}
+                      />
                     </div>
                   </div>
 
@@ -1695,7 +2065,7 @@ const RadionicaKvarovi: React.FC = () => {
           </div>
         )}
 
-        {/* Toast Notifikacija */}
+        {/* Floating Toast Notifikacija */}
         {toast && (
           <div
             className={`${styles.toast} ${

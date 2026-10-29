@@ -14,7 +14,7 @@ import {
   LogOut,
   Sprout,
   History,
-  ShieldAlert,
+  // ShieldAlert,
   KeyRound,
   Loader2,
   CreditCard,
@@ -86,12 +86,12 @@ const NAV_GROUPS: NavGroup[] = [
         icon: <CreditCard size={18} />,
         allowedRoles: ['OPERATER', 'MEHANICAR', 'RUKOVODILAC', 'DIREKTOR', 'MAGACIN'],
       },
-      {
+      /* {
         title: 'Neusklađenosti mašina',
         to: '/masine/neusklađenosti',
         icon: <ShieldAlert size={18} />,
         allowedRoles: ['DIREKTOR', 'RUKOVODILAC'],
-      },
+      }, */
     ],
   },
   {

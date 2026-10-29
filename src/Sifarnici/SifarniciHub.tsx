@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Layers,
@@ -17,11 +17,85 @@ import {
   X,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import TablePagination from '../components/TablePagination/TablePagination';
+import { useSession } from '../lib/auth-client';
 import styles from './Sifarnici.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 type TabType = 'parcele' | 'masine' | 'radnici' | 'operacije' | 'kulture' | 'partneri';
+
+const PAGE_SIZE = 25;
+
+const MACHINE_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: 'TRAKTOR', label: 'Traktor' },
+  { value: 'PRIKLJUCAK', label: 'Priključak / Prskalica / Vadilica' },
+  { value: 'KOMBAJN', label: 'Kombajn' },
+  { value: 'KAMION', label: 'Kamion / Teretno vozilo' },
+  { value: 'VILJUSKAR', label: 'Viljuškar' },
+  { value: 'OSTALO', label: 'Ostalo' },
+];
+
+const MACHINE_STATUS_OPTIONS: CustomSelectOption[] = [
+  { value: 'SLOBODNA', label: 'Slobodna', badge: 'Slobodna', badgeType: 'success' },
+  { value: 'ZADUZENA', label: 'Zadužena na njivi', badge: 'Zadužena', badgeType: 'warning' },
+  { value: 'U_KVARU', label: 'U kvaru', badge: 'U kvaru', badgeType: 'danger' },
+  { value: 'SERVIS', label: 'Na servisu / Remont', badge: 'Servis', badgeType: 'default' },
+];
+
+const ALL_WORKER_ROLE_OPTIONS: CustomSelectOption[] = [
+  { value: 'RUKOVODILAC', label: 'Rukovodilac (Direktor / Menadžment)', badge: 'Rukovodilac', badgeType: 'purple' as any },
+  { value: 'MAGACIN', label: 'Magacioner (Prijem / Izdavanje roba)', badge: 'Magacin', badgeType: 'info' },
+  { value: 'MEHANICAR', label: 'Mehaničar (Održavanje i servisi)', badge: 'Mehaničar', badgeType: 'danger' },
+  { value: 'OPERATER', label: 'Operater (Traktorista / Vozač)', badge: 'Operater', badgeType: 'primary' },
+  { value: 'SEZONAC', label: 'Sezonski radnik (Dnevnica)', badge: 'Sezonac', badgeType: 'warning' },
+];
+
+const WORK_CATEGORY_OPTIONS: CustomSelectOption[] = [
+  { value: 'OBRADA', label: 'Obrada zemlje (Oranje, Podrivanje, Tanjiranje)' },
+  { value: 'SETVA', label: 'Setva / Sadnja' },
+  { value: 'ZASTITA', label: 'Zaštita / Prskanje' },
+  { value: 'ZETVA_BERBA', label: 'Žetva / Berba / Vađenje' },
+  { value: 'TRANSPORT', label: 'Transport' },
+  { value: 'OSTALO', label: 'Ostalo' },
+];
+
+const PARTNER_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: 'KUPAC', label: 'Kupac (Otkup luka / polj. proizvoda)', badge: 'Kupac', badgeType: 'success' },
+  { value: 'DOBAVLJAC', label: 'Dobavljač (Đubrivo / Seme / Gorivo)', badge: 'Dobavljač', badgeType: 'warning' },
+  { value: 'SERVIS', label: 'Serviser / Održavanje mašina', badge: 'Servis', badgeType: 'default' },
+  { value: 'OBA', label: 'Kupac & Dobavljač', badge: 'Oba', badgeType: 'success' },
+];
+
+const FILTER_MACHINE_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Svi tipovi mašina' },
+  ...MACHINE_TYPE_OPTIONS,
+];
+
+const FILTER_MACHINE_STATUS_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Svi statusi mašina' },
+  ...MACHINE_STATUS_OPTIONS,
+];
+
+const FILTER_WORKER_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Sve uloge i radnici' },
+  { value: 'RUKOVODILAC', label: 'Rukovodioci' },
+  { value: 'MAGACIN', label: 'Magacioneri' },
+  { value: 'MEHANICAR', label: 'Mehaničari' },
+  { value: 'OPERATER', label: 'Operateri / Traktoristi' },
+  { value: 'SEZONAC', label: 'Sezonski radnici' },
+];
+
+const FILTER_WORK_CATEGORY_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Sve kategorije operacija' },
+  ...WORK_CATEGORY_OPTIONS,
+];
+
+const FILTER_PARTNER_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Svi tipovi partnera' },
+  ...PARTNER_TYPE_OPTIONS,
+];
 
 interface Toast {
   message: string;
@@ -30,14 +104,44 @@ interface Toast {
 
 const SifarniciHub: React.FC = () => {
   const queryClient = useQueryClient();
+  const { data: session } = useSession();
+  const currentUserRole = (session as any)?.user?.role;
+  const isDirektor = currentUserRole === 'DIREKTOR';
+
   const [activeTab, setActiveTab] = useState<TabType>('parcele');
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+
+  // Filteri na toolbaru
+  const [filterMachineType, setFilterMachineType] = useState('');
+  const [filterMachineStatus, setFilterMachineStatus] = useState('');
+  const [filterWorkerType, setFilterWorkerType] = useState('');
+  const [filterWorkCategory, setFilterWorkCategory] = useState('');
+  const [filterPartnerType, setFilterPartnerType] = useState('');
+
   const [modalOpen, setModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
 
   // Form states
   const [form, setForm] = useState<Record<string, any>>({});
+
+  // Dozvoljene uloge za kreiranje/izmenu radnika
+  const availableWorkerRoleOptions = useMemo(() => {
+    if (isDirektor) {
+      return ALL_WORKER_ROLE_OPTIONS;
+    }
+    // Rukovodioci ne mogu da postavljaju druge rukovodioce, samo operater, magacioner, mehanicar, sezonac
+    return ALL_WORKER_ROLE_OPTIONS.filter((opt) => opt.value !== 'RUKOVODILAC');
+  }, [isDirektor]);
+
+  // Provera da li ulogovani korisnik sme da menja/briše radnika
+  const canModifyWorker = (w: any) => {
+    const wRole = w.role || w.user?.role || (w.type === 'SEZONAC' ? 'SEZONAC' : 'OPERATER');
+    if (wRole === 'DIREKTOR') return false;
+    if (wRole === 'RUKOVODILAC' && !isDirektor) return false;
+    return true;
+  };
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -154,7 +258,7 @@ const SifarniciHub: React.FC = () => {
     setEditingItem(null);
     if (activeTab === 'parcele') setForm({ code: '', name: '', areaHa: '', location: '', currentCrop: '', notes: '' });
     if (activeTab === 'masine') setForm({ name: '', type: 'TRAKTOR', brandModel: '', regNumber: '', year: new Date().getFullYear(), currentHours: 0, tankCapacityLiters: 250, status: 'SLOBODNA', notes: '' });
-    if (activeTab === 'radnici') setForm({ name: '', type: 'STALNI', phone: '', hourlyRate: 500 });
+    if (activeTab === 'radnici') setForm({ name: '', role: 'OPERATER', phone: '', city: '', dailyWage: '' });
     if (activeTab === 'operacije') setForm({ name: '', category: 'OBRADA', unit: 'ha' });
     if (activeTab === 'kulture') setForm({ name: '', variety: '', notes: '' });
     if (activeTab === 'partneri') setForm({ name: '', type: 'KUPAC', pib: '', phone: '', email: '', address: '' });
@@ -163,7 +267,17 @@ const SifarniciHub: React.FC = () => {
 
   const openEditModal = (item: any) => {
     setEditingItem(item);
-    setForm({ ...item });
+    if (activeTab === 'radnici') {
+      const role = item.role || item.user?.role || (item.type === 'SEZONAC' ? 'SEZONAC' : 'OPERATER');
+      setForm({
+        ...item,
+        role,
+        city: item.city || '',
+        dailyWage: item.dailyWage !== null && item.dailyWage !== undefined ? item.dailyWage : '',
+      });
+    } else {
+      setForm({ ...item });
+    }
     setModalOpen(true);
   };
 
@@ -197,7 +311,24 @@ const SifarniciHub: React.FC = () => {
         payload.tankCapacityLiters = null;
       }
     }
-    if (activeTab === 'radnici' && payload.hourlyRate !== undefined) payload.hourlyRate = parseFloat(payload.hourlyRate);
+    if (activeTab === 'radnici') {
+      delete payload.hourlyRate;
+      if (payload.role === 'SEZONAC') {
+        if (!payload.city || !payload.city.trim()) {
+          showToast('Grad / Mesto je obavezno polje za sezonskog radnika.', 'error');
+          return;
+        }
+        payload.type = 'SEZONAC';
+        if (payload.dailyWage !== '' && payload.dailyWage !== undefined && payload.dailyWage !== null) {
+          payload.dailyWage = parseFloat(payload.dailyWage);
+        } else {
+          payload.dailyWage = null;
+        }
+      } else {
+        payload.type = 'STALNI';
+        payload.dailyWage = null;
+      }
+    }
 
     saveMutation.mutate({ endpoint, id: editingItem?.id, data: payload });
   };
@@ -215,14 +346,161 @@ const SifarniciHub: React.FC = () => {
     deleteMutation.mutate({ endpoint: endpointMap[activeTab], id });
   };
 
+  // Tab change handler
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab);
+    setSearch('');
+    setPage(1);
+    setFilterMachineType('');
+    setFilterMachineStatus('');
+    setFilterWorkerType('');
+    setFilterWorkCategory('');
+    setFilterPartnerType('');
+  };
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    setPage(1);
+  };
+
+  // Opcije za kulturu u formi parcele
+  const cropSelectOptions = useMemo<CustomSelectOption[]>(() => {
+    return [
+      { value: '', label: '— Ugar / Slobodno (bez kulture) —' },
+      ...(cropsData?.crops || []).map((c: any) => {
+        const val = c.name + (c.variety ? ` - ${c.variety}` : '');
+        return {
+          value: val,
+          label: c.name,
+          subLabel: c.variety ? `Sorta: ${c.variety}` : undefined,
+        };
+      }),
+    ];
+  }, [cropsData?.crops]);
+
   // Filteri
   const q = search.toLowerCase();
-  const parcels = (parcelsData?.parcels || []).filter((p: any) => p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q) || (p.currentCrop || '').toLowerCase().includes(q));
-  const machines = (machinesData?.machines || []).filter((m: any) => m.name.toLowerCase().includes(q) || (m.brandModel || '').toLowerCase().includes(q) || (m.regNumber || '').toLowerCase().includes(q));
-  const workers = (workersData?.workers || []).filter((w: any) => w.name.toLowerCase().includes(q) || (w.phone || '').includes(q));
-  const workTypes = (workTypesData?.workTypes || []).filter((wt: any) => wt.name.toLowerCase().includes(q) || wt.category.toLowerCase().includes(q));
-  const crops = (cropsData?.crops || []).filter((c: any) => c.name.toLowerCase().includes(q) || (c.variety || '').toLowerCase().includes(q));
-  const partners = (partnersData?.partners || []).filter((pt: any) => pt.name.toLowerCase().includes(q) || (pt.pib || '').includes(q));
+  const parcels = useMemo(() => {
+    return (parcelsData?.parcels || []).filter(
+      (p: any) =>
+        p.name.toLowerCase().includes(q) ||
+        p.code.toLowerCase().includes(q) ||
+        (p.currentCrop || '').toLowerCase().includes(q)
+    );
+  }, [parcelsData?.parcels, q]);
+
+  const machines = useMemo(() => {
+    return (machinesData?.machines || []).filter((m: any) => {
+      if (filterMachineType && m.type !== filterMachineType) return false;
+      if (filterMachineStatus && m.status !== filterMachineStatus) return false;
+      return (
+        m.name.toLowerCase().includes(q) ||
+        (m.brandModel || '').toLowerCase().includes(q) ||
+        (m.regNumber || '').toLowerCase().includes(q)
+      );
+    });
+  }, [machinesData?.machines, filterMachineType, filterMachineStatus, q]);
+
+  const workers = useMemo(() => {
+    return (workersData?.workers || []).filter((w: any) => {
+      const wRole = w.role || w.user?.role || (w.type === 'SEZONAC' ? 'SEZONAC' : 'OPERATER');
+      if (filterWorkerType && wRole !== filterWorkerType) return false;
+      return (
+        w.name.toLowerCase().includes(q) ||
+        (w.phone || '').includes(q) ||
+        (w.city || '').toLowerCase().includes(q) ||
+        (w.user?.email || '').toLowerCase().includes(q)
+      );
+    });
+  }, [workersData?.workers, filterWorkerType, q]);
+
+  const workTypes = useMemo(() => {
+    return (workTypesData?.workTypes || []).filter((wt: any) => {
+      if (filterWorkCategory && wt.category !== filterWorkCategory) return false;
+      return wt.name.toLowerCase().includes(q) || wt.category.toLowerCase().includes(q);
+    });
+  }, [workTypesData?.workTypes, filterWorkCategory, q]);
+
+  const crops = useMemo(() => {
+    return (cropsData?.crops || []).filter(
+      (c: any) =>
+        c.name.toLowerCase().includes(q) || (c.variety || '').toLowerCase().includes(q)
+    );
+  }, [cropsData?.crops, q]);
+
+  const partners = useMemo(() => {
+    return (partnersData?.partners || []).filter((pt: any) => {
+      if (filterPartnerType && pt.type !== filterPartnerType) return false;
+      return pt.name.toLowerCase().includes(q) || (pt.pib || '').includes(q);
+    });
+  }, [partnersData?.partners, filterPartnerType, q]);
+
+  // Aktivna lista i paginacija (25 po stranici)
+  const currentList = useMemo(() => {
+    switch (activeTab) {
+      case 'parcele':
+        return parcels;
+      case 'masine':
+        return machines;
+      case 'radnici':
+        return workers;
+      case 'operacije':
+        return workTypes;
+      case 'kulture':
+        return crops;
+      case 'partneri':
+        return partners;
+      default:
+        return [];
+    }
+  }, [activeTab, parcels, machines, workers, workTypes, crops, partners]);
+
+  const totalItems = currentList.length;
+  const totalPages = Math.ceil(totalItems / PAGE_SIZE) || 1;
+
+  const paginatedParcels = useMemo(
+    () => parcels.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [parcels, page]
+  );
+  const paginatedMachines = useMemo(
+    () => machines.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [machines, page]
+  );
+  const paginatedWorkers = useMemo(
+    () => workers.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [workers, page]
+  );
+  const paginatedWorkTypes = useMemo(
+    () => workTypes.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [workTypes, page]
+  );
+  const paginatedCrops = useMemo(
+    () => crops.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [crops, page]
+  );
+  const paginatedPartners = useMemo(
+    () => partners.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [partners, page]
+  );
+
+  const getItemName = (tab: TabType) => {
+    switch (tab) {
+      case 'parcele':
+        return 'parcela';
+      case 'masine':
+        return 'mašina';
+      case 'radnici':
+        return 'radnika';
+      case 'operacije':
+        return 'operacija';
+      case 'kulture':
+        return 'kultura';
+      case 'partneri':
+        return 'partnera';
+      default:
+        return 'zapisa';
+    }
+  };
 
   const isLoading = loadingParcels || loadingMachines || loadingWorkers || loadingWorkTypes || loadingCrops || loadingPartners;
 
@@ -283,7 +561,7 @@ const SifarniciHub: React.FC = () => {
       <div className={styles.tabsContainer}>
         <button
           className={`${styles.tabBtn} ${activeTab === 'parcele' ? styles.tabBtnActive : ''}`}
-          onClick={() => { setActiveTab('parcele'); setSearch(''); }}
+          onClick={() => handleTabChange('parcele')}
         >
           <Layers size={17} />
           <span>Parcele</span>
@@ -292,7 +570,7 @@ const SifarniciHub: React.FC = () => {
 
         <button
           className={`${styles.tabBtn} ${activeTab === 'masine' ? styles.tabBtnActive : ''}`}
-          onClick={() => { setActiveTab('masine'); setSearch(''); }}
+          onClick={() => handleTabChange('masine')}
         >
           <Tractor size={17} />
           <span>Mašine</span>
@@ -301,7 +579,7 @@ const SifarniciHub: React.FC = () => {
 
         <button
           className={`${styles.tabBtn} ${activeTab === 'radnici' ? styles.tabBtnActive : ''}`}
-          onClick={() => { setActiveTab('radnici'); setSearch(''); }}
+          onClick={() => handleTabChange('radnici')}
         >
           <Users size={17} />
           <span>Radnici</span>
@@ -310,7 +588,7 @@ const SifarniciHub: React.FC = () => {
 
         <button
           className={`${styles.tabBtn} ${activeTab === 'operacije' ? styles.tabBtnActive : ''}`}
-          onClick={() => { setActiveTab('operacije'); setSearch(''); }}
+          onClick={() => handleTabChange('operacije')}
         >
           <Settings size={17} />
           <span>Operacije</span>
@@ -319,7 +597,7 @@ const SifarniciHub: React.FC = () => {
 
         <button
           className={`${styles.tabBtn} ${activeTab === 'kulture' ? styles.tabBtnActive : ''}`}
-          onClick={() => { setActiveTab('kulture'); setSearch(''); }}
+          onClick={() => handleTabChange('kulture')}
         >
           <Sprout size={17} />
           <span>Kulture & Sorte</span>
@@ -328,7 +606,7 @@ const SifarniciHub: React.FC = () => {
 
         <button
           className={`${styles.tabBtn} ${activeTab === 'partneri' ? styles.tabBtnActive : ''}`}
-          onClick={() => { setActiveTab('partneri'); setSearch(''); }}
+          onClick={() => handleTabChange('partneri')}
         >
           <Handshake size={17} />
           <span>Partneri</span>
@@ -336,17 +614,88 @@ const SifarniciHub: React.FC = () => {
         </button>
       </div>
 
-      {/* Toolbar */}
+      {/* Toolbar sa pretragom, filterima i dugmetom Dodaj */}
       <div className={styles.toolbar}>
-        <div className={styles.searchBox}>
-          <Search size={18} className={styles.searchIcon} />
-          <input
-            type="text"
-            className={styles.searchInput}
-            placeholder={`Pretraži ${activeTab}...`}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+        <div className={styles.toolbarLeft}>
+          <div className={styles.searchBox}>
+            <Search size={18} className={styles.searchIcon} />
+            <input
+              type="text"
+              className={styles.searchInput}
+              placeholder={`Pretraži ${activeTab}...`}
+              value={search}
+              onChange={(e) => handleSearchChange(e.target.value)}
+            />
+          </div>
+
+          {activeTab === 'masine' && (
+            <>
+              <div style={{ minWidth: 175, flex: '0 0 auto' }}>
+                <CustomSelect
+                  value={filterMachineType}
+                  onChange={(val) => {
+                    setFilterMachineType(val);
+                    setPage(1);
+                  }}
+                  options={FILTER_MACHINE_TYPE_OPTIONS}
+                  searchable={false}
+                />
+              </div>
+              <div style={{ minWidth: 170, flex: '0 0 auto' }}>
+                <CustomSelect
+                  value={filterMachineStatus}
+                  onChange={(val) => {
+                    setFilterMachineStatus(val);
+                    setPage(1);
+                  }}
+                  options={FILTER_MACHINE_STATUS_OPTIONS}
+                  searchable={false}
+                />
+              </div>
+            </>
+          )}
+
+          {activeTab === 'radnici' && (
+            <div style={{ minWidth: 180, flex: '0 0 auto' }}>
+              <CustomSelect
+                value={filterWorkerType}
+                onChange={(val) => {
+                  setFilterWorkerType(val);
+                  setPage(1);
+                }}
+                options={FILTER_WORKER_TYPE_OPTIONS}
+                searchable={false}
+              />
+            </div>
+          )}
+
+          {activeTab === 'operacije' && (
+            <div style={{ minWidth: 210, flex: '0 0 auto' }}>
+              <CustomSelect
+                value={filterWorkCategory}
+                onChange={(val) => {
+                  setFilterWorkCategory(val);
+                  setPage(1);
+                }}
+                options={FILTER_WORK_CATEGORY_OPTIONS}
+                searchable={false}
+              />
+            </div>
+          )}
+
+          {activeTab === 'partneri' && (
+            <div style={{ minWidth: 190, flex: '0 0 auto' }}>
+              <CustomSelect
+                value={filterPartnerType}
+                onChange={(val) => {
+                  setFilterPartnerType(val);
+                  setPage(1);
+                }}
+                options={FILTER_PARTNER_TYPE_OPTIONS}
+                searchable={false}
+              />
+            </div>
+          )}
         </div>
 
         <button className={styles.addBtn} onClick={openAddModal}>
@@ -381,7 +730,7 @@ const SifarniciHub: React.FC = () => {
                   {parcels.length === 0 ? (
                     <tr><td colSpan={6} className={styles.emptyState}>Nema unetih parcela</td></tr>
                   ) : (
-                    parcels.map((p: any) => (
+                    paginatedParcels.map((p: any) => (
                       <tr key={p.id}>
                         <td><span className={styles.codeBadge}>{p.code}</span></td>
                         <td><strong className={styles.primaryText}>{p.name}</strong><span className={styles.secondaryText}>{p.notes || ''}</span></td>
@@ -425,7 +774,7 @@ const SifarniciHub: React.FC = () => {
                   {machines.length === 0 ? (
                     <tr><td colSpan={7} className={styles.emptyState}>Nema unetih mašina</td></tr>
                   ) : (
-                    machines.map((m: any) => (
+                    paginatedMachines.map((m: any) => (
                       <tr key={m.id}>
                         <td>
                           <strong className={styles.primaryText}>{m.name}</strong>
@@ -466,36 +815,79 @@ const SifarniciHub: React.FC = () => {
                 <thead>
                   <tr>
                     <th>Radnik</th>
-                    <th>Tip angažovanja</th>
+                    <th>Uloga / Pozicija</th>
+                    <th>Mesto / Grad</th>
+                    <th>Dnevnica (RSD)</th>
                     <th>Kontakt telefon</th>
-                    <th>Satnica (RSD/h)</th>
-                    <th>Povezan login nalog</th>
+                    <th>Povezan nalog</th>
                     <th className={styles.thActions}>Akcije</th>
                   </tr>
                 </thead>
                 <tbody>
                   {workers.length === 0 ? (
-                    <tr><td colSpan={6} className={styles.emptyState}>Nema unetih radnika</td></tr>
+                    <tr><td colSpan={7} className={styles.emptyState}>Nema unetih radnika za zadate filtere</td></tr>
                   ) : (
-                    workers.map((w: any) => (
-                      <tr key={w.id}>
-                        <td><strong className={styles.primaryText}>{w.name}</strong></td>
-                        <td>
-                          <span className={`${styles.pill} ${w.type === 'STALNI' ? styles.pillBlue : styles.pillAmber}`}>
-                            {w.type === 'STALNI' ? 'Stalni radnik' : 'Sezonac'}
-                          </span>
-                        </td>
-                        <td><span className={styles.secondaryText}>{w.phone || '—'}</span></td>
-                        <td><span className={styles.numberText}>{w.hourlyRate || 0} RSD/h</span></td>
-                        <td><span className={styles.secondaryText}>{w.user?.email || 'Nema (samo njiva)'}</span></td>
-                        <td>
-                          <div className={styles.actionBtns}>
-                            <button className={styles.actionBtn} onClick={() => openEditModal(w)} title="Izmeni"><Pencil size={15} /></button>
-                            <button className={`${styles.actionBtn} ${styles.actionBtnDanger}`} onClick={() => handleDelete(w.id, w.name)} title="Obriši"><Trash2 size={15} /></button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+                    paginatedWorkers.map((w: any) => {
+                      const wRole = w.role || w.user?.role || (w.type === 'SEZONAC' ? 'SEZONAC' : 'OPERATER');
+                      const canEdit = canModifyWorker(w);
+
+                      return (
+                        <tr key={w.id}>
+                          <td><strong className={styles.primaryText}>{w.name}</strong></td>
+                          <td>
+                            <span className={`${styles.pill} ${
+                              wRole === 'RUKOVODILAC' ? styles.pillPurple :
+                              wRole === 'MAGACIN' ? styles.pillCyan :
+                              wRole === 'MEHANICAR' ? styles.pillRed :
+                              wRole === 'SEZONAC' ? styles.pillAmber : styles.pillBlue
+                            }`}>
+                              {wRole === 'RUKOVODILAC' ? 'Rukovodilac' :
+                               wRole === 'MAGACIN' ? 'Magacioner' :
+                               wRole === 'MEHANICAR' ? 'Mehaničar' :
+                               wRole === 'SEZONAC' ? 'Sezonac' : 'Operater'}
+                            </span>
+                          </td>
+                          <td><span className={styles.secondaryText}>{w.city || '—'}</span></td>
+                          <td>
+                            {wRole === 'SEZONAC' ? (
+                              <span className={styles.numberText} style={{ color: '#d97706' }}>
+                                {w.dailyWage ? `${Number(w.dailyWage).toLocaleString('sr-RS')} RSD` : 'Nije uneta'}
+                              </span>
+                            ) : (
+                              <span className={styles.secondaryText}>—</span>
+                            )}
+                          </td>
+                          <td><span className={styles.secondaryText}>{w.phone || '—'}</span></td>
+                          <td>
+                            {w.user?.email ? (
+                              <span className={styles.codeBadge}>{w.user.email}</span>
+                            ) : (
+                              <span className={styles.secondaryText}>Nema login nalog</span>
+                            )}
+                          </td>
+                          <td>
+                            <div className={styles.actionBtns}>
+                              <button
+                                className={`${styles.actionBtn} ${!canEdit ? styles.actionBtnDisabled : ''}`}
+                                onClick={() => canEdit && openEditModal(w)}
+                                title={canEdit ? 'Izmeni' : 'Samo direktor može menjati ovog radnika'}
+                                disabled={!canEdit}
+                              >
+                                <Pencil size={15} />
+                              </button>
+                              <button
+                                className={`${styles.actionBtn} ${styles.actionBtnDanger} ${!canEdit ? styles.actionBtnDisabled : ''}`}
+                                onClick={() => canEdit && handleDelete(w.id, w.name)}
+                                title={canEdit ? 'Obriši' : 'Samo direktor može obrisati ovog radnika'}
+                                disabled={!canEdit}
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -516,7 +908,7 @@ const SifarniciHub: React.FC = () => {
                   {workTypes.length === 0 ? (
                     <tr><td colSpan={4} className={styles.emptyState}>Nema unetih operacija</td></tr>
                   ) : (
-                    workTypes.map((wt: any) => (
+                    paginatedWorkTypes.map((wt: any) => (
                       <tr key={wt.id}>
                         <td><strong className={styles.primaryText}>{wt.name}</strong></td>
                         <td><span className={`${styles.pill} ${styles.pillPurple}`}>{wt.category}</span></td>
@@ -549,7 +941,7 @@ const SifarniciHub: React.FC = () => {
                   {crops.length === 0 ? (
                     <tr><td colSpan={4} className={styles.emptyState}>Nema unetih kultura</td></tr>
                   ) : (
-                    crops.map((c: any) => (
+                    paginatedCrops.map((c: any) => (
                       <tr key={c.id}>
                         <td><strong className={styles.primaryText}>{c.name}</strong></td>
                         <td><span className={`${styles.pill} ${styles.pillGreen}`}>{c.variety || '—'}</span></td>
@@ -585,7 +977,7 @@ const SifarniciHub: React.FC = () => {
                   {partners.length === 0 ? (
                     <tr><td colSpan={7} className={styles.emptyState}>Nema unetih partnera</td></tr>
                   ) : (
-                    partners.map((pt: any) => (
+                    paginatedPartners.map((pt: any) => (
                       <tr key={pt.id}>
                         <td><strong className={styles.primaryText}>{pt.name}</strong></td>
                         <td>
@@ -612,6 +1004,17 @@ const SifarniciHub: React.FC = () => {
               </table>
             )}
           </>
+        )}
+
+        {!isLoading && totalItems > 0 && (
+          <TablePagination
+            currentPage={page}
+            totalPages={totalPages}
+            totalItems={totalItems}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+            itemName={getItemName(activeTab)}
+          />
         )}
       </div>
 
@@ -651,7 +1054,13 @@ const SifarniciHub: React.FC = () => {
                     </div>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Trenutna kultura</label>
-                      <input className={styles.formInput} value={form.currentCrop || ''} onChange={(e) => setForm({ ...form, currentCrop: e.target.value })} placeholder="Luk žuti" />
+                      <CustomSelect
+                        value={form.currentCrop || ''}
+                        onChange={(val) => setForm({ ...form, currentCrop: val })}
+                        options={cropSelectOptions}
+                        placeholder="— Izaberite kulturu —"
+                        searchable={true}
+                      />
                     </div>
                   </div>
                   <div className={styles.formGroup}>
@@ -671,23 +1080,21 @@ const SifarniciHub: React.FC = () => {
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Tip mašine</label>
-                      <select className={styles.formSelect} value={form.type || 'TRAKTOR'} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                        <option value="TRAKTOR">Traktor</option>
-                        <option value="PRIKLJUCAK">Priključak / Prskalica / Vadilica</option>
-                        <option value="KOMBAJN">Kombajn</option>
-                        <option value="KAMION">Kamion</option>
-                        <option value="VILJUSKAR">Viljuškar</option>
-                        <option value="OSTALO">Ostalo</option>
-                      </select>
+                      <CustomSelect
+                        value={form.type || 'TRAKTOR'}
+                        onChange={(val) => setForm({ ...form, type: val })}
+                        options={MACHINE_TYPE_OPTIONS}
+                        searchable={false}
+                      />
                     </div>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Status</label>
-                      <select className={styles.formSelect} value={form.status || 'SLOBODNA'} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-                        <option value="SLOBODNA">Slobodna</option>
-                        <option value="ZADUZENA">Zadužena na njivi</option>
-                        <option value="U_KVARU">U kvaru</option>
-                        <option value="SERVIS">Na servisu</option>
-                      </select>
+                      <CustomSelect
+                        value={form.status || 'SLOBODNA'}
+                        onChange={(val) => setForm({ ...form, status: val })}
+                        options={MACHINE_STATUS_OPTIONS}
+                        searchable={false}
+                      />
                     </div>
                   </div>
                   <div className={styles.formRow}>
@@ -729,25 +1136,84 @@ const SifarniciHub: React.FC = () => {
               {activeTab === 'radnici' && (
                 <>
                   <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Ime i prezime</label>
-                    <input className={styles.formInput} value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Marko Marković" required />
+                    <label className={styles.formLabel}>Ime i prezime radnika *</label>
+                    <input
+                      className={styles.formInput}
+                      value={form.name || ''}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      placeholder="npr. Marko Marković"
+                      required
+                    />
                   </div>
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Tip angažovanja</label>
-                      <select className={styles.formSelect} value={form.type || 'STALNI'} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                        <option value="STALNI">Stalni radnik (Traktorista)</option>
-                        <option value="SEZONAC">Sezonac (Berba / Magacin)</option>
-                      </select>
+                      <label className={styles.formLabel}>Pozicija / Uloga *</label>
+                      <CustomSelect
+                        value={form.role || 'OPERATER'}
+                        onChange={(val) => setForm({ ...form, role: val })}
+                        options={availableWorkerRoleOptions}
+                        searchable={false}
+                      />
+                      {!isDirektor && (
+                        <span style={{ fontSize: 11, color: '#64748b', marginTop: 4, display: 'block' }}>
+                          * Samo direktor ima ovlašćenje da dodeljuje ulogu rukovodioca.
+                        </span>
+                      )}
                     </div>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Satnica (RSD/h)</label>
-                      <input className={styles.formInput} type="number" step="10" value={form.hourlyRate || 500} onChange={(e) => setForm({ ...form, hourlyRate: e.target.value })} />
+                      <label className={styles.formLabel}>Kontakt telefon</label>
+                      <input
+                        className={styles.formInput}
+                        value={form.phone || ''}
+                        onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                        placeholder="+381 64..."
+                      />
                     </div>
                   </div>
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Telefon</label>
-                    <input className={styles.formInput} value={form.phone || ''} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+381 64..." />
+                  <div className={styles.formRow}>
+                    <div className={styles.formGroup}>
+                      <label className={styles.formLabel}>
+                        Grad / Mesto stanovanja {form.role === 'SEZONAC' ? '*' : '(opciono)'}
+                      </label>
+                      <input
+                        className={styles.formInput}
+                        value={form.city || ''}
+                        onChange={(e) => setForm({ ...form, city: e.target.value })}
+                        placeholder="npr. Bački Petrovac, Kulpin, Gložan"
+                        required={form.role === 'SEZONAC'}
+                      />
+                    </div>
+                    {form.role === 'SEZONAC' ? (
+                      <div className={styles.formGroup}>
+                        <label className={styles.formLabel}>Dnevnica (RSD) - opciono</label>
+                        <input
+                          className={styles.formInput}
+                          type="number"
+                          step="100"
+                          min="0"
+                          value={form.dailyWage ?? ''}
+                          onChange={(e) => setForm({ ...form, dailyWage: e.target.value })}
+                          placeholder="npr. 4000 (RSD po danu)"
+                        />
+                      </div>
+                    ) : (
+                      <div className={styles.formGroup}>
+                        <label className={styles.formLabel}>Status angažovanja</label>
+                        <div
+                          style={{
+                            padding: '10px 12px',
+                            background: '#f8fafc',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: 8,
+                            fontSize: 13,
+                            color: '#475569',
+                            fontWeight: 500,
+                          }}
+                        >
+                          Stalno zaposlen radnik firme
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -762,14 +1228,12 @@ const SifarniciHub: React.FC = () => {
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Kategorija rada</label>
-                      <select className={styles.formSelect} value={form.category || 'OBRADA'} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-                        <option value="OBRADA">Obrada zemlje</option>
-                        <option value="SETVA">Setva / Sadnja</option>
-                        <option value="ZASTITA">Zaštita / Prskanje</option>
-                        <option value="ZETVA_BERBA">Žetva / Berba / Vađenje</option>
-                        <option value="TRANSPORT">Transport</option>
-                        <option value="OSTALO">Ostalo</option>
-                      </select>
+                      <CustomSelect
+                        value={form.category || 'OBRADA'}
+                        onChange={(val) => setForm({ ...form, category: val })}
+                        options={WORK_CATEGORY_OPTIONS}
+                        searchable={false}
+                      />
                     </div>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Podrazumevana jedinica</label>
@@ -807,12 +1271,12 @@ const SifarniciHub: React.FC = () => {
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Tip partnera</label>
-                      <select className={styles.formSelect} value={form.type || 'KUPAC'} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                        <option value="KUPAC">Kupac (Otkup luka)</option>
-                        <option value="DOBAVLJAC">Dobavljač (Đubrivo / Seme)</option>
-                        <option value="SERVIS">Serviser mašina</option>
-                        <option value="OBA">Kupac & Dobavljač</option>
-                      </select>
+                      <CustomSelect
+                        value={form.type || 'KUPAC'}
+                        onChange={(val) => setForm({ ...form, type: val })}
+                        options={PARTNER_TYPE_OPTIONS}
+                        searchable={false}
+                      />
                     </div>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>PIB</label>

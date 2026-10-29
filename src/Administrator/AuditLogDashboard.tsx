@@ -7,15 +7,20 @@ import {
   Loader2,
   FileEdit,
   Trash2,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import { TablePagination } from '../components/TablePagination/TablePagination';
 import styles from './AuditLog.module.css';
 
 const API = 'http://localhost:5000/api';
+
+const ACTION_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Sve akcije' },
+  { value: 'IZMENA', label: 'Samo Izmene (UPDATE)' },
+  { value: 'STORNO', label: 'Samo Storniranja (STORNO)' },
+  { value: 'BRISANJE', label: 'Samo Brisanja (DELETE)' },
+];
 
 const AuditLogDashboard: React.FC = () => {
 
@@ -27,27 +32,12 @@ const AuditLogDashboard: React.FC = () => {
 
   // Paginacija
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
+  const pageSize = 25;
 
   // Reset na stranu 1 pri promeni filtera
   useEffect(() => {
     setPage(1);
-  }, [search, action, dateFrom, dateTo, pageSize]);
-
-  const getPageNumbers = (current: number, total: number) => {
-    if (total <= 7) {
-      return Array.from({ length: total }, (_, i) => i + 1);
-    }
-    const pages: (number | string)[] = [];
-    if (current <= 4) {
-      pages.push(1, 2, 3, 4, 5, '...', total);
-    } else if (current >= total - 3) {
-      pages.push(1, '...', total - 4, total - 3, total - 2, total - 1, total);
-    } else {
-      pages.push(1, '...', current - 1, current, current + 1, '...', total);
-    }
-    return pages;
-  };
+  }, [search, action, dateFrom, dateTo]);
 
   // Upit za povlačenje audit logova
   const { data: logsData, isLoading, isFetching, refetch } = useQuery({
@@ -126,16 +116,15 @@ const AuditLogDashboard: React.FC = () => {
               />
             </div>
 
-            <select
-              className={styles.selectInput}
-              value={action}
-              onChange={(e) => setAction(e.target.value)}
-            >
-              <option value="">Sve akcije</option>
-              <option value="IZMENA">Samo Izmene (UPDATE)</option>
-              <option value="STORNO">Samo Storniranja (STORNO)</option>
-              <option value="BRISANJE">Samo Brisanja (DELETE)</option>
-            </select>
+            <div style={{ minWidth: 230, flex: '1 1 230px' }}>
+              <CustomSelect
+                value={action}
+                onChange={setAction}
+                options={ACTION_OPTIONS}
+                searchable={false}
+                placeholder="Sve akcije"
+              />
+            </div>
 
             <div className={styles.dateRangeInputs}>
               <span>Od:</span>
@@ -262,92 +251,14 @@ const AuditLogDashboard: React.FC = () => {
           </div>
 
           {/* Serverska Paginacija */}
-          {totalLogs > 0 && (
-            <div className={styles.paginationBar}>
-              <div className={styles.paginationInfo}>
-                Prikazano <strong>{(page - 1) * pageSize + 1}</strong> do{' '}
-                <strong>{Math.min(page * pageSize, totalLogs)}</strong> od ukupno{' '}
-                <strong>{totalLogs}</strong> zabeleženih aktivnosti
-              </div>
-
-              <div className={styles.paginationControls}>
-                <div className={styles.pageSizeWrapper}>
-                  <span>Po strani:</span>
-                  <select
-                    className={styles.pageSizeSelect}
-                    value={pageSize}
-                    onChange={(e) => {
-                      setPageSize(Number(e.target.value));
-                      setPage(1);
-                    }}
-                  >
-                    <option value={10}>10</option>
-                    <option value={25}>25</option>
-                    <option value={50}>50</option>
-                    <option value={100}>100</option>
-                  </select>
-                </div>
-
-                <div className={styles.paginationButtons}>
-                  <button
-                    className={styles.paginationBtn}
-                    onClick={() => setPage(1)}
-                    disabled={page <= 1}
-                    title="Prva strana"
-                  >
-                    <ChevronsLeft size={16} />
-                  </button>
-                  <button
-                    className={styles.paginationBtn}
-                    onClick={() => setPage((p) => Math.max(p - 1, 1))}
-                    disabled={page <= 1}
-                    title="Prethodna strana"
-                  >
-                    <ChevronLeft size={16} />
-                    <span>Prethodna</span>
-                  </button>
-
-                  <div className={styles.pageNumbers}>
-                    {getPageNumbers(page, totalPages).map((pNum, idx) =>
-                      pNum === '...' ? (
-                        <span key={`dots-${idx}`} className={styles.paginationEllipsis}>
-                          ...
-                        </span>
-                      ) : (
-                        <button
-                          key={pNum}
-                          className={`${styles.paginationPageBtn} ${
-                            pNum === page ? styles.paginationPageBtnActive : ''
-                          }`}
-                          onClick={() => setPage(Number(pNum))}
-                        >
-                          {pNum}
-                        </button>
-                      )
-                    )}
-                  </div>
-
-                  <button
-                    className={styles.paginationBtn}
-                    onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
-                    disabled={page >= totalPages}
-                    title="Sledeća strana"
-                  >
-                    <span>Sledeća</span>
-                    <ChevronRight size={16} />
-                  </button>
-                  <button
-                    className={styles.paginationBtn}
-                    onClick={() => setPage(totalPages)}
-                    disabled={page >= totalPages}
-                    title="Poslednja strana"
-                  >
-                    <ChevronsRight size={16} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          <TablePagination
+            currentPage={page}
+            totalPages={totalPages}
+            totalItems={totalLogs}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            itemName="aktivnosti"
+          />
         </div>
       </div>
     </AppLayout>

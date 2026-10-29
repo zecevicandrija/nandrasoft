@@ -299,12 +299,25 @@
 
 .filterControlsRow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: minmax(180px, 1.1fr) minmax(280px, 1.9fr) minmax(170px, 1.1fr) minmax(170px, 1.1fr) minmax(170px, 1.1fr);
   gap: 0.85rem;
   align-items: flex-start;
   position: relative;
   z-index: 10;
   width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .filterControlsRow {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .filterControlsRow {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
 }
 
 .filterControlColumn {
@@ -314,44 +327,13 @@
   min-width: 0;
 }
 
-.miniParcelEditBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.15rem 0.45rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: #0284c7;
-  background: rgba(2, 132, 199, 0.1);
-  border: 1px solid rgba(2, 132, 199, 0.3);
-  border-radius: 5px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.miniParcelEditBtn:hover {
-  background: rgba(2, 132, 199, 0.2);
-  border-color: #0284c7;
-}
-
-:global([data-theme="dark"]) .miniParcelEditBtn {
-  color: #38bdf8;
-  background: rgba(56, 189, 248, 0.15);
-  border-color: rgba(56, 189, 248, 0.35);
-}
-
-:global([data-theme="dark"]) .miniParcelEditBtn:hover {
-  background: rgba(56, 189, 248, 0.25);
-  border-color: #38bdf8;
-}
-
 .columnHeaderBar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
-  min-height: 26px;
-  margin-bottom: 0.4rem;
+  height: 24px;
+  margin-bottom: 0.45rem;
   width: 100%;
   box-sizing: border-box;
 }
@@ -363,6 +345,74 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   white-space: nowrap;
+}
+
+.parcelHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.miniParcelAddBtn,
+.miniParcelEditBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  height: 22px;
+  box-sizing: border-box;
+}
+
+.miniParcelAddBtn {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+  border: 1px solid rgba(22, 163, 74, 0.32);
+}
+
+.miniParcelAddBtn:hover {
+  background: rgba(22, 163, 74, 0.22);
+  border-color: #16a34a;
+}
+
+:global([data-theme="dark"]) .miniParcelAddBtn {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+:global([data-theme="dark"]) .miniParcelAddBtn:hover {
+  background: rgba(34, 197, 94, 0.3);
+  border-color: #22c55e;
+}
+
+.miniParcelEditBtn {
+  color: #0284c7;
+  background: rgba(2, 132, 199, 0.12);
+  border: 1px solid rgba(2, 132, 199, 0.32);
+}
+
+.miniParcelEditBtn:hover {
+  background: rgba(2, 132, 199, 0.22);
+  border-color: #0284c7;
+}
+
+:global([data-theme="dark"]) .miniParcelEditBtn {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+:global([data-theme="dark"]) .miniParcelEditBtn:hover {
+  background: rgba(56, 189, 248, 0.3);
+  border-color: #38bdf8;
 }
 
 .searchBox {

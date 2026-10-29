@@ -13,6 +13,8 @@ import GorivoDashboard from './Gorivo/GorivoDashboard';
 import RadionicaKvarovi from './Masine/RadionicaKvarovi';
 import PutarineDashboard from './Masine/PutarineDashboard';
 import FertilizerDashboard from './Djubrivo/FertilizerDashboard';
+import SeasonalWorkersDashboard from './Sezonci/SeasonalWorkersDashboard';
+import OnionDashboard from './Luk/OnionDashboard';
 
 function App() {
   return (
@@ -33,6 +35,10 @@ function App() {
           <Route path="/masine/putarine" element={<PutarineDashboard />} />
           <Route path="/magacin-djubrivo" element={<FertilizerDashboard />} />
           <Route path="/djubrivo" element={<Navigate to="/magacin-djubrivo" replace />} />
+          <Route path="/modul-luk" element={<OnionDashboard />} />
+          <Route path="/luk" element={<Navigate to="/modul-luk" replace />} />
+          <Route path="/sezonci" element={<SeasonalWorkersDashboard />} />
+          <Route path="/sezonski-radnici" element={<Navigate to="/sezonci" replace />} />
           <Route path="/masine/neusklađenosti" element={<NeuskladjenostiMasina />} />
           <Route path="/radovi/neusklađenosti" element={<NeuskladjenostiMasina />} />
           <Route path="*" element={<Navigate to="/" replace />} />

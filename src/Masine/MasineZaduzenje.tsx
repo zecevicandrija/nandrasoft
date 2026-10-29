@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import {
@@ -18,14 +18,19 @@ import {
   Zap,
   ArrowLeft,
   Pencil,
+  Search,
+  RotateCcw,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import TablePagination from '../components/TablePagination/TablePagination';
 import { useSession } from '../lib/auth-client';
 import styles from './MasineZaduzenje.module.css';
 
 const API = 'http://localhost:5000/api';
 
 type TabType = 'active' | 'checkout' | 'history' | 'direct';
+type HistoryPeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve' | 'custom';
 
 interface Toast {
   message: string;
@@ -102,6 +107,52 @@ const MasineZaduzenje: React.FC = () => {
   const [directOperational, setDirectOperational] = useState<boolean>(true);
   const [directNotes, setDirectNotes] = useState<string>('Direktno evidentirano zaduženje (rešena neusklađenost)');
 
+  // Paginacija za Aktivna Zaduženja
+  const [activePage, setActivePage] = useState(1);
+
+  // Filteri i Paginacija za Istorijat Zaduženja
+  const [historyPeriod, setHistoryPeriod] = useState<HistoryPeriodType>('sve');
+  const [historyDateFrom, setHistoryDateFrom] = useState('');
+  const [historyDateTo, setHistoryDateTo] = useState('');
+  const [historyMachineId, setHistoryMachineId] = useState('');
+  const [historyWorkerId, setHistoryWorkerId] = useState('');
+  const [historyStatus, setHistoryStatus] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyPage, setHistoryPage] = useState(1);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyPeriod, historyDateFrom, historyDateTo, historyMachineId, historyWorkerId, historyStatus, historySearch]);
+
+  const getHistoryDateRange = () => {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const todayStr = `${yyyy}-${mm}-${dd}`;
+
+    if (historyPeriod === 'danas') {
+      return { from: todayStr, to: todayStr };
+    }
+    if (historyPeriod === 'nedelja') {
+      const dayOfWeek = today.getDay() === 0 ? 6 : today.getDay() - 1;
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - dayOfWeek);
+      const startStr = startOfWeek.toISOString().slice(0, 10);
+      return { from: startStr, to: todayStr };
+    }
+    if (historyPeriod === 'mesec') {
+      const startOfMonth = `${yyyy}-${mm}-01`;
+      return { from: startOfMonth, to: todayStr };
+    }
+    if (historyPeriod === 'custom') {
+      return { from: historyDateFrom, to: historyDateTo };
+    }
+    return { from: '', to: '' };
+  };
+
+  const historyRange = getHistoryDateRange();
+
   // 1. STATISTIKA ZADUŽENJA
   const { data: statsData } = useQuery({
     queryKey: ['assignments-stats'],
@@ -113,22 +164,40 @@ const MasineZaduzenje: React.FC = () => {
     refetchOnMount: 'always',
   });
 
-  // 2. AKTIVNA ZADUŽENJA
+  // 2. AKTIVNA ZADUŽENJA (Paginacija 25 po strani)
   const { data: activeData, isLoading: loadingActive } = useQuery({
-    queryKey: ['assignments-active'],
+    queryKey: ['assignments-active', activePage],
     queryFn: async () => {
-      const res = await fetch(`${API}/assignments/active`, { credentials: 'include' });
+      const res = await fetch(`${API}/assignments/active?page=${activePage}&limit=25`, { credentials: 'include' });
       return res.json();
     },
     staleTime: 0,
     refetchOnMount: 'always',
   });
 
-  // 3. SVA ZADUŽENJA (ISTORIJAT)
+  // 3. SVA ZADUŽENJA (ISTORIJAT SA FILTERIMA I PAGINACIJOM)
   const { data: historyData, isLoading: loadingHistory } = useQuery({
-    queryKey: ['assignments-history'],
+    queryKey: [
+      'assignments-history',
+      historyPage,
+      historyPeriod,
+      historyRange.from,
+      historyRange.to,
+      historyMachineId,
+      historyWorkerId,
+      historyStatus,
+    ],
     queryFn: async () => {
-      const res = await fetch(`${API}/assignments?limit=50`, { credentials: 'include' });
+      const params = new URLSearchParams();
+      params.append('page', String(historyPage));
+      params.append('limit', '25');
+      if (historyMachineId) params.append('machineId', historyMachineId);
+      if (historyWorkerId) params.append('workerId', historyWorkerId);
+      if (historyStatus) params.append('status', historyStatus);
+      if (historyRange.from) params.append('dateFrom', historyRange.from);
+      if (historyRange.to) params.append('dateTo', historyRange.to);
+
+      const res = await fetch(`${API}/assignments?${params.toString()}`, { credentials: 'include' });
       return res.json();
     },
     staleTime: 0,
@@ -156,6 +225,56 @@ const MasineZaduzenje: React.FC = () => {
 
   // Slobodne mašine za zaduženje
   const freeMachines = machinesData?.machines?.filter((m: any) => m.status === 'SLOBODNA') || [];
+
+  // Opcije za CustomSelect komponente
+  const freeMachineOptions: CustomSelectOption[] = useMemo(() => {
+    return freeMachines.map((m: any) => ({
+      value: m.id,
+      label: m.name,
+      sublabel: `${m.brandModel || m.type || ''} • Stanje: ${m.currentHours ?? 0} rh • Rezervoar: ${m.tankCapacityLiters || 0} L`,
+    }));
+  }, [freeMachines]);
+
+  const workerSelectOptions: CustomSelectOption[] = useMemo(() => {
+    return (workersData?.workers || []).map((w: any) => ({
+      value: w.id,
+      label: w.name,
+      sublabel: `Tip: ${w.type || 'RADNIK'}${w.phone ? ` • Tel: ${w.phone}` : ''}`,
+    }));
+  }, [workersData]);
+
+  const allMachineOptions: CustomSelectOption[] = useMemo(() => {
+    return (machinesData?.machines || []).map((m: any) => ({
+      value: m.id,
+      label: m.name,
+      sublabel: `${m.brandModel || m.type || ''} • Stanje: ${m.currentHours ?? 0} rh`,
+    }));
+  }, [machinesData]);
+
+  const historyMachineFilterOptions: CustomSelectOption[] = useMemo(() => {
+    const list = (machinesData?.machines || []).map((m: any) => ({
+      value: m.id,
+      label: m.name,
+      sublabel: `${m.brandModel || m.type || ''}`,
+    }));
+    return [{ value: '', label: 'Sve mašine' }, ...list];
+  }, [machinesData]);
+
+  const historyWorkerFilterOptions: CustomSelectOption[] = useMemo(() => {
+    const list = (workersData?.workers || []).map((w: any) => ({
+      value: w.id,
+      label: w.name,
+      sublabel: w.type || 'RADNIK',
+    }));
+    return [{ value: '', label: 'Svi radnici' }, ...list];
+  }, [workersData]);
+
+  const historyStatusFilterOptions: CustomSelectOption[] = [
+    { value: '', label: 'Svi statusi' },
+    { value: 'ZADUZENA', label: 'Zadužena (Na njivi)' },
+    { value: 'RAZDUZENA', label: 'Razdužena (Završeno)' },
+    { value: 'POKVARENA', label: 'Prijavljen kvar' },
+  ];
 
   // Prilikom izbora mašine, automatski preuzmi njene trenutne radne sate i kapacitet goriva
   const handleSelectMachine = (machineId: string) => {
@@ -568,7 +687,25 @@ const MasineZaduzenje: React.FC = () => {
   };
 
   const activeAssignments = activeData?.assignments || [];
-  const historyList = historyData?.assignments || [];
+  const activeTotal = activeData?.total || 0;
+  const activeTotalPages = activeData?.totalPages || 1;
+
+  const rawHistoryList = historyData?.assignments || [];
+  const historyList = useMemo(() => {
+    if (!historySearch.trim()) return rawHistoryList;
+    const q = historySearch.toLowerCase();
+    return rawHistoryList.filter((a: any) =>
+      a.machine?.name?.toLowerCase().includes(q) ||
+      a.machine?.brandModel?.toLowerCase().includes(q) ||
+      a.worker?.name?.toLowerCase().includes(q) ||
+      a.assignNotes?.toLowerCase().includes(q) ||
+      a.returnNotes?.toLowerCase().includes(q)
+    );
+  }, [rawHistoryList, historySearch]);
+
+  const historyTotal = historyData?.total || 0;
+  const historyTotalPages = historyData?.totalPages || 1;
+
   const hoursWorkedLive =
     selectedAssignment && checkinEndHours !== '' && checkinEndHours !== null && checkinEndHours !== undefined
       ? Math.round((Number(checkinEndHours) - Number(selectedAssignment.startHours ?? 0)) * 10) / 10
@@ -636,7 +773,7 @@ const MasineZaduzenje: React.FC = () => {
           >
             <Tractor size={18} />
             <span className={styles.tabBtnText}>Aktivna Zaduženja (Na Njivi)</span>
-            <span className={styles.tabBadge}>{activeAssignments.length}</span>
+            <span className={styles.tabBadge}>{activeTotal}</span>
           </button>
 
           <button
@@ -653,6 +790,7 @@ const MasineZaduzenje: React.FC = () => {
           >
             <Clock size={18} />
             <span className={styles.tabBtnText}>Dnevnik Zaduženja (Istorijat)</span>
+            <span className={styles.tabBadge}>{historyTotal}</span>
           </button>
 
           {isManager && (
@@ -699,101 +837,115 @@ const MasineZaduzenje: React.FC = () => {
                 </button>
               </div>
             ) : (
-              <div className={styles.activeGrid}>
-                {activeAssignments.map((a: any) => {
-                  const assignedTime = new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  });
-                  const assignedDate = new Date(a.assignedAt).toLocaleDateString('sr-RS');
+              <>
+                <div className={styles.activeGrid}>
+                  {activeAssignments.map((a: any) => {
+                    const assignedTime = new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
+                    const assignedDate = new Date(a.assignedAt).toLocaleDateString('sr-RS');
 
-                  return (
-                    <div key={a.id} className={styles.checkoutCard}>
-                      <div className={styles.checkoutHeader}>
-                        <div>
-                          <div className={styles.machineName}>
-                            <Tractor size={18} color="#d97706" />
-                            <span>{a.machine?.name}</span>
+                    return (
+                      <div key={a.id} className={styles.checkoutCard}>
+                        <div className={styles.checkoutHeader}>
+                          <div>
+                            <div className={styles.machineName}>
+                              <Tractor size={18} color="#d97706" />
+                              <span>{a.machine?.name}</span>
+                            </div>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              {a.machine?.brandModel}
+                            </span>
                           </div>
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                            {a.machine?.brandModel}
-                          </span>
-                        </div>
-                        {a.machine?.regNumber && (
-                          <span className={styles.regBadge}>{a.machine?.regNumber}</span>
-                        )}
-                      </div>
-
-                      <div className={styles.checkoutDetails}>
-                        <div className={styles.detailRow}>
-                          <span className={styles.detailLabel}>
-                            <User size={14} /> Radnik:
-                          </span>
-                          <span className={styles.detailValue}>{a.worker?.name}</span>
+                          {a.machine?.regNumber && (
+                            <span className={styles.regBadge}>{a.machine?.regNumber}</span>
+                          )}
                         </div>
 
-                        <div className={styles.detailRow}>
-                          <span className={styles.detailLabel}>
-                            <Clock size={14} /> Zaduženo:
-                          </span>
-                          <span className={styles.detailValue}>
-                            {assignedDate} u {assignedTime}
-                          </span>
-                        </div>
-
-                        <div className={styles.detailRow}>
-                          <span className={styles.detailLabel}>
-                            <Tractor size={14} /> Početni sati:
-                          </span>
-                          <span className={`${styles.detailValue} ${styles.hoursBadge}`}>
-                            {a.startHours} rh
-                          </span>
-                        </div>
-
-                        {(a.startFuelLiters !== null && a.startFuelLiters !== undefined) ? (
+                        <div className={styles.checkoutDetails}>
                           <div className={styles.detailRow}>
                             <span className={styles.detailLabel}>
-                              <Fuel size={14} /> Gorivo na polasku:
+                              <User size={14} /> Radnik:
                             </span>
-                            <span className={`${styles.detailValue} ${styles.fuelBadge}`}>
-                              {a.startFuelLiters} L
-                            </span>
+                            <span className={styles.detailValue}>{a.worker?.name}</span>
                           </div>
-                        ) : a.startFuelLevel !== null && (
+
                           <div className={styles.detailRow}>
                             <span className={styles.detailLabel}>
-                              <Fuel size={14} /> Gorivo na polasku:
+                              <Clock size={14} /> Zaduženo:
                             </span>
-                            <span className={`${styles.detailValue} ${styles.fuelBadge}`}>
-                              {a.startFuelLevel}%
+                            <span className={styles.detailValue}>
+                              {assignedDate} u {assignedTime}
                             </span>
                           </div>
-                        )}
 
-                        {a.assignNotes && (
-                          <div className={styles.detailRow} style={{ marginTop: '0.2rem' }}>
+                          <div className={styles.detailRow}>
                             <span className={styles.detailLabel}>
-                              <FileText size={14} /> Napomena:
+                              <Tractor size={14} /> Početni sati:
                             </span>
-                            <span className={styles.notesValue}>
-                              {a.assignNotes}
+                            <span className={`${styles.detailValue} ${styles.hoursBadge}`}>
+                              {a.startHours} rh
                             </span>
                           </div>
-                        )}
-                      </div>
 
-                      <button
-                        className={styles.btnCheckin}
-                        onClick={() => handleOpenCheckin(a)}
-                        title="Razduži mašinu i upiši radne sate"
-                      >
-                        <CheckCircle2 size={16} />
-                        <span>Razduži Mašinu (Kraj Smene)</span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+                          {(a.startFuelLiters !== null && a.startFuelLiters !== undefined) ? (
+                            <div className={styles.detailRow}>
+                              <span className={styles.detailLabel}>
+                                <Fuel size={14} /> Gorivo na polasku:
+                              </span>
+                              <span className={`${styles.detailValue} ${styles.fuelBadge}`}>
+                                {a.startFuelLiters} L
+                              </span>
+                            </div>
+                          ) : a.startFuelLevel !== null && (
+                            <div className={styles.detailRow}>
+                              <span className={styles.detailLabel}>
+                                <Fuel size={14} /> Gorivo na polasku:
+                              </span>
+                              <span className={`${styles.detailValue} ${styles.fuelBadge}`}>
+                                {a.startFuelLevel}%
+                              </span>
+                            </div>
+                          )}
+
+                          {a.assignNotes && (
+                            <div className={styles.detailRow} style={{ marginTop: '0.2rem' }}>
+                              <span className={styles.detailLabel}>
+                                <FileText size={14} /> Napomena:
+                              </span>
+                              <span className={styles.notesValue}>
+                                {a.assignNotes}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <button
+                          className={styles.btnCheckin}
+                          onClick={() => handleOpenCheckin(a)}
+                          title="Razduži mašinu i upiši radne sate"
+                        >
+                          <CheckCircle2 size={16} />
+                          <span>Razduži Mašinu (Kraj Smene)</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {activeTotal > 0 && (
+                  <div style={{ marginTop: '1.25rem' }}>
+                    <TablePagination
+                      currentPage={activePage}
+                      totalPages={activeTotalPages}
+                      onPageChange={(p) => setActivePage(p)}
+                      totalItems={activeTotal}
+                      pageSize={25}
+                    />
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -821,19 +973,13 @@ const MasineZaduzenje: React.FC = () => {
                     {freeMachines.length} slobodno
                   </span>
                 </label>
-                <select
-                  className={styles.selectField}
+                <CustomSelect
                   value={checkoutMachineId}
-                  onChange={(e) => handleSelectMachine(e.target.value)}
-                  required
-                >
-                  <option value="">-- Izaberite slobodnu mašinu --</option>
-                  {freeMachines.map((m: any) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} ({m.brandModel || m.type}) — Stanje: {m.currentHours} rh
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => handleSelectMachine(val)}
+                  options={freeMachineOptions}
+                  placeholder="— Izaberite slobodnu mašinu —"
+                  searchable
+                />
               </div>
 
               {/* Početni radni sati */}
@@ -875,19 +1021,13 @@ const MasineZaduzenje: React.FC = () => {
               ) : (
                 <div className={styles.formGroup}>
                   <label className={styles.formLabel}>Radnik (Traktorista / Vozač)</label>
-                  <select
-                    className={styles.selectField}
+                  <CustomSelect
                     value={checkoutWorkerId}
-                    onChange={(e) => setCheckoutWorkerId(e.target.value)}
-                    required
-                  >
-                    <option value="">-- Izaberite radnika --</option>
-                    {workersData?.workers?.map((w: any) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name} [{w.type}]
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => setCheckoutWorkerId(val)}
+                    options={workerSelectOptions}
+                    placeholder="— Izaberite radnika —"
+                    searchable
+                  />
                 </div>
               )}
 
@@ -1012,19 +1152,13 @@ const MasineZaduzenje: React.FC = () => {
                 <label className={styles.formLabel}>
                   <span>Radnik (Koji je upravljao mašinom)</span>
                 </label>
-                <select
-                  className={styles.selectField}
+                <CustomSelect
                   value={directWorkerId}
-                  onChange={(e) => setDirectWorkerId(e.target.value)}
-                  required
-                >
-                  <option value="">-- Izaberite radnika --</option>
-                  {workersData?.workers?.map((w: any) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name} {w.phone ? `(${w.phone})` : ''}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setDirectWorkerId(val)}
+                  options={workerSelectOptions}
+                  placeholder="— Izaberite radnika —"
+                  searchable
+                />
               </div>
 
               {/* Izbor mašine */}
@@ -1032,19 +1166,13 @@ const MasineZaduzenje: React.FC = () => {
                 <label className={styles.formLabel}>
                   <span>Mašina / Traktor</span>
                 </label>
-                <select
-                  className={styles.selectField}
+                <CustomSelect
                   value={directMachineId}
-                  onChange={(e) => handleSelectDirectMachine(e.target.value)}
-                  required
-                >
-                  <option value="">-- Izaberite mašinu --</option>
-                  {machinesData?.machines?.map((m: any) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} ({m.brandModel || m.type}) — Stanje: {m.currentHours} rh
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => handleSelectDirectMachine(val)}
+                  options={allMachineOptions}
+                  placeholder="— Izaberite mašinu —"
+                  searchable
+                />
               </div>
 
               {/* Datum rada */}
@@ -1246,251 +1374,397 @@ const MasineZaduzenje: React.FC = () => {
           </div>
         )}
 
-        {/* TAB 3: ISTORIJAT ZADUŽENJA */}
+        {/* TAB 3: ISTORIJAT ZADUŽENJA (DNEVNIK) */}
         {activeTab === 'history' && (
-          <div className={styles.tableCard}>
-            {loadingHistory ? (
-              <div style={{ textAlign: 'center', padding: '3rem' }}>
-                <Loader2 size={32} className="spin" />
+          <div>
+            {/* Brzi Periodi i Filteri */}
+            <div className={styles.historyFilterCard}>
+              <div className={styles.periodButtonsRow}>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${historyPeriod === 'danas' ? styles.periodBtnActive : ''}`}
+                  onClick={() => setHistoryPeriod('danas')}
+                >
+                  Danas
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${historyPeriod === 'nedelja' ? styles.periodBtnActive : ''}`}
+                  onClick={() => setHistoryPeriod('nedelja')}
+                >
+                  Ova Nedelja
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${historyPeriod === 'mesec' ? styles.periodBtnActive : ''}`}
+                  onClick={() => setHistoryPeriod('mesec')}
+                >
+                  Ovaj Mesec
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${historyPeriod === 'sve' ? styles.periodBtnActive : ''}`}
+                  onClick={() => setHistoryPeriod('sve')}
+                >
+                  Svi Unosi
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.periodBtn} ${historyPeriod === 'custom' ? styles.periodBtnActive : ''}`}
+                  onClick={() => setHistoryPeriod('custom')}
+                >
+                  Prilagođen Raspon
+                </button>
               </div>
-            ) : historyList.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                Nema zabeleženih zaduženja u istorijatu.
-              </div>
-            ) : (
-              <>
-                {/* Desktop View: Full Table */}
-                <div className={styles.desktopTableView}>
-                  <div className={styles.tableWrapper}>
-                    <table className={styles.table}>
-                      <thead>
-                        <tr>
-                          <th>Datum i Vreme</th>
-                          <th>Mašina</th>
-                          <th>Radnik</th>
-                          <th>Početni rh</th>
-                          <th>Krajnji rh</th>
-                          <th>Napravljeno rh</th>
-                          <th>Stanje Goriva</th>
-                          <th>Status</th>
-                          <th>Beleške</th>
-                          <th style={{ textAlign: 'right' }}>Akcije</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {historyList.map((a: any) => {
-                          const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
-                          const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
-                          const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
-                          const hoursDiff =
-                            hasEndHours && hasStartHours
-                              ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
-                              : null;
 
-                          return (
-                            <tr key={a.id}>
-                              <td>
-                                <strong>{dateStr}</strong>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                  {new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                  })}
-                                </div>
-                              </td>
-                              <td>
-                                <strong>{a.machine?.name}</strong>
-                              </td>
-                              <td>{a.worker?.name}</td>
-                              <td>{hasStartHours ? `${a.startHours} rh` : '-'}</td>
-                              <td>{hasEndHours ? `${a.endHours} rh` : '-'}</td>
-                              <td>
-                                {hoursDiff !== null ? (
-                                  <strong style={{ color: '#2563eb' }}>+{hoursDiff} rh</strong>
-                                ) : a.status === 'ZADUZENA' ? (
-                                  <span style={{ color: '#d97706' }}>U toku</span>
-                                ) : (
-                                  <span style={{ color: 'var(--text-muted)' }}>-</span>
+              {historyPeriod === 'custom' && (
+                <div className={styles.customDateRangeBox}>
+                  <span>Od:</span>
+                  <input
+                    type="date"
+                    className={styles.dateInput}
+                    value={historyDateFrom}
+                    onChange={(e) => setHistoryDateFrom(e.target.value)}
+                  />
+                  <span>Do:</span>
+                  <input
+                    type="date"
+                    className={styles.dateInput}
+                    value={historyDateTo}
+                    onChange={(e) => setHistoryDateTo(e.target.value)}
+                  />
+                </div>
+              )}
+
+              <div className={styles.filterControlsGrid}>
+                <div className={styles.filterControlCol}>
+                  <span className={styles.filterFieldLabel}>Pretraga</span>
+                  <div className={styles.searchBox}>
+                    <Search size={16} color="var(--text-muted)" />
+                    <input
+                      type="text"
+                      placeholder="Pretraži mašinu, radnika, napomene..."
+                      className={styles.searchInput}
+                      value={historySearch}
+                      onChange={(e) => setHistorySearch(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className={styles.filterControlCol}>
+                  <span className={styles.filterFieldLabel}>Mašina</span>
+                  <CustomSelect
+                    value={historyMachineId}
+                    onChange={(val) => setHistoryMachineId(val)}
+                    options={historyMachineFilterOptions}
+                    placeholder="Sve mašine"
+                    searchable
+                  />
+                </div>
+
+                {!isOperator && (
+                  <div className={styles.filterControlCol}>
+                    <span className={styles.filterFieldLabel}>Radnik</span>
+                    <CustomSelect
+                      value={historyWorkerId}
+                      onChange={(val) => setHistoryWorkerId(val)}
+                      options={historyWorkerFilterOptions}
+                      placeholder="Svi radnici"
+                      searchable
+                    />
+                  </div>
+                )}
+
+                <div className={styles.filterControlCol}>
+                  <span className={styles.filterFieldLabel}>Status</span>
+                  <CustomSelect
+                    value={historyStatus}
+                    onChange={(val) => setHistoryStatus(val)}
+                    options={historyStatusFilterOptions}
+                    placeholder="Svi statusi"
+                    searchable={false}
+                  />
+                </div>
+
+                <div className={styles.filterControlCol}>
+                  <button
+                    type="button"
+                    className={styles.btnResetFilters}
+                    onClick={() => {
+                      setHistoryPeriod('sve');
+                      setHistoryDateFrom('');
+                      setHistoryDateTo('');
+                      setHistoryMachineId('');
+                      setHistoryWorkerId('');
+                      setHistoryStatus('');
+                      setHistorySearch('');
+                    }}
+                    title="Poništi sve filtere"
+                  >
+                    <RotateCcw size={15} />
+                    <span>Reset</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className={styles.tableCard}>
+              {loadingHistory ? (
+                <div style={{ textAlign: 'center', padding: '3rem' }}>
+                  <Loader2 size={32} className="spin" />
+                </div>
+              ) : historyList.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  Nema zabeleženih zaduženja u istorijatu.
+                </div>
+              ) : (
+                <>
+                  {/* Desktop View: Full Table */}
+                  <div className={styles.desktopTableView}>
+                    <div className={styles.tableWrapper}>
+                      <table className={styles.table}>
+                        <thead>
+                          <tr>
+                            <th>Datum i Vreme</th>
+                            <th>Mašina</th>
+                            <th>Radnik</th>
+                            <th>Početni rh</th>
+                            <th>Krajnji rh</th>
+                            <th>Napravljeno rh</th>
+                            <th>Stanje Goriva</th>
+                            <th>Status</th>
+                            <th>Beleške</th>
+                            <th style={{ textAlign: 'right' }}>Akcije</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {historyList.map((a: any) => {
+                            const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
+                            const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
+                            const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
+                            const hoursDiff =
+                              hasEndHours && hasStartHours
+                                ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
+                                : null;
+
+                            return (
+                              <tr key={a.id}>
+                                <td>
+                                  <strong>{dateStr}</strong>
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                    {new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </div>
+                                </td>
+                                <td>
+                                  <strong>{a.machine?.name}</strong>
+                                </td>
+                                <td>{a.worker?.name}</td>
+                                <td>{hasStartHours ? `${a.startHours} rh` : '-'}</td>
+                                <td>{hasEndHours ? `${a.endHours} rh` : '-'}</td>
+                                <td>
+                                  {hoursDiff !== null ? (
+                                    <strong style={{ color: '#2563eb' }}>+{hoursDiff} rh</strong>
+                                  ) : a.status === 'ZADUZENA' ? (
+                                    <span style={{ color: '#d97706' }}>U toku</span>
+                                  ) : (
+                                    <span style={{ color: 'var(--text-muted)' }}>-</span>
+                                  )}
+                                </td>
+                                <td>
+                                  {a.startFuelLiters !== null && a.startFuelLiters !== undefined ? (
+                                    <span>
+                                      {a.startFuelLiters} L {a.endFuelLiters !== null && a.endFuelLiters !== undefined ? `→ ${a.endFuelLiters} L` : ''}
+                                      {a.endFuelLiters !== null && a.endFuelLiters !== undefined && Number(a.startFuelLiters) >= Number(a.endFuelLiters) ? (
+                                        <span style={{ fontSize: '0.75rem', color: '#16a34a', marginLeft: '5px', fontWeight: 600 }}>
+                                          (-{Math.round((Number(a.startFuelLiters) - Number(a.endFuelLiters)) * 10) / 10} L)
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  ) : a.endFuelLiters !== null && a.endFuelLiters !== undefined ? (
+                                    <span>
+                                      {a.endFuelLiters} L
+                                    </span>
+                                  ) : a.startFuelLevel !== null && a.startFuelLevel !== undefined ? (
+                                    <span>
+                                      {a.startFuelLevel}% {a.endFuelLevel !== null ? `→ ${a.endFuelLevel}%` : ''}
+                                    </span>
+                                  ) : (
+                                    '-'
+                                  )}
+                                </td>
+                                <td>
+                                  <span
+                                    className={`${styles.statusBadge} ${
+                                      a.status === 'ZADUZENA'
+                                        ? styles.statusBadgeActive
+                                        : a.status === 'RAZDUZENA'
+                                          ? styles.statusBadgeReturned
+                                          : styles.statusBadgeBroken
+                                    }`}
+                                  >
+                                    {a.status === 'ZADUZENA'
+                                      ? 'Zadužena'
+                                      : a.status === 'RAZDUZENA'
+                                        ? 'Razdužena'
+                                        : 'Pokvarena'}
+                                  </span>
+                                </td>
+                                <td style={{ maxWidth: 220, color: 'var(--text-secondary)' }}>
+                                  {a.returnNotes || a.assignNotes || '-'}
+                                </td>
+                                <td style={{ textAlign: 'right' }}>
+                                  <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
+                                    {isManager || (isOperator && isSameCalendarDay(a.assignedAt)) ? (
+                                      <button
+                                        className={styles.btnIcon}
+                                        title="Izmeni unos zaduženja"
+                                        onClick={() => handleOpenEdit(a)}
+                                      >
+                                        <Pencil size={14} />
+                                      </button>
+                                    ) : isOperator ? (
+                                      <span
+                                        style={{
+                                          fontSize: '0.72rem',
+                                          color: 'var(--text-muted)',
+                                          fontStyle: 'italic',
+                                        }}
+                                        title="Istekao rok za izmenu (dozvoljeno samo na dan zaduženja)"
+                                      >
+                                        Zaključano
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Mobile View: Responsive Cards */}
+                  <div className={styles.mobileCardsView}>
+                    {historyList.map((a: any) => {
+                      const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
+                      const timeStr = new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      });
+                      const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
+                      const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
+                      const hoursDiff =
+                        hasEndHours && hasStartHours
+                          ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
+                          : null;
+
+                      const canEdit = isManager || (isOperator && isSameCalendarDay(a.assignedAt));
+
+                      return (
+                        <div key={a.id} className={styles.historyCard}>
+                          <div className={styles.historyCardHeader}>
+                            <div>
+                              <div className={styles.historyCardTitle}>
+                                <Tractor size={18} color="#d97706" />
+                                <span>{a.machine?.name}</span>
+                              </div>
+                              <div className={styles.historyCardSub}>
+                                <User size={12} /> {a.worker?.name} &bull; <Clock size={12} /> {dateStr} u {timeStr}
+                              </div>
+                            </div>
+                            <span
+                              className={`${styles.statusBadge} ${
+                                a.status === 'ZADUZENA'
+                                  ? styles.statusBadgeActive
+                                  : a.status === 'RAZDUZENA'
+                                    ? styles.statusBadgeReturned
+                                    : styles.statusBadgeBroken
+                              }`}
+                            >
+                              {a.status === 'ZADUZENA'
+                                ? 'Zadužena'
+                                : a.status === 'RAZDUZENA'
+                                  ? 'Razdužena'
+                                  : 'Pokvarena'}
+                            </span>
+                          </div>
+
+                          <div className={styles.historyCardStats}>
+                            <div className={styles.historyStatBox}>
+                              <span className={styles.historyStatLabel}>Radni sati</span>
+                              <div className={styles.historyStatValue}>
+                                {hasStartHours ? `${a.startHours} rh` : '-'}
+                                {hasEndHours ? ` → ${a.endHours} rh` : ''}
+                                {hoursDiff !== null && (
+                                  <span className={styles.hoursDiffBadge}>+{hoursDiff} rh</span>
                                 )}
-                              </td>
-                              <td>
+                              </div>
+                            </div>
+
+                            <div className={styles.historyStatBox}>
+                              <span className={styles.historyStatLabel}>Gorivo</span>
+                              <div className={styles.historyStatValue}>
                                 {a.startFuelLiters !== null && a.startFuelLiters !== undefined ? (
                                   <span>
                                     {a.startFuelLiters} L {a.endFuelLiters !== null && a.endFuelLiters !== undefined ? `→ ${a.endFuelLiters} L` : ''}
                                     {a.endFuelLiters !== null && a.endFuelLiters !== undefined && Number(a.startFuelLiters) >= Number(a.endFuelLiters) ? (
-                                      <span style={{ fontSize: '0.75rem', color: '#16a34a', marginLeft: '5px', fontWeight: 600 }}>
+                                      <span className={styles.fuelDiffBadge}>
                                         (-{Math.round((Number(a.startFuelLiters) - Number(a.endFuelLiters)) * 10) / 10} L)
                                       </span>
                                     ) : null}
                                   </span>
                                 ) : a.endFuelLiters !== null && a.endFuelLiters !== undefined ? (
-                                  <span>
-                                    {a.endFuelLiters} L
-                                  </span>
-                                ) : a.startFuelLevel !== null && a.startFuelLevel !== undefined ? (
-                                  <span>
-                                    {a.startFuelLevel}% {a.endFuelLevel !== null ? `→ ${a.endFuelLevel}%` : ''}
-                                  </span>
+                                  <span>{a.endFuelLiters} L</span>
                                 ) : (
                                   '-'
                                 )}
-                              </td>
-                              <td>
-                                <span
-                                  className={`${styles.statusBadge} ${
-                                    a.status === 'ZADUZENA'
-                                      ? styles.statusBadgeActive
-                                      : a.status === 'RAZDUZENA'
-                                        ? styles.statusBadgeReturned
-                                        : styles.statusBadgeBroken
-                                  }`}
-                                >
-                                  {a.status === 'ZADUZENA'
-                                    ? 'Zadužena'
-                                    : a.status === 'RAZDUZENA'
-                                      ? 'Razdužena'
-                                      : 'Pokvarena'}
-                                </span>
-                              </td>
-                              <td style={{ maxWidth: 220, color: 'var(--text-secondary)' }}>
-                                {a.returnNotes || a.assignNotes || '-'}
-                              </td>
-                              <td style={{ textAlign: 'right' }}>
-                                <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
-                                  {isManager || (isOperator && isSameCalendarDay(a.assignedAt)) ? (
-                                    <button
-                                      className={styles.btnIcon}
-                                      title="Izmeni unos zaduženja"
-                                      onClick={() => handleOpenEdit(a)}
-                                    >
-                                      <Pencil size={14} />
-                                    </button>
-                                  ) : isOperator ? (
-                                    <span
-                                      style={{
-                                        fontSize: '0.72rem',
-                                        color: 'var(--text-muted)',
-                                        fontStyle: 'italic',
-                                      }}
-                                      title="Istekao rok za izmenu (dozvoljeno samo na dan zaduženja)"
-                                    >
-                                      Zaključano
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                              </div>
+                            </div>
+                          </div>
+
+                          {(a.returnNotes || a.assignNotes) && (
+                            <div className={styles.historyCardNotes}>
+                              <FileText size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
+                              <span>{a.returnNotes || a.assignNotes}</span>
+                            </div>
+                          )}
+
+                          {canEdit && (
+                            <div className={styles.historyCardFooter}>
+                              <button
+                                type="button"
+                                className={styles.btnEditMobile}
+                                onClick={() => handleOpenEdit(a)}
+                              >
+                                <Pencil size={14} />
+                                <span>Izmeni unos zaduženja</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
 
-                {/* Mobile View: Responsive Cards */}
-                <div className={styles.mobileCardsView}>
-                  {historyList.map((a: any) => {
-                    const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
-                    const timeStr = new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    });
-                    const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
-                    const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
-                    const hoursDiff =
-                      hasEndHours && hasStartHours
-                        ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
-                        : null;
-
-                    const canEdit = isManager || (isOperator && isSameCalendarDay(a.assignedAt));
-
-                    return (
-                      <div key={a.id} className={styles.historyCard}>
-                        <div className={styles.historyCardHeader}>
-                          <div>
-                            <div className={styles.historyCardTitle}>
-                              <Tractor size={18} color="#d97706" />
-                              <span>{a.machine?.name}</span>
-                            </div>
-                            <div className={styles.historyCardSub}>
-                              <User size={12} /> {a.worker?.name} &bull; <Clock size={12} /> {dateStr} u {timeStr}
-                            </div>
-                          </div>
-                          <span
-                            className={`${styles.statusBadge} ${
-                              a.status === 'ZADUZENA'
-                                ? styles.statusBadgeActive
-                                : a.status === 'RAZDUZENA'
-                                  ? styles.statusBadgeReturned
-                                  : styles.statusBadgeBroken
-                            }`}
-                          >
-                            {a.status === 'ZADUZENA'
-                              ? 'Zadužena'
-                              : a.status === 'RAZDUZENA'
-                                ? 'Razdužena'
-                                : 'Pokvarena'}
-                          </span>
-                        </div>
-
-                        <div className={styles.historyCardStats}>
-                          <div className={styles.historyStatBox}>
-                            <span className={styles.historyStatLabel}>Radni sati</span>
-                            <div className={styles.historyStatValue}>
-                              {hasStartHours ? `${a.startHours} rh` : '-'}
-                              {hasEndHours ? ` → ${a.endHours} rh` : ''}
-                              {hoursDiff !== null && (
-                                <span className={styles.hoursDiffBadge}>+{hoursDiff} rh</span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className={styles.historyStatBox}>
-                            <span className={styles.historyStatLabel}>Gorivo</span>
-                            <div className={styles.historyStatValue}>
-                              {a.startFuelLiters !== null && a.startFuelLiters !== undefined ? (
-                                <span>
-                                  {a.startFuelLiters} L {a.endFuelLiters !== null && a.endFuelLiters !== undefined ? `→ ${a.endFuelLiters} L` : ''}
-                                  {a.endFuelLiters !== null && a.endFuelLiters !== undefined && Number(a.startFuelLiters) >= Number(a.endFuelLiters) ? (
-                                    <span className={styles.fuelDiffBadge}>
-                                      (-{Math.round((Number(a.startFuelLiters) - Number(a.endFuelLiters)) * 10) / 10} L)
-                                    </span>
-                                  ) : null}
-                                </span>
-                              ) : a.endFuelLiters !== null && a.endFuelLiters !== undefined ? (
-                                <span>{a.endFuelLiters} L</span>
-                              ) : (
-                                '-'
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        {(a.returnNotes || a.assignNotes) && (
-                          <div className={styles.historyCardNotes}>
-                            <FileText size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
-                            <span>{a.returnNotes || a.assignNotes}</span>
-                          </div>
-                        )}
-
-                        {canEdit && (
-                          <div className={styles.historyCardFooter}>
-                            <button
-                              type="button"
-                              className={styles.btnEditMobile}
-                              onClick={() => handleOpenEdit(a)}
-                            >
-                              <Pencil size={14} />
-                              <span>Izmeni unos zaduženja</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
+                  {/* Paginacija za Istorijat Zaduženja (25 po strani sa direktnim unosom) */}
+                  {historyTotal > 0 && (
+                    <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)' }}>
+                      <TablePagination
+                        currentPage={historyPage}
+                        totalPages={historyTotalPages}
+                        onPageChange={(p) => setHistoryPage(p)}
+                        totalItems={historyTotal}
+                        pageSize={25}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         )}
 
@@ -1696,8 +1970,6 @@ const MasineZaduzenje: React.FC = () => {
                       Datum: <strong>{new Date(editingAssignment.assignedAt).toLocaleDateString('sr-RS')}</strong>
                     </span>
                   </div>
-
-
 
                   {/* Početni i Krajnji radni sati */}
                   <div className={styles.twoColRow}>

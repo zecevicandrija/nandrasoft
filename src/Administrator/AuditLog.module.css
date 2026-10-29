@@ -72,16 +72,10 @@
 }
 
 .filterControlsRow {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1.5fr;
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: center;
-}
-
-@media (max-width: 900px) {
-  .filterControlsRow {
-    grid-template-columns: 1fr;
-  }
 }
 
 .searchBox {
@@ -92,6 +86,7 @@
   border: 1px solid var(--border-color);
   border-radius: 10px;
   padding: 0.55rem 0.85rem;
+  flex: 1 1 260px;
 }
 
 .searchInput {
@@ -131,6 +126,7 @@
   font-size: 0.82rem;
   padding: 0.5rem 0.65rem;
   outline: none;
+  color-scheme: light dark;
 }
 
 /* Table Card */
@@ -139,7 +135,7 @@
   border: 1px solid var(--border-color);
   border-radius: 14px;
   box-shadow: var(--shadow-sm);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .tableHeaderBar {

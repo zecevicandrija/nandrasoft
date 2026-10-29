@@ -580,7 +580,7 @@
   border-radius: 16px;
   box-shadow: var(--shadow-xl);
   animation: slideUp 0.2s ease;
-  overflow: hidden;
+  overflow: visible;
 }
 
 @keyframes slideUp {

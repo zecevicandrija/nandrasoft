@@ -35,6 +35,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   triggerClassName,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [openUpwards, setOpenUpwards] = useState(false);
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -43,6 +44,18 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
     () => options.find((opt) => opt.value === value),
     [options, value]
   );
+
+  useEffect(() => {
+    if (isOpen && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      if (spaceBelow < 220 && rect.top > 220) {
+        setOpenUpwards(true);
+      } else {
+        setOpenUpwards(false);
+      }
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent | TouchEvent) => {
@@ -136,7 +149,12 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       </button>
 
       {isOpen && (
-        <div className={styles.customSelectDropdown} role="listbox">
+        <div
+          className={`${styles.customSelectDropdown} ${
+            openUpwards ? styles.customSelectDropdownUp : ''
+          }`}
+          role="listbox"
+        >
           {searchable && options.length > 4 && (
             <div className={styles.customSelectSearchWrap}>
               <Search size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />

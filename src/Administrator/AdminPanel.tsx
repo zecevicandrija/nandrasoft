@@ -18,13 +18,16 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Filter,
 } from 'lucide-react';
 import { useSession } from '../lib/auth-client';
 import AppLayout from '../components/Layout/AppLayout';
+import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import { TablePagination } from '../components/TablePagination/TablePagination';
 import styles from './AdminPanel.module.css';
 
 const API = 'http://localhost:5000/api';
+
+const PAGE_SIZE = 25;
 
 const ROLES = ['DIREKTOR', 'RUKOVODILAC', 'MAGACIN', 'MEHANICAR', 'OPERATER'] as const;
 
@@ -35,6 +38,11 @@ const ROLE_LABELS: Record<string, string> = {
   MEHANICAR: 'Mehaničar',
   OPERATER: 'Operater',
 };
+
+const ROLE_OPTIONS: CustomSelectOption[] = ROLES.map((r) => ({
+  value: r,
+  label: ROLE_LABELS[r] || r,
+}));
 
 const getRoleIcon = (role: string, size = 15) => {
   switch (role) {
@@ -78,7 +86,13 @@ const AdminPanel: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedRole, setSelectedRole] = useState<string>('ALL');
+  const [page, setPage] = useState(1);
   const [toast, setToast] = useState<Toast | null>(null);
+
+  // Reset pagination on filter change
+  useEffect(() => {
+    setPage(1);
+  }, [search, selectedRole]);
 
   // Modal state
   const [modal, setModal] = useState<ModalMode>(null);
@@ -135,6 +149,17 @@ const AdminPanel: React.FC = () => {
     const matchesRole = selectedRole === 'ALL' || u.role === selectedRole;
     return matchesSearch && matchesRole;
   });
+
+  const totalPages = Math.ceil(filteredUsers.length / PAGE_SIZE) || 1;
+  const paginatedUsers = filteredUsers.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  const roleFilterOptions: CustomSelectOption[] = [
+    { value: 'ALL', label: `Sve uloge (${users.length})` },
+    ...ROLES.map((r) => ({
+      value: r,
+      label: `${ROLE_LABELS[r]} (${users.filter((u) => u.role === r).length})`,
+    })),
+  ];
 
   // Stats
   const totalUsers = users.length;
@@ -382,24 +407,14 @@ const AdminPanel: React.FC = () => {
               />
             </div>
 
-            <div className={styles.filterBox}>
-              <Filter size={16} className={styles.filterIcon} />
-              <select
-                className={styles.filterSelect}
+            <div style={{ minWidth: 200 }}>
+              <CustomSelect
                 value={selectedRole}
-                onChange={(e) => setSelectedRole(e.target.value)}
-                aria-label="Filter po ulozi"
-              >
-                <option value="ALL">Sve uloge ({users.length})</option>
-                {ROLES.map((r) => {
-                  const count = users.filter((u) => u.role === r).length;
-                  return (
-                    <option key={r} value={r}>
-                      {ROLE_LABELS[r]} ({count})
-                    </option>
-                  );
-                })}
-              </select>
+                onChange={setSelectedRole}
+                options={roleFilterOptions}
+                searchable={false}
+                placeholder="Filter po ulozi"
+              />
             </div>
           </div>
 
@@ -434,7 +449,7 @@ const AdminPanel: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map((user) => (
+                {paginatedUsers.map((user) => (
                   <tr key={user.id}>
                     <td>
                       <div className={styles.userCell}>
@@ -509,6 +524,14 @@ const AdminPanel: React.FC = () => {
               </tbody>
             </table>
           )}
+          <TablePagination
+            currentPage={page}
+            totalPages={totalPages}
+            totalItems={filteredUsers.length}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+            itemName="korisnika"
+          />
         </div>
       </div>
 
@@ -559,17 +582,13 @@ const AdminPanel: React.FC = () => {
               <div className={styles.mFormRow}>
                 <div className={styles.mFormGroup}>
                   <label className={styles.mFormLabel}>Uloga</label>
-                  <select
-                    className={styles.mFormSelect}
+                  <CustomSelect
                     value={formRole}
-                    onChange={(e) => setFormRole(e.target.value)}
-                  >
-                    {ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {ROLE_LABELS[r]}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setFormRole}
+                    options={ROLE_OPTIONS}
+                    searchable={false}
+                    placeholder="Izaberite ulogu"
+                  />
                 </div>
                 <div className={styles.mFormGroup}>
                   <label className={styles.mFormLabel}>Telefon</label>
@@ -647,17 +666,13 @@ const AdminPanel: React.FC = () => {
               <div className={styles.mFormRow}>
                 <div className={styles.mFormGroup}>
                   <label className={styles.mFormLabel}>Uloga</label>
-                  <select
-                    className={styles.mFormSelect}
+                  <CustomSelect
                     value={formRole}
-                    onChange={(e) => setFormRole(e.target.value)}
-                  >
-                    {ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {ROLE_LABELS[r]}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setFormRole}
+                    options={ROLE_OPTIONS}
+                    searchable={false}
+                    placeholder="Izaberite ulogu"
+                  />
                 </div>
                 <div className={styles.mFormGroup}>
                   <label className={styles.mFormLabel}>Telefon</label>

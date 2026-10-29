@@ -794,23 +794,40 @@ const RadoviDashboard: React.FC = () => {
             <div className={styles.filterControlColumn}>
               <div className={styles.columnHeaderBar}>
                 <span className={styles.filterFieldLabel}>Parcela</span>
-                {isManager && selectedParcel && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const found = parcelsData?.parcels?.find((p: any) => p.id === selectedParcel);
-                      if (found) {
+                {isManager && (
+                  <div className={styles.parcelHeaderActions}>
+                    <button
+                      type="button"
+                      onClick={() => {
                         setParcelQuickTarget('filter');
-                        setParcelToEdit(found);
+                        setParcelToEdit(null);
                         setParcelQuickModalOpen(true);
-                      }
-                    }}
-                    className={styles.miniParcelEditBtn}
-                    title="Izmeni selektovanu parcelu"
-                  >
-                    <Pencil size={11} />
-                    <span>Izmeni</span>
-                  </button>
+                      }}
+                      className={styles.miniParcelAddBtn}
+                      title="Brzo dodaj novu parcelu"
+                    >
+                      <Plus size={11} strokeWidth={2.5} />
+                      <span>Dodaj</span>
+                    </button>
+                    {selectedParcel && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const found = parcelsData?.parcels?.find((p: any) => p.id === selectedParcel);
+                          if (found) {
+                            setParcelQuickTarget('filter');
+                            setParcelToEdit(found);
+                            setParcelQuickModalOpen(true);
+                          }
+                        }}
+                        className={styles.miniParcelEditBtn}
+                        title="Izmeni selektovanu parcelu"
+                      >
+                        <Pencil size={11} strokeWidth={2.5} />
+                        <span>Izmeni</span>
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
               <CustomSelect

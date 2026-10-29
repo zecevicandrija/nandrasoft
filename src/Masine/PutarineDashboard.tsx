@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CreditCard,
@@ -17,13 +17,11 @@ import {
   Calendar,
   User,
   FileText,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
   Lock,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import TablePagination from '../components/TablePagination/TablePagination';
 import { useSession } from '../lib/auth-client';
 import styles from './PutarineDashboard.module.css';
 
@@ -103,22 +101,6 @@ const PutarineDashboard: React.FC = () => {
     setEntriesPage(1);
     setTopUpsPage(1);
   }, [filterMachineId, filterWorkerId, filterPaymentMethod, dateFrom, dateTo]);
-
-  // Pomoćna funkcija za brojeve stranica sa elipsom (...)
-  const getPageNumbers = (current: number, total: number): Array<number | string> => {
-    if (total <= 7) {
-      return Array.from({ length: total }, (_, i) => i + 1);
-    }
-    const pages: Array<number | string> = [];
-    if (current <= 4) {
-      pages.push(1, 2, 3, 4, 5, '...', total);
-    } else if (current >= total - 3) {
-      pages.push(1, '...', total - 4, total - 3, total - 2, total - 1, total);
-    } else {
-      pages.push(1, '...', current - 1, current, current + 1, '...', total);
-    }
-    return pages;
-  };
 
   // Toast obaveštenje
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -225,6 +207,58 @@ const PutarineDashboard: React.FC = () => {
     if (aPriority !== bPriority) return aPriority - bPriority;
     return a.name.localeCompare(b.name);
   });
+
+  // Opcije za CustomSelect komponente
+  const vehicleFilterOptions: CustomSelectOption[] = useMemo(() => [
+    { value: '', label: 'Sva vozila / kamioni' },
+    ...sortedVehicles.map((v) => ({
+      value: v.id,
+      label: v.name,
+      subLabel: v.regNumber ? `Reg: ${v.regNumber} • ${v.type}` : v.brandModel || v.type,
+      badge: v.enpTagNumber ? `TAG: ${v.enpTagNumber}` : undefined,
+      badgeType: (v.enpTagNumber ? 'success' : 'default') as any,
+    })),
+  ], [sortedVehicles]);
+
+  const workerFilterOptions: CustomSelectOption[] = useMemo(() => [
+    { value: '', label: 'Svi vozači / radnici' },
+    ...workers.map((w: any) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.type || w.role || 'Radnik',
+    })),
+  ], [workers]);
+
+  const paymentMethodFilterOptions: CustomSelectOption[] = [
+    { value: '', label: 'Svi načini plaćanja' },
+    { value: 'ENP_TAG', label: 'ENP TAG (Uređaj)', badge: 'TAG', badgeType: 'success' },
+    { value: 'GOTOVINA', label: 'Gotovina na rampi', badge: 'GOTOVINA', badgeType: 'warning' },
+    { value: 'KARTICA', label: 'Platna kartica', badge: 'KARTICA', badgeType: 'default' },
+  ];
+
+  const modalVehicleOptions: CustomSelectOption[] = useMemo(() => [
+    ...sortedVehicles.map((v) => ({
+      value: v.id,
+      label: v.name,
+      subLabel: `${v.regNumber ? `Reg: ${v.regNumber} • ` : ''}${v.type}`,
+      badge: v.enpTagNumber ? `TAG: ${v.enpTagNumber}` : undefined,
+      badgeType: (v.enpTagNumber ? 'success' : 'default') as any,
+    })),
+  ], [sortedVehicles]);
+
+  const modalWorkerOptions: CustomSelectOption[] = useMemo(() => [
+    ...workers.map((w: any) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.type || w.role || 'Radnik',
+    })),
+  ], [workers]);
+
+  const modalPaymentMethodOptions: CustomSelectOption[] = [
+    { value: 'ENP_TAG', label: 'ENP Tag (Elektronska naplata)', badge: 'TAG', badgeType: 'success' },
+    { value: 'GOTOVINA', label: 'Gotovina na rampi', badge: 'GOTOVINA', badgeType: 'warning' },
+    { value: 'KARTICA', label: 'Platna kartica', badge: 'KARTICA', badgeType: 'default' },
+  ];
 
   // ==========================================
   // MODAL 1: UNOS / IZMENA PUTARINE
@@ -789,49 +823,35 @@ const PutarineDashboard: React.FC = () => {
 
           <div className={styles.filtersRow}>
             <div className={styles.filterGroup}>
-              <select
-                className={styles.selectInput}
+              <CustomSelect
                 value={filterMachineId}
-                onChange={(e) => setFilterMachineId(e.target.value)}
-              >
-                <option value="">Sva vozila / kamioni</option>
-                {sortedVehicles.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name} {v.regNumber ? `(${v.regNumber})` : ''}
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setFilterMachineId(val)}
+                options={vehicleFilterOptions}
+                placeholder="Sva vozila / kamioni"
+                searchable
+              />
             </div>
 
             {isManager && activeTab === 'entries' && (
               <div className={styles.filterGroup}>
-                <select
-                  className={styles.selectInput}
+                <CustomSelect
                   value={filterWorkerId}
-                  onChange={(e) => setFilterWorkerId(e.target.value)}
-                >
-                  <option value="">Svi vozači / radnici</option>
-                  {workers.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setFilterWorkerId(val)}
+                  options={workerFilterOptions}
+                  placeholder="Svi vozači / radnici"
+                  searchable
+                />
               </div>
             )}
 
             {activeTab === 'entries' && (
               <div className={styles.filterGroup}>
-                <select
-                  className={styles.selectInput}
+                <CustomSelect
                   value={filterPaymentMethod}
-                  onChange={(e) => setFilterPaymentMethod(e.target.value)}
-                >
-                  <option value="">Svi načini plaćanja</option>
-                  <option value="ENP_TAG">ENP Tag</option>
-                  <option value="GOTOVINA">Gotovina</option>
-                  <option value="KARTICA">Platna kartica</option>
-                </select>
+                  onChange={(val) => setFilterPaymentMethod(val)}
+                  options={paymentMethodFilterOptions}
+                  placeholder="Svi načini plaćanja"
+                />
               </div>
             )}
 
@@ -1109,88 +1129,17 @@ const PutarineDashboard: React.FC = () => {
                   })}
                 </div>
 
-                {/* Paginacija za Dnevnik putarina (25 po stranici) */}
+                {/* Paginacija za Dnevnik putarina (25 po stranici sa direktnim unosom) */}
                 {entriesPagination.total > 0 && (
-                  <div className={styles.paginationBar}>
-                    <div className={styles.paginationInfo}>
-                      Prikazano{' '}
-                      <strong>
-                        {(entriesPagination.page - 1) * PAGE_SIZE + 1}
-                      </strong>{' '}
-                      –{' '}
-                      <strong>
-                        {Math.min(entriesPagination.page * PAGE_SIZE, entriesPagination.total)}
-                      </strong>{' '}
-                      od ukupno <strong>{entriesPagination.total}</strong> putarina (25 po stranici)
-                    </div>
-
-                    <div className={styles.paginationButtons}>
-                      <button
-                        type="button"
-                        className={styles.paginationBtn}
-                        onClick={() => setEntriesPage(1)}
-                        disabled={entriesPagination.page <= 1}
-                        title="Prva stranica"
-                      >
-                        <ChevronsLeft size={15} />
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.paginationBtn}
-                        onClick={() => setEntriesPage((p) => Math.max(1, p - 1))}
-                        disabled={entriesPagination.page <= 1}
-                        title="Prethodna stranica"
-                      >
-                        <ChevronLeft size={15} />
-                        <span>Prethodna</span>
-                      </button>
-
-                      <div className={styles.pageNumbers}>
-                        {getPageNumbers(entriesPagination.page, entriesPagination.totalPages).map(
-                          (pNum, idx) =>
-                            pNum === '...' ? (
-                              <span key={`entries-dots-${idx}`} className={styles.paginationEllipsis}>
-                                ...
-                              </span>
-                            ) : (
-                              <button
-                                key={`entries-page-${pNum}`}
-                                type="button"
-                                className={`${styles.paginationPageBtn} ${
-                                  Number(pNum) === entriesPagination.page
-                                    ? styles.paginationPageBtnActive
-                                    : ''
-                                }`}
-                                onClick={() => setEntriesPage(Number(pNum))}
-                              >
-                                {pNum}
-                              </button>
-                            )
-                        )}
-                      </div>
-
-                      <button
-                        type="button"
-                        className={styles.paginationBtn}
-                        onClick={() =>
-                          setEntriesPage((p) => Math.min(entriesPagination.totalPages, p + 1))
-                        }
-                        disabled={entriesPagination.page >= entriesPagination.totalPages}
-                        title="Sledeća stranica"
-                      >
-                        <span>Sledeća</span>
-                        <ChevronRight size={15} />
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.paginationBtn}
-                        onClick={() => setEntriesPage(entriesPagination.totalPages)}
-                        disabled={entriesPagination.page >= entriesPagination.totalPages}
-                        title="Poslednja stranica"
-                      >
-                        <ChevronsRight size={15} />
-                      </button>
-                    </div>
+                  <div style={{ marginTop: '1.25rem' }}>
+                    <TablePagination
+                      currentPage={entriesPagination.page}
+                      totalPages={entriesPagination.totalPages}
+                      totalItems={entriesPagination.total}
+                      pageSize={PAGE_SIZE}
+                      onPageChange={(p) => setEntriesPage(p)}
+                      itemName="putarina"
+                    />
                   </div>
                 )}
               </>
@@ -1321,88 +1270,17 @@ const PutarineDashboard: React.FC = () => {
                 ))}
               </div>
 
-              {/* Paginacija za Istoriju dopuna ENP tagova (25 po stranici) */}
+              {/* Paginacija za Istoriju dopuna ENP tagova (25 po stranici sa direktnim unosom) */}
               {topUpsPagination.total > 0 && (
-                <div className={styles.paginationBar}>
-                  <div className={styles.paginationInfo}>
-                    Prikazano{' '}
-                    <strong>
-                      {(topUpsPagination.page - 1) * PAGE_SIZE + 1}
-                    </strong>{' '}
-                    –{' '}
-                    <strong>
-                      {Math.min(topUpsPagination.page * PAGE_SIZE, topUpsPagination.total)}
-                    </strong>{' '}
-                    od ukupno <strong>{topUpsPagination.total}</strong> dopuna (25 po stranici)
-                  </div>
-
-                  <div className={styles.paginationButtons}>
-                    <button
-                      type="button"
-                      className={styles.paginationBtn}
-                      onClick={() => setTopUpsPage(1)}
-                      disabled={topUpsPagination.page <= 1}
-                      title="Prva stranica"
-                    >
-                      <ChevronsLeft size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.paginationBtn}
-                      onClick={() => setTopUpsPage((p) => Math.max(1, p - 1))}
-                      disabled={topUpsPagination.page <= 1}
-                      title="Prethodna stranica"
-                    >
-                      <ChevronLeft size={15} />
-                      <span>Prethodna</span>
-                    </button>
-
-                    <div className={styles.pageNumbers}>
-                      {getPageNumbers(topUpsPagination.page, topUpsPagination.totalPages).map(
-                        (pNum, idx) =>
-                          pNum === '...' ? (
-                            <span key={`topups-dots-${idx}`} className={styles.paginationEllipsis}>
-                              ...
-                            </span>
-                          ) : (
-                            <button
-                              key={`topups-page-${pNum}`}
-                              type="button"
-                              className={`${styles.paginationPageBtn} ${
-                                Number(pNum) === topUpsPagination.page
-                                  ? styles.paginationPageBtnActive
-                                  : ''
-                              }`}
-                              onClick={() => setTopUpsPage(Number(pNum))}
-                            >
-                              {pNum}
-                            </button>
-                          )
-                      )}
-                    </div>
-
-                    <button
-                      type="button"
-                      className={styles.paginationBtn}
-                      onClick={() =>
-                        setTopUpsPage((p) => Math.min(topUpsPagination.totalPages, p + 1))
-                      }
-                      disabled={topUpsPagination.page >= topUpsPagination.totalPages}
-                      title="Sledeća stranica"
-                    >
-                      <span>Sledeća</span>
-                      <ChevronRight size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.paginationBtn}
-                      onClick={() => setTopUpsPage(topUpsPagination.totalPages)}
-                      disabled={topUpsPagination.page >= topUpsPagination.totalPages}
-                      title="Poslednja stranica"
-                    >
-                      <ChevronsRight size={15} />
-                    </button>
-                  </div>
+                <div style={{ marginTop: '1.25rem' }}>
+                  <TablePagination
+                    currentPage={topUpsPagination.page}
+                    totalPages={topUpsPagination.totalPages}
+                    totalItems={topUpsPagination.total}
+                    pageSize={PAGE_SIZE}
+                    onPageChange={(p) => setTopUpsPage(p)}
+                    itemName="dopuna tagova"
+                  />
                 </div>
               )}
             </>
@@ -1437,37 +1315,25 @@ const PutarineDashboard: React.FC = () => {
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
                       <label>Vozilo / Kamion *</label>
-                      <select
-                        className={styles.formSelect}
+                      <CustomSelect
                         value={entryForm.machineId}
-                        onChange={(e) => handleEntryVehicleChange(e.target.value)}
-                        required
-                      >
-                        <option value="">Izaberi vozilo...</option>
-                        {sortedVehicles.map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.name} {v.regNumber ? `(${v.regNumber})` : ''} [{v.type}]
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => handleEntryVehicleChange(val)}
+                        options={modalVehicleOptions}
+                        placeholder="Izaberite vozilo..."
+                        searchable
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
                       <label>Vozač / Radnik *</label>
                       {isManager ? (
-                        <select
-                          className={styles.formSelect}
+                        <CustomSelect
                           value={entryForm.workerId}
-                          onChange={(e) => setEntryForm({ ...entryForm, workerId: e.target.value })}
-                          required
-                        >
-                          <option value="">Izaberi vozača...</option>
-                          {workers.map((w) => (
-                            <option key={w.id} value={w.id}>
-                              {w.name}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(val) => setEntryForm({ ...entryForm, workerId: val })}
+                          options={modalWorkerOptions}
+                          placeholder="Izaberite vozača..."
+                          searchable
+                        />
                       ) : (
                         <input
                           type="text"
@@ -1514,20 +1380,16 @@ const PutarineDashboard: React.FC = () => {
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
                       <label>Način plaćanja</label>
-                      <select
-                        className={styles.formSelect}
+                      <CustomSelect
                         value={entryForm.paymentMethod}
-                        onChange={(e) =>
+                        onChange={(val) =>
                           setEntryForm({
                             ...entryForm,
-                            paymentMethod: e.target.value as 'ENP_TAG' | 'GOTOVINA' | 'KARTICA',
+                            paymentMethod: val as 'ENP_TAG' | 'GOTOVINA' | 'KARTICA',
                           })
                         }
-                      >
-                        <option value="ENP_TAG">ENP Tag (Elektronska naplata)</option>
-                        <option value="GOTOVINA">Gotovina na rampi</option>
-                        <option value="KARTICA">Platna kartica</option>
-                      </select>
+                        options={modalPaymentMethodOptions}
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
@@ -1614,26 +1476,20 @@ const PutarineDashboard: React.FC = () => {
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
                       <label>Vozilo / Kamion *</label>
-                      <select
-                        className={styles.formSelect}
+                      <CustomSelect
                         value={topUpForm.machineId}
-                        onChange={(e) => {
-                          const v = vehicles.find((m) => m.id === e.target.value);
+                        onChange={(val) => {
+                          const v = vehicles.find((m) => m.id === val);
                           setTopUpForm({
                             ...topUpForm,
-                            machineId: e.target.value,
+                            machineId: val,
                             tagNumber: v?.enpTagNumber || topUpForm.tagNumber,
                           });
                         }}
-                        required
-                      >
-                        <option value="">Izaberi vozilo...</option>
-                        {sortedVehicles.map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.name} {v.regNumber ? `(${v.regNumber})` : ''}
-                          </option>
-                        ))}
-                      </select>
+                        options={modalVehicleOptions}
+                        placeholder="Izaberite vozilo..."
+                        searchable
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
@@ -1743,21 +1599,15 @@ const PutarineDashboard: React.FC = () => {
 
                   <div className={styles.formGroup}>
                     <label>Vozilo / Mašina *</label>
-                    <select
-                      className={styles.formSelect}
+                    <CustomSelect
                       value={tagConfigForm.machineId}
-                      onChange={(e) =>
-                        setTagConfigForm({ ...tagConfigForm, machineId: e.target.value })
+                      onChange={(val) =>
+                        setTagConfigForm({ ...tagConfigForm, machineId: val })
                       }
-                      required
-                    >
-                      <option value="">Izaberi vozilo...</option>
-                      {sortedVehicles.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.name} {v.regNumber ? `(${v.regNumber})` : ''} [{v.type}]
-                        </option>
-                      ))}
-                    </select>
+                      options={modalVehicleOptions}
+                      placeholder="Izaberite vozilo..."
+                      searchable
+                    />
                   </div>
 
                   <div className={styles.formGrid}>

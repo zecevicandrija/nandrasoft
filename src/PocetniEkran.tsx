@@ -17,6 +17,7 @@ import {
   MapPin,
   Play,
   Fuel,
+  Sprout,
   X,
 } from 'lucide-react';
 import styles from './PocetniEkran.module.css';
@@ -659,6 +660,14 @@ const PocetniEkran: React.FC = () => {
                 >
                   <Package size={18} />
                   Magacin Đubriva & Zalihe
+                </Link>
+                <Link
+                  to="/modul-luk"
+                  className={styles.adminBtn}
+                  style={{ backgroundColor: 'rgba(217, 119, 6, 0.14)', color: '#d97706' }}
+                >
+                  <Sprout size={18} />
+                  Modul Luk & Hladnjača
                 </Link>
                 <Link to="/sifarnici" className={styles.adminBtn}>
                   <Database size={18} />
