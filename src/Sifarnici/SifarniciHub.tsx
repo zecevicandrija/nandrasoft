@@ -13,6 +13,7 @@ import {
   Trash2,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Loader2,
   X,
 } from 'lucide-react';
@@ -102,6 +103,13 @@ interface Toast {
   type: 'success' | 'error';
 }
 
+interface DeleteTarget {
+  id: string;
+  name: string;
+  tab: TabType;
+  details?: { label: string; value: string }[];
+}
+
 const SifarniciHub: React.FC = () => {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
@@ -121,6 +129,7 @@ const SifarniciHub: React.FC = () => {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<DeleteTarget | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
 
   // Form states
@@ -247,6 +256,7 @@ const SifarniciHub: React.FC = () => {
       showToast('Uspešno obrisano!', 'success');
       queryClient.invalidateQueries({ queryKey: [variables.endpoint] });
       queryClient.invalidateQueries({ queryKey: ['master-stats'] });
+      setItemToDelete(null);
     },
     onError: (err: any) => {
       showToast(err.message || 'Greška pri brisanju', 'error');
@@ -333,8 +343,17 @@ const SifarniciHub: React.FC = () => {
     saveMutation.mutate({ endpoint, id: editingItem?.id, data: payload });
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (!window.confirm(`Da li ste sigurni da želite da obrišete "${name}"?`)) return;
+  const openDeleteModal = (target: DeleteTarget) => {
+    setItemToDelete(target);
+  };
+
+  const closeDeleteModal = () => {
+    if (deleteMutation.isPending) return;
+    setItemToDelete(null);
+  };
+
+  const confirmDelete = () => {
+    if (!itemToDelete) return;
     const endpointMap: Record<TabType, string> = {
       parcele: 'parcels',
       masine: 'machines',
@@ -343,7 +362,26 @@ const SifarniciHub: React.FC = () => {
       kulture: 'crops',
       partneri: 'partners',
     };
-    deleteMutation.mutate({ endpoint: endpointMap[activeTab], id });
+    deleteMutation.mutate({ endpoint: endpointMap[itemToDelete.tab], id: itemToDelete.id });
+  };
+
+  const getTabSingular = (tab: TabType) => {
+    switch (tab) {
+      case 'parcele':
+        return 'parcelu';
+      case 'masine':
+        return 'mašinu';
+      case 'radnici':
+        return 'radnika';
+      case 'operacije':
+        return 'operaciju';
+      case 'kulture':
+        return 'kulturu / sortu';
+      case 'partneri':
+        return 'partnera';
+      default:
+        return 'stavku';
+    }
   };
 
   // Tab change handler
@@ -746,7 +784,25 @@ const SifarniciHub: React.FC = () => {
                         <td>
                           <div className={styles.actionBtns}>
                             <button className={styles.actionBtn} onClick={() => openEditModal(p)} title="Izmeni"><Pencil size={15} /></button>
-                            <button className={`${styles.actionBtn} ${styles.actionBtnDanger}`} onClick={() => handleDelete(p.id, p.name)} title="Obriši"><Trash2 size={15} /></button>
+                            <button
+                              className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+                              onClick={() =>
+                                openDeleteModal({
+                                  id: p.id,
+                                  name: p.name,
+                                  tab: 'parcele',
+                                  details: [
+                                    { label: 'Šifra parcele', value: p.code },
+                                    { label: 'Površina', value: `${p.areaHa} ha` },
+                                    { label: 'Trenutna kultura', value: p.currentCrop || 'Ugar / Slobodno' },
+                                    ...(p.location ? [{ label: 'Lokacija', value: p.location }] : []),
+                                  ],
+                                })
+                              }
+                              title="Obriši"
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -799,7 +855,25 @@ const SifarniciHub: React.FC = () => {
                         <td>
                           <div className={styles.actionBtns}>
                             <button className={styles.actionBtn} onClick={() => openEditModal(m)} title="Izmeni"><Pencil size={15} /></button>
-                            <button className={`${styles.actionBtn} ${styles.actionBtnDanger}`} onClick={() => handleDelete(m.id, m.name)} title="Obriši"><Trash2 size={15} /></button>
+                            <button
+                              className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+                              onClick={() =>
+                                openDeleteModal({
+                                  id: m.id,
+                                  name: m.name,
+                                  tab: 'masine',
+                                  details: [
+                                    { label: 'Tip mašine', value: m.type },
+                                    ...(m.brandModel ? [{ label: 'Marka i model', value: m.brandModel }] : []),
+                                    ...(m.regNumber ? [{ label: 'Registracija', value: m.regNumber }] : []),
+                                    { label: 'Status', value: m.status },
+                                  ],
+                                })
+                              }
+                              title="Obriši"
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -877,7 +951,31 @@ const SifarniciHub: React.FC = () => {
                               </button>
                               <button
                                 className={`${styles.actionBtn} ${styles.actionBtnDanger} ${!canEdit ? styles.actionBtnDisabled : ''}`}
-                                onClick={() => canEdit && handleDelete(w.id, w.name)}
+                                onClick={() =>
+                                  canEdit &&
+                                  openDeleteModal({
+                                    id: w.id,
+                                    name: w.name,
+                                    tab: 'radnici',
+                                    details: [
+                                      {
+                                        label: 'Uloga / Pozicija',
+                                        value:
+                                          wRole === 'RUKOVODILAC'
+                                            ? 'Rukovodilac'
+                                            : wRole === 'MAGACIN'
+                                            ? 'Magacioner'
+                                            : wRole === 'MEHANICAR'
+                                            ? 'Mehaničar'
+                                            : wRole === 'SEZONAC'
+                                            ? 'Sezonski radnik'
+                                            : 'Operater',
+                                      },
+                                      ...(w.city ? [{ label: 'Grad / Mesto', value: w.city }] : []),
+                                      ...(w.phone ? [{ label: 'Telefon', value: w.phone }] : []),
+                                    ],
+                                  })
+                                }
                                 title={canEdit ? 'Obriši' : 'Samo direktor može obrisati ovog radnika'}
                                 disabled={!canEdit}
                               >
@@ -916,7 +1014,23 @@ const SifarniciHub: React.FC = () => {
                         <td>
                           <div className={styles.actionBtns}>
                             <button className={styles.actionBtn} onClick={() => openEditModal(wt)} title="Izmeni"><Pencil size={15} /></button>
-                            <button className={`${styles.actionBtn} ${styles.actionBtnDanger}`} onClick={() => handleDelete(wt.id, wt.name)} title="Obriši"><Trash2 size={15} /></button>
+                            <button
+                              className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+                              onClick={() =>
+                                openDeleteModal({
+                                  id: wt.id,
+                                  name: wt.name,
+                                  tab: 'operacije',
+                                  details: [
+                                    { label: 'Kategorija rada', value: wt.category },
+                                    { label: 'Jedinica mere', value: wt.unit },
+                                  ],
+                                })
+                              }
+                              title="Obriši"
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -949,7 +1063,24 @@ const SifarniciHub: React.FC = () => {
                         <td>
                           <div className={styles.actionBtns}>
                             <button className={styles.actionBtn} onClick={() => openEditModal(c)} title="Izmeni"><Pencil size={15} /></button>
-                            <button className={`${styles.actionBtn} ${styles.actionBtnDanger}`} onClick={() => handleDelete(c.id, `${c.name} ${c.variety}`)} title="Obriši"><Trash2 size={15} /></button>
+                            <button
+                              className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+                              onClick={() =>
+                                openDeleteModal({
+                                  id: c.id,
+                                  name: c.name + (c.variety ? ` (${c.variety})` : ''),
+                                  tab: 'kulture',
+                                  details: [
+                                    { label: 'Naziv kulture', value: c.name },
+                                    ...(c.variety ? [{ label: 'Sorta / Hibrid', value: c.variety }] : []),
+                                    ...(c.notes ? [{ label: 'Napomena', value: c.notes }] : []),
+                                  ],
+                                })
+                              }
+                              title="Obriši"
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -994,7 +1125,26 @@ const SifarniciHub: React.FC = () => {
                         <td>
                           <div className={styles.actionBtns}>
                             <button className={styles.actionBtn} onClick={() => openEditModal(pt)} title="Izmeni"><Pencil size={15} /></button>
-                            <button className={`${styles.actionBtn} ${styles.actionBtnDanger}`} onClick={() => handleDelete(pt.id, pt.name)} title="Obriši"><Trash2 size={15} /></button>
+                            <button
+                              className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+                              onClick={() =>
+                                openDeleteModal({
+                                  id: pt.id,
+                                  name: pt.name,
+                                  tab: 'partneri',
+                                  details: [
+                                    { label: 'Tip partnera', value: pt.type },
+                                    ...(pt.pib ? [{ label: 'PIB', value: pt.pib }] : []),
+                                    ...(pt.phone ? [{ label: 'Telefon', value: pt.phone }] : []),
+                                    ...(pt.email ? [{ label: 'Email', value: pt.email }] : []),
+                                    ...(pt.address ? [{ label: 'Adresa', value: pt.address }] : []),
+                                  ],
+                                })
+                              }
+                              title="Obriši"
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1305,6 +1455,92 @@ const SifarniciHub: React.FC = () => {
                   type="button"
                 >
                   {saveMutation.isPending ? 'Čuvanje...' : 'Sačuvaj'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== UNIVERZALNI MODAL ZA POTVRDU BRISANJA ===== */}
+      {itemToDelete && (
+        <div className={styles.modalOverlay} onClick={closeDeleteModal}>
+          <div
+            className={`${styles.modal} ${styles.deleteModal}`}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className={styles.deleteModalHeader}>
+              <div className={styles.deleteModalTitle}>
+                <div className={styles.deleteModalIcon}>
+                  <Trash2 size={20} />
+                </div>
+                <span>Potvrda brisanja</span>
+              </div>
+              <button
+                type="button"
+                className={styles.modalClose}
+                onClick={closeDeleteModal}
+                disabled={deleteMutation.isPending}
+                aria-label="Zatvori"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className={styles.deleteModalBody}>
+              <p className={styles.deleteModalPrompt}>
+                Da li ste sigurni da želite da obrišete {getTabSingular(itemToDelete.tab)}?
+              </p>
+
+              <div className={styles.deleteTargetCard}>
+                <div className={styles.deleteTargetName}>{itemToDelete.name}</div>
+                {itemToDelete.details && itemToDelete.details.length > 0 && (
+                  <div className={styles.deleteTargetDetailsList}>
+                    {itemToDelete.details.map((detail, idx) => (
+                      <div key={idx} className={styles.deleteTargetDetailRow}>
+                        <span className={styles.deleteTargetDetailLabel}>{detail.label}:</span>
+                        <span className={styles.deleteTargetDetailValue}>{detail.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.deleteWarningBox}>
+                <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  Ova radnja je nepovratna. Podaci će biti trajno uklonjeni iz šifarnika.
+                </span>
+              </div>
+
+              <div className={styles.deleteModalActions}>
+                <button
+                  type="button"
+                  className={styles.deleteCancelBtn}
+                  onClick={closeDeleteModal}
+                  disabled={deleteMutation.isPending}
+                >
+                  Odustani
+                </button>
+                <button
+                  type="button"
+                  className={styles.deleteConfirmBtn}
+                  onClick={confirmDelete}
+                  disabled={deleteMutation.isPending}
+                >
+                  {deleteMutation.isPending ? (
+                    <>
+                      <Loader2 size={16} className={styles.spinner} />
+                      <span>Brisanje...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={16} />
+                      <span>Potvrdi brisanje</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>

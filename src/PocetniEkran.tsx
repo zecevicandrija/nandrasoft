@@ -19,6 +19,7 @@ import {
   Fuel,
   Sprout,
   X,
+  BarChart3,
 } from 'lucide-react';
 import styles from './PocetniEkran.module.css';
 import { signIn, signOut, useSession } from './lib/auth-client';
@@ -677,10 +678,20 @@ const PocetniEkran: React.FC = () => {
             )}
 
             {role === 'DIREKTOR' && (
-              <Link to="/admin" className={styles.adminBtn}>
-                <Settings size={18} />
-                Korisnički nalozi
-              </Link>
+              <>
+                <Link
+                  to="/analitika"
+                  className={styles.adminBtn}
+                  style={{ backgroundColor: 'rgba(2, 132, 199, 0.14)', color: '#0284c7' }}
+                >
+                  <BarChart3 size={18} />
+                  Analitika & Izveštaji
+                </Link>
+                <Link to="/admin" className={styles.adminBtn}>
+                  <Settings size={18} />
+                  Korisnički nalozi
+                </Link>
+              </>
             )}
           </div>
 

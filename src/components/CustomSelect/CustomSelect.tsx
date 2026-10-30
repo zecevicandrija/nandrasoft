@@ -21,6 +21,8 @@ interface CustomSelectProps {
   id?: string;
   className?: string;
   triggerClassName?: string;
+  icon?: React.ReactNode;
+  hideTriggerSubLabel?: boolean;
 }
 
 export const CustomSelect: React.FC<CustomSelectProps> = ({
@@ -33,6 +35,8 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   id,
   className,
   triggerClassName,
+  icon,
+  hideTriggerSubLabel = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [openUpwards, setOpenUpwards] = useState(false);
@@ -128,11 +132,12 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
         aria-haspopup="listbox"
         aria-expanded={isOpen}
       >
+        {icon && <div className={styles.customSelectLeadIcon}>{icon}</div>}
         <div className={styles.customSelectContent}>
           {selectedOption ? (
             <>
               <span className={styles.customSelectMainText}>{selectedOption.label}</span>
-              {selectedOption.subLabel && (
+              {selectedOption.subLabel && !hideTriggerSubLabel && (
                 <span className={styles.customSelectSubText}>{selectedOption.subLabel}</span>
               )}
             </>

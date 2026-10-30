@@ -15,6 +15,7 @@ import PutarineDashboard from './Masine/PutarineDashboard';
 import FertilizerDashboard from './Djubrivo/FertilizerDashboard';
 import SeasonalWorkersDashboard from './Sezonci/SeasonalWorkersDashboard';
 import OnionDashboard from './Luk/OnionDashboard';
+import AnalitikaDashboard from './Analitika/AnalitikaDashboard';
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
         <Routes>
           <Route path="/" element={<PocetniEkran />} />
           <Route path="/admin" element={<AdminPanel />} />
+          <Route path="/analitika" element={<AnalitikaDashboard />} />
           <Route path="/revizija" element={<AuditLogDashboard />} />
           <Route path="/sifarnici" element={<SifarniciHub />} />
           <Route path="/nalozi" element={<RadniNaloziDashboard />} />

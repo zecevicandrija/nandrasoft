@@ -18,6 +18,7 @@ import {
   KeyRound,
   Loader2,
   CreditCard,
+  BarChart3,
 } from 'lucide-react';
 import { useSession, signOut } from '../../lib/auth-client';
 import ThemeToggle from '../ThemeToggle';
@@ -120,6 +121,12 @@ const NAV_GROUPS: NavGroup[] = [
   {
     groupName: 'Sistem & Podaci',
     items: [
+      {
+        title: 'Analitika',
+        to: '/analitika',
+        icon: <BarChart3 size={18} />,
+        allowedRoles: ['DIREKTOR'],
+      },
       {
         title: 'Šifarnici',
         to: '/sifarnici',

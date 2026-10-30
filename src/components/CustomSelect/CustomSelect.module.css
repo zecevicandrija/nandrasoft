@@ -64,6 +64,15 @@
   box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.25);
 }
 
+.customSelectLeadIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-secondary, #64748b);
+  margin-right: 0.2rem;
+}
+
 .customSelectContent {
   display: flex;
   flex-direction: column;

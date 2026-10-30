@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ClipboardList,
@@ -24,12 +24,13 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Calendar,
-  Filter,
   CheckCircle2,
+  Filter,
   Layers,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
+import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import { useSession } from '../lib/auth-client';
 import styles from './RadniNaloziDashboard.module.css';
 
@@ -329,6 +330,12 @@ const RadniNaloziDashboard: React.FC = () => {
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setModalError('');
+
+    if (!formData.workerId) {
+      setModalError('Molimo izaberite radnika kome se nalog izdaje.');
+      return;
+    }
+
     setModalLoading(true);
 
     try {
@@ -546,6 +553,220 @@ const RadniNaloziDashboard: React.FC = () => {
     return workers;
   };
 
+  // Promena tipa posla u kreiranju novog naloga
+  const handleCreateOrderTypeChange = (newType: string) => {
+    const filtered = getFilteredWorkers(newType);
+    const isCurrentValid = filtered.some((w) => w.id === formData.workerId);
+    setFormData((prev) => ({
+      ...prev,
+      orderType: newType as any,
+      workerId: isCurrentValid ? prev.workerId : '',
+    }));
+  };
+
+  // Promena tipa posla u izmeni naloga
+  const handleEditOrderTypeChange = (newType: string) => {
+    const filtered = getFilteredWorkers(newType);
+    const isCurrentValid = filtered.some((w) => w.id === editFormData.workerId);
+    setEditFormData((prev) => ({
+      ...prev,
+      orderType: newType as any,
+      workerId: isCurrentValid ? prev.workerId : '',
+    }));
+  };
+
+  // Opcije za filter tipa posla
+  const typeFilterOptions: CustomSelectOption[] = useMemo(
+    () => [
+      { value: '', label: 'Svi tipovi posla' },
+      { value: 'RAD_NJIVA', label: 'Rad na njivi' },
+      { value: 'REMONT_SERVIS', label: 'Remont & Servis' },
+      { value: 'OSTALO', label: 'Ostalo / Magacin' },
+    ],
+    []
+  );
+
+  // Opcije za filter statusa
+  const statusFilterOptions: CustomSelectOption[] = useMemo(() => {
+    if (isManager) {
+      return [
+        { value: '', label: 'Svi statusi' },
+        { value: 'DODELJEN', label: 'Dodeljen', badge: 'Čeka', badgeType: 'warning' },
+        { value: 'U_TOKU', label: 'U toku', badge: 'U toku', badgeType: 'default' },
+        { value: 'ZAVRSEN', label: 'Završen', badge: 'Završen', badgeType: 'success' },
+        { value: 'OTKAZAN', label: 'Otkazan', badge: 'Otkazan', badgeType: 'danger' },
+      ];
+    }
+    return [
+      { value: '', label: 'Aktivni nalozi' },
+      { value: 'DODELJEN', label: 'Samo Dodeljen', badge: 'Čeka', badgeType: 'warning' },
+      { value: 'U_TOKU', label: 'Samo U toku', badge: 'U toku', badgeType: 'default' },
+      { value: 'ZAVRSEN', label: 'Završeni nalozi', badge: 'Završen', badgeType: 'success' },
+      { value: 'SVE', label: 'Svi nalozi' },
+    ];
+  }, [isManager]);
+
+  // Opcije za tip naloga u formi
+  const orderTypeOptions: CustomSelectOption[] = useMemo(
+    () => [
+      { value: 'RAD_NJIVA', label: 'Rad na njivi', subLabel: 'Rad sa mehanizacijom i oruđima na parcelama' },
+      { value: 'REMONT_SERVIS', label: 'Remont & Servis mašine', subLabel: 'Popravke i servis mehanizacije u radionici' },
+      { value: 'OSTALO', label: 'Ostalo', subLabel: 'Magacinski poslovi, transport i pomoćni zadaci' },
+    ],
+    []
+  );
+
+  // Opcije za prioritet
+  const priorityOptions: CustomSelectOption[] = useMemo(
+    () => [
+      { value: 'NORMALNO', label: 'Normalno', subLabel: 'Standardan prioritet rada', badge: 'Normalno', badgeType: 'default' },
+      { value: 'HITNO', label: 'Hitno', subLabel: 'Visok prioritet, izvršiti što pre', badge: 'Hitno', badgeType: 'warning' },
+      { value: 'KRITICNO', label: 'Kritično', subLabel: 'Maksimalan prioritet, urgentno', badge: 'Kritično', badgeType: 'danger', isAlert: true },
+    ],
+    []
+  );
+
+  // Opcije za radnu smenu
+  const shiftOptions: CustomSelectOption[] = useMemo(
+    () => [
+      { value: 'PRVA', label: '1. Smena (Jutarnja)', subLabel: '07:00 – 15:30' },
+      { value: 'DRUGA', label: '2. Smena (Popodnevna)', subLabel: '15:30 – 23:00' },
+      { value: 'TRECA', label: '3. Smena (Noćna)', subLabel: '23:00 – 07:00' },
+    ],
+    []
+  );
+
+  // Opcije za status u izmeni naloga
+  const editStatusOptions: CustomSelectOption[] = useMemo(
+    () => [
+      { value: 'PLANIRAN', label: 'Planiran', subLabel: 'Kreiran radni nalog u planu', badge: 'Planiran', badgeType: 'default' },
+      { value: 'DODELJEN', label: 'Dodeljen', subLabel: 'Dodeljen radniku, čeka početak', badge: 'Dodeljen', badgeType: 'warning' },
+      { value: 'U_TOKU', label: 'U toku', subLabel: 'Radnik je zadužio mašinu i radi', badge: 'U toku', badgeType: 'default' },
+      { value: 'ZAVRSEN', label: 'Završen', subLabel: 'Rad je uspešno završen', badge: 'Završen', badgeType: 'success' },
+      { value: 'OTKAZAN', label: 'Otkazan', subLabel: 'Radni nalog je storniran / otkazan', badge: 'Otkazan', badgeType: 'danger' },
+    ],
+    []
+  );
+
+  // Opcije za radnike kod kreiranja naloga
+  const createWorkerOptions: CustomSelectOption[] = useMemo(() => {
+    const filtered = getFilteredWorkers(formData.orderType);
+    return filtered.map((w) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.user?.role
+        ? `Uloga: ${w.user.role}`
+        : w.type === 'SEZONAC'
+          ? 'Sezonski radnik'
+          : 'Zaposleni radnik',
+      badge: w.type === 'SEZONAC' ? 'Sezonac' : w.user?.role || undefined,
+      badgeType: (w.type === 'SEZONAC' ? 'warning' : 'default') as CustomSelectOption['badgeType'],
+    }));
+  }, [workers, formData.orderType]);
+
+  // Opcije za radnike kod izmene naloga
+  const editWorkerOptions: CustomSelectOption[] = useMemo(() => {
+    const filtered = getFilteredWorkers(editFormData.orderType);
+    return filtered.map((w) => ({
+      value: w.id,
+      label: w.name,
+      subLabel: w.user?.role
+        ? `Uloga: ${w.user.role}`
+        : w.type === 'SEZONAC'
+          ? 'Sezonski radnik'
+          : 'Zaposleni radnik',
+      badge: w.type === 'SEZONAC' ? 'Sezonac' : w.user?.role || undefined,
+      badgeType: (w.type === 'SEZONAC' ? 'warning' : 'default') as CustomSelectOption['badgeType'],
+    }));
+  }, [workers, editFormData.orderType]);
+
+  // Opcije za mašine
+  const machineOptions: CustomSelectOption[] = useMemo(() => {
+    const list: CustomSelectOption[] = machines.map((m) => {
+      const isFree = m.status === 'SLOBODNA';
+      const details = [
+        m.type || 'Mašina',
+        m.currentHours ? `${m.currentHours} rh` : '',
+        m.tankCapacityLiters && m.tankCapacityLiters > 0 ? `Rez: ${m.tankCapacityLiters}L` : '',
+      ]
+        .filter(Boolean)
+        .join(' • ');
+
+      return {
+        value: m.id,
+        label: m.name,
+        subLabel: details || undefined,
+        badge: m.status,
+        badgeType: isFree ? ('success' as const) : m.status === 'U_RADU' ? ('warning' as const) : ('default' as const),
+      };
+    });
+
+    return [
+      { value: '', label: '— Bez mašine (Ručni rad) —' },
+      ...list,
+    ];
+  }, [machines]);
+
+  // Opcije za priključke kod kreiranja
+  const attachmentOptions: CustomSelectOption[] = useMemo(() => {
+    const attachments = machines.filter((m) => m.type === 'PRIKLJUCAK');
+    return [
+      { value: '', label: '— Bez priključka (Solo mašina) —' },
+      ...attachments.map((m) => ({
+        value: m.id,
+        label: m.name,
+        subLabel: m.status ? `Status: ${m.status}` : 'Priključno oruđe',
+        badge: m.status === 'SLOBODNA' ? 'Slobodan' : m.status || undefined,
+        badgeType: (m.status === 'SLOBODNA' ? 'success' : 'default') as CustomSelectOption['badgeType'],
+      })),
+    ];
+  }, [machines]);
+
+  // Opcije za priključke kod izmene
+  const editAttachmentOptions: CustomSelectOption[] = useMemo(() => {
+    const attachments = machines.filter(
+      (m) => m.type === 'PRIKLJUCAK' || m.id === editFormData.attachmentId
+    );
+    return [
+      { value: '', label: '— Bez priključka (Solo mašina) —' },
+      ...attachments.map((m) => ({
+        value: m.id,
+        label: m.name,
+        subLabel: m.status ? `Status: ${m.status}` : 'Priključno oruđe',
+        badge: m.status === 'SLOBODNA' ? 'Slobodan' : m.status || undefined,
+        badgeType: (m.status === 'SLOBODNA' ? 'success' : 'default') as CustomSelectOption['badgeType'],
+      })),
+    ];
+  }, [machines, editFormData.attachmentId]);
+
+  // Opcije za parcele
+  const parcelOptions: CustomSelectOption[] = useMemo(() => {
+    return [
+      { value: '', label: '— Izaberite parcelu —' },
+      ...parcels.map((p) => ({
+        value: p.id,
+        label: `[${p.code}] ${p.name} (${p.areaHa} ha)`,
+        subLabel: [p.location, p.currentCrop ? `Kultura: ${p.currentCrop}` : ''].filter(Boolean).join(' • ') || undefined,
+        badge: `${p.areaHa} ha`,
+        badgeType: 'default' as const,
+      })),
+    ];
+  }, [parcels]);
+
+  // Opcije za radne operacije
+  const workTypeOptions: CustomSelectOption[] = useMemo(() => {
+    return [
+      { value: '', label: '— Izaberite radnu operaciju —' },
+      ...workTypes.map((wt) => ({
+        value: wt.id,
+        label: wt.name,
+        subLabel: wt.category ? `Kategorija: ${wt.category}` : undefined,
+        badge: wt.category || undefined,
+        badgeType: 'default' as const,
+      })),
+    ];
+  }, [workTypes]);
+
   // Za direktore i rukovodioce uvek su otključani svi radni nalozi za izmenu (i završeni i prethodni datumi)
   const canEditOrder = (_order?: WorkOrder) => {
     return isManager;
@@ -574,6 +795,12 @@ const RadniNaloziDashboard: React.FC = () => {
     e.preventDefault();
     if (!editingOrder) return;
     setEditModalError('');
+
+    if (!editFormData.workerId) {
+      setEditModalError('Molimo izaberite radnika kome se nalog izdaje.');
+      return;
+    }
+
     setEditModalLoading(true);
 
     try {
@@ -844,51 +1071,36 @@ const RadniNaloziDashboard: React.FC = () => {
               />
             </div>
 
-            <div className={styles.inputWrapper}>
-              <Filter size={15} className={styles.inputIcon} />
-              <select
-                className={styles.selectInput}
+            <div className={styles.filterSelectWrapper}>
+              <CustomSelect
                 value={typeFilter}
-                onChange={(e) => {
-                  setTypeFilter(e.target.value);
+                onChange={(val) => {
+                  setTypeFilter(val);
                   setPage(1);
                 }}
-              >
-                <option value="">Svi tipovi posla</option>
-                <option value="RAD_NJIVA">Rad na njivi</option>
-                <option value="REMONT_SERVIS">Remont & Servis</option>
-                <option value="OSTALO">Ostalo / Magacin</option>
-              </select>
+                options={typeFilterOptions}
+                placeholder="Svi tipovi posla"
+                searchable={false}
+                icon={<Filter size={15} />}
+                hideTriggerSubLabel={true}
+                triggerClassName={styles.filterSelectTrigger}
+              />
             </div>
 
-            <div className={styles.inputWrapper}>
-              <Layers size={15} className={styles.inputIcon} />
-              <select
-                className={styles.selectInput}
+            <div className={styles.filterSelectWrapper}>
+              <CustomSelect
                 value={statusFilter}
-                onChange={(e) => {
-                  setStatusFilter(e.target.value);
+                onChange={(val) => {
+                  setStatusFilter(val);
                   setPage(1);
                 }}
-              >
-                {isManager ? (
-                  <>
-                    <option value="">Svi statusi</option>
-                    <option value="DODELJEN">Dodeljen (Na čekanju)</option>
-                    <option value="U_TOKU">U toku</option>
-                    <option value="ZAVRSEN">Završen</option>
-                    <option value="OTKAZAN">Otkazan</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="">Aktivni nalozi (Dodeljeni & U toku)</option>
-                    <option value="DODELJEN">Samo Dodeljen (Na čekanju)</option>
-                    <option value="U_TOKU">Samo U toku</option>
-                    <option value="ZAVRSEN">Završeni nalozi</option>
-                    <option value="SVE">Svi nalozi (i završeni)</option>
-                  </>
-                )}
-              </select>
+                options={statusFilterOptions}
+                placeholder="Svi statusi"
+                searchable={false}
+                icon={<Layers size={15} />}
+                hideTriggerSubLabel={true}
+                triggerClassName={styles.filterSelectTrigger}
+              />
             </div>
           </div>
         </div>
@@ -1183,132 +1395,125 @@ const RadniNaloziDashboard: React.FC = () => {
               <form onSubmit={handleCreateOrder} className={styles.modalForm}>
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
-                    <label>Tip naloga *</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Tip naloga *</label>
+                    </div>
+                    <CustomSelect
                       value={formData.orderType}
-                      onChange={(e) => {
-                        const newType = e.target.value;
-                        const filtered = getFilteredWorkers(newType);
-                        const isCurrentValid = filtered.some((w) => w.id === formData.workerId);
-                        setFormData({
-                          ...formData,
-                          orderType: newType,
-                          workerId: isCurrentValid ? formData.workerId : '',
-                        });
-                      }}
-                    >
-                      <option value="RAD_NJIVA">Rad na njivi</option>
-                      <option value="REMONT_SERVIS">Remont & Servis mašine</option>
-                      <option value="OSTALO">Ostalo</option>
-                    </select>
+                      onChange={handleCreateOrderTypeChange}
+                      options={orderTypeOptions}
+                      placeholder="— Izaberite tip naloga —"
+                      searchable={false}
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
 
                   <div className={styles.formGroup}>
-                    <label>Prioritet *</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Prioritet *</label>
+                    </div>
+                    <CustomSelect
                       value={formData.priority}
-                      onChange={(e) => setFormData({ ...formData, priority: e.target.value })}
-                    >
-                      <option value="NORMALNO">Normalno</option>
-                      <option value="HITNO">Hitno</option>
-                      <option value="KRITICNO">Kritično</option>
-                    </select>
+                      onChange={(val) => setFormData((prev) => ({ ...prev, priority: val }))}
+                      options={priorityOptions}
+                      placeholder="— Izaberite prioritet —"
+                      searchable={false}
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
                 </div>
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
-                    <label>Datum za kada se planira *</label>
+                    <div className={styles.formLabelRow}>
+                      <label>Datum za kada se planira *</label>
+                    </div>
                     <input
                       type="date"
                       className={styles.modalInput}
                       value={formData.orderDate}
-                      onChange={(e) => setFormData({ ...formData, orderDate: e.target.value })}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
                       required
                     />
                   </div>
 
                   <div className={styles.formGroup}>
-                    <label>Radna smena</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Radna smena</label>
+                    </div>
+                    <CustomSelect
                       value={formData.shift}
-                      onChange={(e) => setFormData({ ...formData, shift: e.target.value as any })}
-                    >
-                      <option value="PRVA">1. Smena (Jutarnja)</option>
-                      <option value="DRUGA">2. Smena (Popodnevna)</option>
-                      <option value="TRECA">3. Smena (Noćna)</option>
-                    </select>
+                      onChange={(val) => setFormData((prev) => ({ ...prev, shift: val as any }))}
+                      options={shiftOptions}
+                      placeholder="— Izaberite smenu —"
+                      searchable={false}
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
                 </div>
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroupFull}>
-                    <label>
-                      {formData.orderType === 'REMONT_SERVIS'
-                        ? 'Dodeljeni mehaničar / serviser *'
-                        : formData.orderType === 'RAD_NJIVA'
-                          ? 'Dodeljeni operater / traktorista *'
-                          : 'Radnik kome se nalog izdaje *'}
-                    </label>
-                    <select
-                      className={styles.modalSelect}
-                      value={formData.workerId}
-                      onChange={(e) => setFormData({ ...formData, workerId: e.target.value })}
-                      required
-                    >
-                      <option value="">
+                    <div className={styles.formLabelRow}>
+                      <label>
                         {formData.orderType === 'REMONT_SERVIS'
-                          ? 'Izaberi mehaničara iz baze...'
+                          ? 'Dodeljeni mehaničar / serviser *'
                           : formData.orderType === 'RAD_NJIVA'
-                            ? 'Izaberi operatera iz baze...'
-                            : 'Izaberi radnika iz baze...'}
-                      </option>
-                      {getFilteredWorkers(formData.orderType).map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name} {w.user?.role ? `(${w.user.role})` : w.type === 'SEZONAC' ? '(Sezonac)' : ''}
-                        </option>
-                      ))}
-                    </select>
+                            ? 'Dodeljeni operater / traktorista *'
+                            : 'Radnik kome se nalog izdaje *'}
+                      </label>
+                    </div>
+                    <CustomSelect
+                      value={formData.workerId}
+                      onChange={(val) => setFormData((prev) => ({ ...prev, workerId: val }))}
+                      options={createWorkerOptions}
+                      placeholder={
+                        formData.orderType === 'REMONT_SERVIS'
+                          ? '— Izaberi mehaničara iz baze —'
+                          : formData.orderType === 'RAD_NJIVA'
+                            ? '— Izaberi operatera iz baze —'
+                            : '— Izaberi radnika iz baze —'
+                      }
+                      searchable
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
                 </div>
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
-                    <label>Glavna mašina / Traktor</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Glavna mašina / Traktor</label>
+                    </div>
+                    <CustomSelect
                       value={formData.machineId}
-                      onChange={(e) => setFormData({ ...formData, machineId: e.target.value })}
-                    >
-                      <option value="">Izaberi mašinu...</option>
-                      {machines.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({m.status})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setFormData((prev) => ({ ...prev, machineId: val }))}
+                      options={machineOptions}
+                      placeholder="— Izaberi mašinu —"
+                      searchable
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
 
                   {formData.orderType === 'RAD_NJIVA' && (
                     <div className={styles.formGroup}>
-                      <label>Priključak (opciono)</label>
-                      <select
-                        className={styles.modalSelect}
+                      <div className={styles.formLabelRow}>
+                        <label>Priključak (opciono)</label>
+                      </div>
+                      <CustomSelect
                         value={formData.attachmentId}
-                        onChange={(e) => setFormData({ ...formData, attachmentId: e.target.value })}
-                      >
-                        <option value="">Bez priključka / Samohodna</option>
-                        {machines
-                          .filter((m) => m.type === 'PRIKLJUCAK')
-                          .map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name}
-                            </option>
-                          ))}
-                      </select>
+                        onChange={(val) => setFormData((prev) => ({ ...prev, attachmentId: val }))}
+                        options={attachmentOptions}
+                        placeholder="— Bez priključka / Samohodna —"
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
                     </div>
                   )}
                 </div>
@@ -1316,8 +1521,8 @@ const RadniNaloziDashboard: React.FC = () => {
                 {formData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
-                        <label style={{ marginBottom: 0 }}>Parcela / Njiva</label>
+                      <div className={styles.formLabelRow}>
+                        <label>Parcela / Njiva</label>
                         {isManager && (
                           <ParcelQuickActions
                             selectedParcel={parcels.find((p) => p.id === formData.parcelId) || null}
@@ -1334,34 +1539,30 @@ const RadniNaloziDashboard: React.FC = () => {
                           />
                         )}
                       </div>
-                      <select
-                        className={styles.modalSelect}
+                      <CustomSelect
                         value={formData.parcelId}
-                        onChange={(e) => setFormData({ ...formData, parcelId: e.target.value })}
-                      >
-                        <option value="">Izaberi parcelu...</option>
-                        {parcels.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            [{p.code}] {p.name} ({p.areaHa} ha)
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setFormData((prev) => ({ ...prev, parcelId: val }))}
+                        options={parcelOptions}
+                        placeholder="— Izaberi parcelu —"
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
-                      <label>Radna operacija / Posao</label>
-                      <select
-                        className={styles.modalSelect}
+                      <div className={styles.formLabelRow}>
+                        <label>Radna operacija / Posao</label>
+                      </div>
+                      <CustomSelect
                         value={formData.workTypeId}
-                        onChange={(e) => setFormData({ ...formData, workTypeId: e.target.value })}
-                      >
-                        <option value="">Izaberi posao...</option>
-                        {workTypes.map((wt) => (
-                          <option key={wt.id} value={wt.id}>
-                            {wt.name}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setFormData((prev) => ({ ...prev, workTypeId: val }))}
+                        options={workTypeOptions}
+                        placeholder="— Izaberi posao —"
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
                     </div>
                   </div>
                 )}
@@ -1369,7 +1570,9 @@ const RadniNaloziDashboard: React.FC = () => {
                 {formData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroupFull}>
-                      <label>Planirani obim rada (hektara)</label>
+                      <div className={styles.formLabelRow}>
+                        <label>Planirani obim rada (hektara)</label>
+                      </div>
                       <input
                         type="number"
                         step="0.1"
@@ -1383,11 +1586,13 @@ const RadniNaloziDashboard: React.FC = () => {
                 )}
 
                 <div className={styles.formGroupFull}>
-                  <label>
-                    {formData.orderType === 'REMONT_SERVIS'
-                      ? 'Opis remonta i potrebnih delova/maziva'
-                      : 'Uputstvo / Napomena za radnika'}
-                  </label>
+                  <div className={styles.formLabelRow}>
+                    <label>
+                      {formData.orderType === 'REMONT_SERVIS'
+                        ? 'Opis remonta i potrebnih delova/maziva'
+                        : 'Uputstvo / Napomena za radnika'}
+                    </label>
+                  </div>
                   <textarea
                     className={styles.modalTextarea}
                     placeholder={
@@ -1437,64 +1642,61 @@ const RadniNaloziDashboard: React.FC = () => {
               <form onSubmit={handleUpdateOrder} className={styles.modalForm}>
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
-                    <label>Status naloga *</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Status naloga *</label>
+                    </div>
+                    <CustomSelect
                       value={editFormData.status}
-                      onChange={(e) => setEditFormData({ ...editFormData, status: e.target.value as any })}
-                    >
-                      <option value="PLANIRAN">Planiran</option>
-                      <option value="DODELJEN">Dodeljen</option>
-                      <option value="U_TOKU">U toku</option>
-                      <option value="ZAVRSEN">Završen</option>
-                      <option value="OTKAZAN">Otkazan</option>
-                    </select>
+                      onChange={(val) => setEditFormData((prev) => ({ ...prev, status: val as any }))}
+                      options={editStatusOptions}
+                      placeholder="— Izaberite status —"
+                      searchable={false}
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
 
                   <div className={styles.formGroup}>
-                    <label>Prioritet *</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Prioritet *</label>
+                    </div>
+                    <CustomSelect
                       value={editFormData.priority}
-                      onChange={(e) => setEditFormData({ ...editFormData, priority: e.target.value })}
-                    >
-                      <option value="NORMALNO">Normalno</option>
-                      <option value="HITNO">Hitno</option>
-                      <option value="KRITICNO">Kritično</option>
-                    </select>
+                      onChange={(val) => setEditFormData((prev) => ({ ...prev, priority: val }))}
+                      options={priorityOptions}
+                      placeholder="— Izaberite prioritet —"
+                      searchable={false}
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
                 </div>
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
-                    <label>Tip naloga *</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Tip naloga *</label>
+                    </div>
+                    <CustomSelect
                       value={editFormData.orderType}
-                      onChange={(e) => {
-                        const newType = e.target.value as any;
-                        const filtered = getFilteredWorkers(newType);
-                        const isCurrentValid = filtered.some((w) => w.id === editFormData.workerId);
-                        setEditFormData({
-                          ...editFormData,
-                          orderType: newType,
-                          workerId: isCurrentValid ? editFormData.workerId : '',
-                        });
-                      }}
-                    >
-                      <option value="RAD_NJIVA">Rad na njivi</option>
-                      <option value="REMONT_SERVIS">Remont & Servis mašine</option>
-                      <option value="OSTALO">Ostalo</option>
-                    </select>
+                      onChange={handleEditOrderTypeChange}
+                      options={orderTypeOptions}
+                      placeholder="— Izaberite tip naloga —"
+                      searchable={false}
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
 
                   <div className={styles.formGroup}>
-                    <label>Datum za kada se planira *</label>
+                    <div className={styles.formLabelRow}>
+                      <label>Datum za kada se planira *</label>
+                    </div>
                     <input
                       type="date"
                       className={styles.modalInput}
                       value={editFormData.orderDate}
-                      onChange={(e) => setEditFormData({ ...editFormData, orderDate: e.target.value })}
+                      onChange={(e) => setEditFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
                       required
                     />
                   </div>
@@ -1502,69 +1704,63 @@ const RadniNaloziDashboard: React.FC = () => {
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroupFull}>
-                    <label>
-                      {editFormData.orderType === 'REMONT_SERVIS'
-                        ? 'Dodeljeni mehaničar / serviser *'
-                        : editFormData.orderType === 'RAD_NJIVA'
-                          ? 'Dodeljeni operater / traktorista *'
-                          : 'Radnik kome se nalog izdaje *'}
-                    </label>
-                    <select
-                      className={styles.modalSelect}
-                      value={editFormData.workerId}
-                      onChange={(e) => setEditFormData({ ...editFormData, workerId: e.target.value })}
-                      required
-                    >
-                      <option value="">
+                    <div className={styles.formLabelRow}>
+                      <label>
                         {editFormData.orderType === 'REMONT_SERVIS'
-                          ? 'Izaberi mehaničara iz baze...'
+                          ? 'Dodeljeni mehaničar / serviser *'
                           : editFormData.orderType === 'RAD_NJIVA'
-                            ? 'Izaberi operatera iz baze...'
-                            : 'Izaberi radnika iz baze...'}
-                      </option>
-                      {getFilteredWorkers(editFormData.orderType).map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name} {w.user?.role ? `(${w.user.role})` : w.type === 'SEZONAC' ? '(Sezonac)' : ''}
-                        </option>
-                      ))}
-                    </select>
+                            ? 'Dodeljeni operater / traktorista *'
+                            : 'Radnik kome se nalog izdaje *'}
+                      </label>
+                    </div>
+                    <CustomSelect
+                      value={editFormData.workerId}
+                      onChange={(val) => setEditFormData((prev) => ({ ...prev, workerId: val }))}
+                      options={editWorkerOptions}
+                      placeholder={
+                        editFormData.orderType === 'REMONT_SERVIS'
+                          ? '— Izaberi mehaničara iz baze —'
+                          : editFormData.orderType === 'RAD_NJIVA'
+                            ? '— Izaberi operatera iz baze —'
+                            : '— Izaberi radnika iz baze —'
+                      }
+                      searchable
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
                 </div>
 
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
-                    <label>Glavna mašina / Traktor</label>
-                    <select
-                      className={styles.modalSelect}
+                    <div className={styles.formLabelRow}>
+                      <label>Glavna mašina / Traktor</label>
+                    </div>
+                    <CustomSelect
                       value={editFormData.machineId}
-                      onChange={(e) => setEditFormData({ ...editFormData, machineId: e.target.value })}
-                    >
-                      <option value="">Bez mašine</option>
-                      {machines.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({m.status})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setEditFormData((prev) => ({ ...prev, machineId: val }))}
+                      options={machineOptions}
+                      placeholder="— Bez mašine —"
+                      searchable
+                      hideTriggerSubLabel={true}
+                      triggerClassName={styles.modalFormSelectTrigger}
+                    />
                   </div>
 
                   {editFormData.orderType === 'RAD_NJIVA' && (
                     <div className={styles.formGroup}>
-                      <label>Priključak (opciono)</label>
-                      <select
-                        className={styles.modalSelect}
+                      <div className={styles.formLabelRow}>
+                        <label>Priključak (opciono)</label>
+                      </div>
+                      <CustomSelect
                         value={editFormData.attachmentId}
-                        onChange={(e) => setEditFormData({ ...editFormData, attachmentId: e.target.value })}
-                      >
-                        <option value="">Bez priključka / Samohodna</option>
-                        {machines
-                          .filter((m) => m.type === 'PRIKLJUCAK' || m.id === editFormData.attachmentId)
-                          .map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name}
-                            </option>
-                          ))}
-                      </select>
+                        onChange={(val) => setEditFormData((prev) => ({ ...prev, attachmentId: val }))}
+                        options={editAttachmentOptions}
+                        placeholder="— Bez priključka / Samohodna —"
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
                     </div>
                   )}
                 </div>
@@ -1572,8 +1768,8 @@ const RadniNaloziDashboard: React.FC = () => {
                 {editFormData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
-                        <label style={{ marginBottom: 0 }}>Parcela / Njiva</label>
+                      <div className={styles.formLabelRow}>
+                        <label>Parcela / Njiva</label>
                         {isManager && (
                           <ParcelQuickActions
                             selectedParcel={parcels.find((p) => p.id === editFormData.parcelId) || null}
@@ -1590,34 +1786,30 @@ const RadniNaloziDashboard: React.FC = () => {
                           />
                         )}
                       </div>
-                      <select
-                        className={styles.modalSelect}
+                      <CustomSelect
                         value={editFormData.parcelId}
-                        onChange={(e) => setEditFormData({ ...editFormData, parcelId: e.target.value })}
-                      >
-                        <option value="">Izaberi parcelu...</option>
-                        {parcels.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            [{p.code}] {p.name} ({p.areaHa} ha)
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setEditFormData((prev) => ({ ...prev, parcelId: val }))}
+                        options={parcelOptions}
+                        placeholder="— Izaberi parcelu —"
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
                     </div>
 
                     <div className={styles.formGroup}>
-                      <label>Radna operacija / Posao</label>
-                      <select
-                        className={styles.modalSelect}
+                      <div className={styles.formLabelRow}>
+                        <label>Radna operacija / Posao</label>
+                      </div>
+                      <CustomSelect
                         value={editFormData.workTypeId}
-                        onChange={(e) => setEditFormData({ ...editFormData, workTypeId: e.target.value })}
-                      >
-                        <option value="">Izaberi posao...</option>
-                        {workTypes.map((wt) => (
-                          <option key={wt.id} value={wt.id}>
-                            {wt.name}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setEditFormData((prev) => ({ ...prev, workTypeId: val }))}
+                        options={workTypeOptions}
+                        placeholder="— Izaberi posao —"
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
                     </div>
                   </div>
                 )}
@@ -1625,38 +1817,44 @@ const RadniNaloziDashboard: React.FC = () => {
                 {editFormData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
-                      <label>Planirani obim rada (hektara)</label>
+                      <div className={styles.formLabelRow}>
+                        <label>Planirani obim rada (hektara)</label>
+                      </div>
                       <input
                         type="number"
                         step="0.1"
                         className={styles.modalInput}
                         placeholder="npr. 12.5"
                         value={editFormData.plannedAreaHa}
-                        onChange={(e) => setEditFormData({ ...editFormData, plannedAreaHa: e.target.value })}
+                        onChange={(e) => setEditFormData((prev) => ({ ...prev, plannedAreaHa: e.target.value }))}
                       />
                     </div>
 
                     <div className={styles.formGroup}>
-                      <label>Radna smena</label>
-                      <select
-                        className={styles.modalSelect}
+                      <div className={styles.formLabelRow}>
+                        <label>Radna smena</label>
+                      </div>
+                      <CustomSelect
                         value={editFormData.shift}
-                        onChange={(e) => setEditFormData({ ...editFormData, shift: e.target.value as any })}
-                      >
-                        <option value="PRVA">1. Smena (Jutarnja)</option>
-                        <option value="DRUGA">2. Smena (Popodnevna)</option>
-                        <option value="TRECA">3. Smena (Noćna)</option>
-                      </select>
+                        onChange={(val) => setEditFormData((prev) => ({ ...prev, shift: val as any }))}
+                        options={shiftOptions}
+                        placeholder="— Izaberite smenu —"
+                        searchable={false}
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
                     </div>
                   </div>
                 )}
 
                 <div className={styles.formGroupFull}>
-                  <label>
-                    {editFormData.orderType === 'REMONT_SERVIS'
-                      ? 'Opis remonta i potrebnih delova/maziva'
-                      : 'Uputstvo / Napomena za radnika'}
-                  </label>
+                  <div className={styles.formLabelRow}>
+                    <label>
+                      {editFormData.orderType === 'REMONT_SERVIS'
+                        ? 'Opis remonta i potrebnih delova/maziva'
+                        : 'Uputstvo / Napomena za radnika'}
+                    </label>
+                  </div>
                   <textarea
                     className={styles.modalTextarea}
                     placeholder={

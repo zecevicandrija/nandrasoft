@@ -289,6 +289,39 @@
   align-items: center;
 }
 
+.filterSelectWrapper {
+  min-width: 170px;
+  max-width: 220px;
+  flex: 1 1 auto;
+  position: relative;
+}
+
+.filterSelectTrigger {
+  min-height: 38px !important;
+  height: 38px !important;
+  max-height: 38px !important;
+  padding: 0 0.75rem !important;
+  border-radius: 9px !important;
+  border: 1px solid var(--border-color) !important;
+  background: var(--bg-input, var(--bg-card)) !important;
+  font-size: 0.85rem !important;
+  font-weight: 500 !important;
+  display: flex !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+}
+
+.filterSelectTrigger :global(.customSelectContent) {
+  justify-content: center;
+}
+
+.filterSelectTrigger :global(.customSelectMainText) {
+  font-size: 0.85rem !important;
+  font-weight: 500 !important;
+  color: var(--text-primary) !important;
+  line-height: 1.2 !important;
+}
+
 .inputIcon {
   position: absolute;
   left: 0.75rem;
@@ -1137,6 +1170,10 @@
   gap: 1.15rem;
 }
 
+.modalForm :global(.customSelectContainerOpen) {
+  z-index: 70;
+}
+
 .formGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1146,21 +1183,55 @@
 .formGroup {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.35rem;
 }
 
 .formGroupFull {
   grid-column: span 2;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.35rem;
 }
 
+.formLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  height: 28px;
+  width: 100%;
+}
+
+.formLabelRow label,
 .formGroup label,
 .formGroupFull label {
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
+  margin: 0 !important;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.modalFormSelectTrigger {
+  min-height: 44px !important;
+  height: 44px !important;
+  max-height: 44px !important;
+  padding: 0 0.85rem !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.modalFormSelectTrigger :global(.customSelectContent) {
+  justify-content: center;
+}
+
+.modalFormSelectTrigger :global(.customSelectMainText) {
+  font-size: 0.88rem !important;
+  font-weight: 600 !important;
+  line-height: 1.2 !important;
 }
 
 .modalInput,
@@ -1168,12 +1239,13 @@
 .modalTextarea {
   width: 100%;
   box-sizing: border-box;
-  padding: 0.65rem 0.85rem;
+  padding: 0.55rem 0.85rem;
+  min-height: 44px;
   border-radius: 9px;
   border: 1px solid var(--border-color);
   background: var(--bg-input, var(--bg-card));
   color: var(--text-primary);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   font-family: inherit;
   color-scheme: light dark;

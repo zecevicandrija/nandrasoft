@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Sprout,
@@ -29,6 +29,7 @@ import {
   UserCheck,
   Pencil,
   Settings2,
+  Trash2,
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -36,6 +37,9 @@ import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
 import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import TablePagination from '../components/TablePagination/TablePagination';
+import { useSession } from '../lib/auth-client';
+import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
+import { BuyerQuickModal, BuyerQuickActions, type BuyerItem } from '../components/BuyerQuickModal';
 import styles from './OnionDashboard.module.css';
 
 const API = '/api/onion';
@@ -150,6 +154,19 @@ function formatTimeOnly(timeTarget: string | undefined | null, fallbackDate?: st
 
 const OnionDashboard: React.FC = () => {
   const queryClient = useQueryClient();
+  const { data: session } = useSession();
+  const currentUser = (session as any)?.user;
+  const isManager = !currentUser || ['DIREKTOR', 'RUKOVODILAC', 'ADMIN'].includes(currentUser?.role || '');
+
+  // Brzo dodavanje / izmena parcele
+  const [parcelQuickModalOpen, setParcelQuickModalOpen] = useState(false);
+  const [parcelToEdit, setParcelToEdit] = useState<ParcelItem | null>(null);
+  const [parcelQuickTarget, setParcelQuickTarget] = useState<'harvest-form' | 'harvest-filter'>('harvest-form');
+
+  // Brzo dodavanje / izmena kupca (partnera)
+  const [buyerQuickModalOpen, setBuyerQuickModalOpen] = useState(false);
+  const [buyerToEdit, setBuyerToEdit] = useState<BuyerItem | null>(null);
+  const [buyerQuickTarget, setBuyerQuickTarget] = useState<'shipment-form' | 'shipment-filter'>('shipment-form');
 
   const [activeTab, setActiveTab] = useState<TabKey>('dovoz');
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -164,10 +181,12 @@ const OnionDashboard: React.FC = () => {
   const [harvestParcelFilter, setHarvestParcelFilter] = useState('ALL');
   const [storageTypeFilter, setStorageTypeFilter] = useState('ALL');
   const [packagingTypeFilter, setPackagingTypeFilter] = useState('ALL');
+  const [packagingParcelFilter, setPackagingParcelFilter] = useState('ALL');
   const [shipmentSearch, setShipmentSearch] = useState('');
   const [shipmentBuyerFilter, setShipmentBuyerFilter] = useState('ALL');
   const [traceLotInput, setTraceLotInput] = useState('');
   const [selectedTraceLot, setSelectedTraceLot] = useState('');
+  const [selectedTuraId, setSelectedTuraId] = useState<string>('ALL');
 
   // Paginacija za sve tabele evidencije (25 po stranici)
   const PAGE_SIZE = 25;
@@ -178,6 +197,13 @@ const OnionDashboard: React.FC = () => {
   const [packagingPage, setPackagingPage] = useState(1);
   const [shipmentPage, setShipmentPage] = useState(1);
   const [wastePage, setWastePage] = useState(1);
+
+  // Filteri i paginacija za tabelu raspoloživog luka za pakovanje
+  const [readyLotSearch, setReadyLotSearch] = useState('');
+  const [readyParcelFilter, setReadyParcelFilter] = useState('ALL');
+  const [readySortOrder, setReadySortOrder] = useState<'DESC' | 'ASC'>('DESC');
+  const [readyPage, setReadyPage] = useState(1);
+  const READY_PAGE_SIZE = 10;
 
   // Modali
   const [isHarvestModalOpen, setIsHarvestModalOpen] = useState(false);
@@ -190,6 +216,26 @@ const OnionDashboard: React.FC = () => {
   // Edit modali (Pakerica / Pakovanje i Komora / Boksovi)
   const [editingPackaging, setEditingPackaging] = useState<any | null>(null);
   const [editingStorage, setEditingStorage] = useState<any | null>(null);
+
+  // Modal za kreiranje / izmenu komore i podešavanje max kapaciteta boksova
+  const [isChamberModalOpen, setIsChamberModalOpen] = useState(false);
+  const [chamberModalForm, setChamberModalForm] = useState({
+    id: '',
+    name: '',
+    storageType: 'HLADNJACA' as 'HLADNJACA' | 'MAGACIN',
+    hasEquipment: true,
+    maxBoxes: '720',
+  });
+
+  // Modal za potvrdu brisanja komore
+  const [chamberToDelete, setChamberToDelete] = useState<any | null>(null);
+  const [deleteChamberError, setDeleteChamberError] = useState<string | null>(null);
+  const [isDeletingChamber, setIsDeletingChamber] = useState(false);
+
+  // Modal za potvrdu brisanja pakovanja
+  const [packagingToDelete, setPackagingToDelete] = useState<any | null>(null);
+  const [deletePackagingError, setDeletePackagingError] = useState<string | null>(null);
+  const [isDeletingPackaging, setIsDeletingPackaging] = useState(false);
 
   const todayStr = new Date().toISOString().slice(0, 10);
 
@@ -241,7 +287,7 @@ const OnionDashboard: React.FC = () => {
     packageCount: '',
     palletNumber: '',
     packerCount: '4',
-    packerNotes: 'Pakerica: 4 žene u smeni',
+    packerNotes: '',
     responsiblePerson: 'Bojan Ćorović',
     notes: '',
   });
@@ -337,10 +383,11 @@ const OnionDashboard: React.FC = () => {
   });
 
   const { data: packagingData } = useQuery({
-    queryKey: ['onion-packaging', packagingTypeFilter, packagingPage],
+    queryKey: ['onion-packaging', packagingTypeFilter, packagingParcelFilter, packagingPage],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (packagingTypeFilter !== 'ALL') params.set('packageType', packagingTypeFilter);
+      if (packagingParcelFilter !== 'ALL') params.set('parcelId', packagingParcelFilter);
       params.set('page', String(packagingPage));
       params.set('limit', String(PAGE_SIZE));
       const res = await fetch(`${API}/packaging?${params.toString()}`, { credentials: 'include' });
@@ -373,8 +420,12 @@ const OnionDashboard: React.FC = () => {
   });
 
   const lots = lotsData?.lots || [];
-  const allSelectableLots = lookupData?.activeLots || lookupData?.lots || lots;
+  const allSelectableLots = lookupData?.allLots || lookupData?.activeLots || lookupData?.lots || lots;
   const activeLotNumberForTrace = selectedTraceLot || (allSelectableLots[0]?.lotNumber ?? lots[0]?.lotNumber ?? '');
+
+  useEffect(() => {
+    setSelectedTuraId('ALL');
+  }, [activeLotNumberForTrace]);
 
   const { data: traceData, isFetching: loadingTrace } = useQuery({
     queryKey: ['onion-traceability', activeLotNumberForTrace],
@@ -393,6 +444,7 @@ const OnionDashboard: React.FC = () => {
   });
 
   const refreshAll = () => {
+    queryClient.invalidateQueries({ queryKey: ['onion-lookup'] });
     queryClient.invalidateQueries({ queryKey: ['onion-dashboard'] });
     queryClient.invalidateQueries({ queryKey: ['onion-lots'] });
     queryClient.invalidateQueries({ queryKey: ['onion-harvest'] });
@@ -411,6 +463,9 @@ const OnionDashboard: React.FC = () => {
     totalColdStorageBoxes: 0,
     maxColdStorageBoxes: 4320,
     maxColdStorageKg: 4800000,
+    equippedChambersCount: 3,
+    unequippedChambersCount: 3,
+    totalChambersCount: 6,
     inWarehouseKg: 0,
     totalSortedQualityKg: 0,
     unpackedQualityKg: 0,
@@ -498,8 +553,8 @@ const OnionDashboard: React.FC = () => {
         badgeType: (l.status === 'ISPORUCEN'
           ? 'default'
           : l.status === 'U_OBRADI'
-          ? 'warning'
-          : 'success') as 'default' | 'success' | 'warning',
+            ? 'warning'
+            : 'success') as 'default' | 'success' | 'warning',
       })),
     ];
   }, [allSelectableLots, activeLotNumberForTrace]);
@@ -515,6 +570,64 @@ const OnionDashboard: React.FC = () => {
     ],
     [parcels]
   );
+
+  const selectedHarvestParcelObj = useMemo(() => {
+    return parcels.find((p: any) => p.id === harvestForm.parcelId) || null;
+  }, [parcels, harvestForm.parcelId]);
+
+  const selectedShipmentBuyerObj = useMemo(() => {
+    return buyers.find((b: any) => b.id === shipmentForm.buyerId) || null;
+  }, [buyers, shipmentForm.buyerId]);
+
+  const selectedPackagingLotObj = useMemo(() => {
+    return allSelectableLots.find((l: any) => l.id === packagingForm.lotId) || null;
+  }, [allSelectableLots, packagingForm.lotId]);
+
+  const readySortOrderOptions: CustomSelectOption[] = useMemo(
+    () => [
+      { value: 'DESC', label: 'Količina: Najviše slobodno' },
+      { value: 'ASC', label: 'Količina: Najmanje slobodno' },
+    ],
+    []
+  );
+
+  const filteredUnpackedLots = useMemo(() => {
+    let list = lookupData?.activeLots || lots || [];
+    list = list.filter((l: any) => (l.sortedQualityKg || 0) > 0);
+
+    // Filter po parceli
+    if (readyParcelFilter && readyParcelFilter !== 'ALL') {
+      list = list.filter(
+        (l: any) => l.parcelId === readyParcelFilter || l.parcel?.id === readyParcelFilter
+      );
+    }
+
+    // Filter po LOT broju / pretraga
+    if (readyLotSearch.trim()) {
+      const q = readyLotSearch.trim().toLowerCase();
+      list = list.filter(
+        (l: any) =>
+          l.lotNumber?.toLowerCase().includes(q) ||
+          l.parcel?.name?.toLowerCase().includes(q) ||
+          l.parcel?.code?.toLowerCase().includes(q) ||
+          l.cropVariety?.toLowerCase().includes(q)
+      );
+    }
+
+    // Sortiranje po količini slobodnoj za pakovanje (Najviše prvo / Najmanje prvo)
+    return list.sort((a: any, b: any) => {
+      const availA = Math.max(0, a.unpackedQualityKg || 0);
+      const availB = Math.max(0, b.unpackedQualityKg || 0);
+      return readySortOrder === 'ASC' ? availA - availB : availB - availA;
+    });
+  }, [lookupData?.activeLots, lots, readyParcelFilter, readyLotSearch, readySortOrder]);
+
+  const totalReadyPages = Math.ceil(filteredUnpackedLots.length / READY_PAGE_SIZE) || 1;
+
+  const paginatedReadyLots = useMemo(() => {
+    const start = (readyPage - 1) * READY_PAGE_SIZE;
+    return filteredUnpackedLots.slice(start, start + READY_PAGE_SIZE);
+  }, [filteredUnpackedLots, readyPage]);
 
   const vehicleOptions: CustomSelectOption[] = useMemo(
     () => [
@@ -540,21 +653,42 @@ const OnionDashboard: React.FC = () => {
     [workers]
   );
 
+  const availableChambers = useMemo(() => {
+    if (dashboardData?.chambersSummary && dashboardData.chambersSummary.length > 0) {
+      return dashboardData.chambersSummary.map((ch: any) => ({
+        id: ch.id || ch.locationOrChamber,
+        name: ch.locationOrChamber,
+        storageType: ch.storageType || 'HLADNJACA',
+        hasEquipment: ch.hasEquipment,
+        maxBoxes: ch.maxBoxes || 720,
+      }));
+    }
+    if (lookupData?.chambers && lookupData.chambers.length > 0) {
+      return lookupData.chambers;
+    }
+    return STANDARD_CHAMBER_NAMES.map((name) => ({
+      id: name,
+      name,
+      storageType: 'HLADNJACA',
+      hasEquipment: name === 'Komora 1' || name === 'Komora 2' || name === 'Komora 3',
+      maxBoxes: 720,
+    }));
+  }, [dashboardData?.chambersSummary, lookupData?.chambers]);
+
   const chamberOptions: CustomSelectOption[] = useMemo(
     () =>
-      STANDARD_CHAMBER_NAMES.map((c) => {
-        const isWithEq = c === 'Komora 1' || c === 'Komora 2' || c === 'Komora 3';
+      availableChambers.map((c: any) => {
+        const isWithEq = c.hasEquipment;
+        const maxB = c.maxBoxes || 720;
         return {
-          value: c,
-          label: c,
-          subLabel: isWithEq
-            ? 'Sa opremom — 720 boks. (2.400t ukupno)'
-            : 'Bez opreme — 720 boks. (2.400t ukupno)',
+          value: c.name,
+          label: c.name,
+          subLabel: `${isWithEq ? 'Sa opremom' : 'Bez opreme'} — max ${maxB} boks. (${Math.round((maxB * 1100) / 1000)}t)`,
           badge: isWithEq ? 'Sa opremom' : 'Bez opreme',
           badgeType: (isWithEq ? 'default' : 'warning') as 'default' | 'warning',
         };
       }),
-    []
+    [availableChambers]
   );
 
   const storageLotOptions: CustomSelectOption[] = useMemo(
@@ -572,11 +706,11 @@ const OnionDashboard: React.FC = () => {
 
   const editChamberOptions: CustomSelectOption[] = useMemo(
     () =>
-      STANDARD_CHAMBER_NAMES.map((c) => ({
-        value: c,
-        label: c,
+      availableChambers.map((c: any) => ({
+        value: c.name,
+        label: `${c.name} (max ${c.maxBoxes || 720} boks.)`,
       })),
-    []
+    [availableChambers]
   );
 
   const editStorageEquipmentOptions: CustomSelectOption[] = useMemo(
@@ -671,20 +805,50 @@ const OnionDashboard: React.FC = () => {
     [buyers]
   );
 
+  const allAvailablePackagingsList = useMemo(() => {
+    const map = new Map<string, any>();
+    (lookupData?.availablePackagings || []).forEach((p: any) => {
+      if (p.id) map.set(p.id, p);
+    });
+    (packagingData?.packagings || []).forEach((p: any) => {
+      if (p.id && (p.availableCount > 0 || p.availableWeightKg > 0)) {
+        if (!map.has(p.id)) {
+          map.set(p.id, p);
+        } else {
+          map.set(p.id, { ...map.get(p.id), ...p });
+        }
+      }
+    });
+    return Array.from(map.values()).filter(
+      (p: any) => p.availableCount > 0 || p.availableWeightKg > 0
+    );
+  }, [lookupData?.availablePackagings, packagingData?.packagings]);
+
+  const selectedShipmentPackagingObj = useMemo(() => {
+    return (
+      allAvailablePackagingsList.find((p: any) => p.id === shipmentForm.packagingId) ||
+      packagingData?.packagings?.find((p: any) => p.id === shipmentForm.packagingId) ||
+      null
+    );
+  }, [allAvailablePackagingsList, packagingData?.packagings, shipmentForm.packagingId]);
+
   const shipmentPackagingOptions: CustomSelectOption[] = useMemo(
     () => [
       { value: '', label: '— Izaberi spakovani LOT (10kg ili 5kg) —' },
-      ...(lookupData?.availablePackagings || packagingData?.packagings || [])
-        .filter((p: any) => p.availableCount > 0 || p.availableWeightKg > 0)
-        .map((p: any) => ({
+      ...allAvailablePackagingsList.map((p: any) => {
+        const lotInfo = p.lot?.lotNumber || 'LOT';
+        const parcelInfo = p.lot?.parcel ? ` (${p.lot.parcel.code || p.lot.parcel.name})` : '';
+        const packLabel = PACKAGE_LABELS[p.packageType] || p.packageType;
+        return {
           value: p.id,
-          label: `${p.lot?.lotNumber || 'LOT'} | ${PACKAGE_LABELS[p.packageType] || p.packageType}`,
-          subLabel: `Raspoloživo: ${p.availableCount} džakova (${formatKgAndTons(p.availableWeightKg)})`,
+          label: `${lotInfo}${parcelInfo} | ${packLabel}`,
+          subLabel: `Raspoloživo: ${p.availableCount?.toLocaleString('sr-RS')} džakova (${formatKgAndTons(p.availableWeightKg)})`,
           badge: `${p.availableCount} kom`,
           badgeType: 'success' as 'success',
-        })),
+        };
+      }),
     ],
-    [lookupData?.availablePackagings, packagingData?.packagings]
+    [allAvailablePackagingsList]
   );
 
   const wasteLotOptions: CustomSelectOption[] = useMemo(
@@ -711,6 +875,7 @@ const OnionDashboard: React.FC = () => {
   const handleOpenTraceability = (lotNumber: string) => {
     setSelectedTraceLot(lotNumber);
     setTraceLotInput(lotNumber);
+    setSelectedTuraId('ALL');
     setActiveTab('sledljivost');
   };
 
@@ -817,6 +982,88 @@ const OnionDashboard: React.FC = () => {
     }
   };
 
+  const handleSaveChamber = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chamberModalForm.name.trim()) {
+      showToast('Naziv komore je obavezan.', 'error');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const isEdit = Boolean(chamberModalForm.id);
+      const url = isEdit
+        ? `${API}/chambers/${encodeURIComponent(chamberModalForm.id)}`
+        : `${API}/chambers`;
+      const method = isEdit ? 'PUT' : 'POST';
+
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: chamberModalForm.name.trim(),
+          storageType: chamberModalForm.storageType,
+          hasEquipment: chamberModalForm.hasEquipment,
+          maxBoxes: Number(chamberModalForm.maxBoxes || 720),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Greška pri čuvanju komore.');
+      showToast(data.message || 'Komora uspešno sačuvana.');
+      setIsChamberModalOpen(false);
+      setChamberModalForm({
+        id: '',
+        name: '',
+        storageType: 'HLADNJACA',
+        hasEquipment: true,
+        maxBoxes: '720',
+      });
+      refreshAll();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleOpenDeleteChamberModal = (ch: any) => {
+    setChamberToDelete(ch);
+    setDeleteChamberError(null);
+  };
+
+  const handleConfirmDeleteChamber = async () => {
+    if (!chamberToDelete) return;
+    setIsDeletingChamber(true);
+    setDeleteChamberError(null);
+    try {
+      const chamberKey = chamberToDelete.id || chamberToDelete.locationOrChamber || chamberToDelete.name;
+      const res = await fetch(`${API}/chambers/${encodeURIComponent(chamberKey)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const errorMsg =
+          data.error ||
+          `Nije moguće obrisati komoru "${chamberToDelete.locationOrChamber || chamberToDelete.name}" jer se u njoj trenutno nalazi ${Number(chamberToDelete.currentQuantityKg || 0).toLocaleString('sr-RS')} kg luka. Prvo ispraznite ili sortirajte luk.`;
+        setDeleteChamberError(errorMsg);
+        showToast(errorMsg, 'error');
+        return;
+      }
+      showToast(data.message || 'Komora je uspešno obrisana.');
+      setChamberToDelete(null);
+      setDeleteChamberError(null);
+      refreshAll();
+    } catch (err: any) {
+      const errorMsg = err.message || 'Greška pri brisanju komore.';
+      setDeleteChamberError(errorMsg);
+      showToast(errorMsg, 'error');
+    } finally {
+      setIsDeletingChamber(false);
+    }
+  };
+
   const handleCreateSorting = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sortingForm.lotId) {
@@ -887,6 +1134,7 @@ const OnionDashboard: React.FC = () => {
         palletsCount: '',
         packageCount: '',
         palletNumber: '',
+        packerNotes: '',
         notes: '',
       }));
       refreshAll();
@@ -930,6 +1178,51 @@ const OnionDashboard: React.FC = () => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleOpenDeletePackagingModal = (pk: any) => {
+    setPackagingToDelete(pk);
+    setDeletePackagingError(null);
+  };
+
+  const handleConfirmDeletePackaging = async () => {
+    if (!packagingToDelete) return;
+    setIsDeletingPackaging(true);
+    setDeletePackagingError(null);
+    try {
+      const res = await fetch(`${API}/packaging/${encodeURIComponent(packagingToDelete.id)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const errorMsg = data.error || 'Nije moguće obrisati ovo pakovanje.';
+        setDeletePackagingError(errorMsg);
+        showToast(errorMsg, 'error');
+        return;
+      }
+      showToast(data.message || 'Pakovanje je uspešno obrisano.');
+      setPackagingToDelete(null);
+      setDeletePackagingError(null);
+      refreshAll();
+    } catch (err: any) {
+      const errorMsg = err.message || 'Greška pri brisanju pakovanja.';
+      setDeletePackagingError(errorMsg);
+      showToast(errorMsg, 'error');
+    } finally {
+      setIsDeletingPackaging(false);
+    }
+  };
+
+  const handleQuickShipmentFromPackaging = (pk: any) => {
+    setShipmentForm((prev) => ({
+      ...prev,
+      buyerId: prev.buyerId || buyers[0]?.id || '',
+      packagingId: pk.id,
+      packageCount: pk.availableCount > 0 ? String(pk.availableCount) : '',
+    }));
+    setActiveTab('isporuka');
+    setIsShipmentModalOpen(true);
   };
 
   const handleCreateShipment = async (e: React.FormEvent) => {
@@ -1112,12 +1405,8 @@ const OnionDashboard: React.FC = () => {
           <div className={styles.titleArea}>
             <h2>
               <Sprout size={26} color="#16a34a" />
-              <span>Modul Luk & Hladnjača (6 Komora • Boks Palete • Pakerica)</span>
+              <span>Modul Luk & Hladnjača</span>
             </h2>
-            <div className={styles.subtitle}>
-              6 komora (3 sa opremom + 3 bez opreme) • 720 boksova/komori (dim. 160x120x120 cm, 1.100
-              kg/boks) • Zadužen za ulaz, izlaz i pakovanje: <strong>Bojan Ćorović</strong>
-            </div>
           </div>
 
           <div className={styles.headerActions}>
@@ -1132,7 +1421,7 @@ const OnionDashboard: React.FC = () => {
               }}
             >
               <Plus size={16} />
-              <span>Dovoz sa njive</span>
+              <span>Uvoz sa njive</span>
             </button>
 
             <button
@@ -1193,10 +1482,12 @@ const OnionDashboard: React.FC = () => {
               <Snowflake size={22} />
             </div>
             <div className={styles.kpiContent}>
-              <span className={styles.kpiLabel}>2. U hladnjači (6 komora)</span>
+              <span className={styles.kpiLabel}>
+                2. U hladnjači ({kpi.totalChambersCount || (dashboardData?.chambersSummary || []).length || 6} komora)
+              </span>
               <span className={styles.kpiValue}>{formatKgAndTons(kpi.inColdStorageKg)}</span>
               <span className={styles.kpiSub}>
-                <strong>{(kpi.totalColdStorageBoxes || 0).toLocaleString('sr-RS')}</strong> / 4.320
+                <strong>{(kpi.totalColdStorageBoxes || 0).toLocaleString('sr-RS')}</strong> / {(kpi.maxColdStorageBoxes || 4320).toLocaleString('sr-RS')}{' '}
                 boks paleta (160x120x120)
               </span>
             </div>
@@ -1208,8 +1499,14 @@ const OnionDashboard: React.FC = () => {
             </div>
             <div className={styles.kpiContent}>
               <span className={styles.kpiLabel}>3. Komore (Sa / Bez opreme)</span>
-              <span className={styles.kpiValue}>3 + 3 komore</span>
-              <span className={styles.kpiSub}>720 boksova po komori (2.400t + 2.400t)</span>
+              <span className={styles.kpiValue}>
+                {kpi.equippedChambersCount !== undefined
+                  ? `${kpi.equippedChambersCount} + ${kpi.unequippedChambersCount} komora`
+                  : '3 + 3 komore'}
+              </span>
+              <span className={styles.kpiSub}>
+                Ukupno {(kpi.maxColdStorageBoxes || 4320).toLocaleString('sr-RS')} boksova ({formatKgAndTons(kpi.maxColdStorageKg || 4800000)})
+              </span>
             </div>
           </div>
 
@@ -1278,7 +1575,7 @@ const OnionDashboard: React.FC = () => {
             onClick={() => setActiveTab('dovoz')}
           >
             <Tractor size={17} />
-            <span>Dovoz sa njive</span>
+            <span>Uvoz sa njive</span>
           </button>
 
           <button
@@ -1287,7 +1584,7 @@ const OnionDashboard: React.FC = () => {
             onClick={() => setActiveTab('skladiste')}
           >
             <Snowflake size={17} />
-            <span>Hladnjača (Komora & Boksovi)</span>
+            <span>Hladnjača</span>
           </button>
 
           <button
@@ -1296,7 +1593,7 @@ const OnionDashboard: React.FC = () => {
             onClick={() => setActiveTab('sortiranje')}
           >
             <Scale size={17} />
-            <span>Sortiranje & Kalibracija</span>
+            <span>Sortiranje</span>
           </button>
 
           <button
@@ -1305,7 +1602,7 @@ const OnionDashboard: React.FC = () => {
             onClick={() => setActiveTab('pakovanje')}
           >
             <Package size={17} />
-            <span>Pakerica & Pakovanje</span>
+            <span>Pakovanje</span>
           </button>
 
           <button
@@ -1314,7 +1611,7 @@ const OnionDashboard: React.FC = () => {
             onClick={() => setActiveTab('isporuka')}
           >
             <Truck size={17} />
-            <span>Isporuka & Otpremnice</span>
+            <span>Isporuka</span>
           </button>
 
           <button
@@ -1337,7 +1634,7 @@ const OnionDashboard: React.FC = () => {
         </div>
 
         {/* ============================================================ */}
-        {/* TAB 2: SKLADIŠTE & 6 KOMORA HLADNJAČE (720 boksova / komori) */}
+        {/* TAB 2: SKLADIŠTE & DINAMIČKE KOMORE HLADNJAČE */}
         {/* ============================================================ */}
         {activeTab === 'skladiste' && (
           <>
@@ -1347,30 +1644,47 @@ const OnionDashboard: React.FC = () => {
                   <h3 className={styles.sectionTitle}>
                     <Snowflake size={20} color="#0891b2" />
                     <span>
-                      Pregled 6 komora hladnjače (3 komore sa opremom = 2.400 t + 3 komore bez opreme
-                      = 2.400 t)
+                      Pregled komora hladnjače ({dashboardData?.chambersSummary?.length || 6} komora • Kapacitet: {(kpi.maxColdStorageBoxes || 4320).toLocaleString('sr-RS')} boksova / {formatKgAndTons(kpi.maxColdStorageKg || 4800000)})
                     </span>
                   </h3>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                    Svaka komora prima <strong>720 boks paleta</strong> dimenzija{' '}
-                    <strong>160x120x120 cm</strong> (u 1 boks staje <strong>1.100 kg</strong> luka) •
-                    Zaduženo lice: <strong>Bojan Ćorović</strong>
+                    Dinamičko upravljanje komorama i boks paletama (dimenzija <strong>160x120x120 cm</strong>, <strong>1.100 kg</strong> po boksu) • Zaduženo lice: <strong>Bojan Ćorović</strong>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  className={styles.btnBlue}
-                  onClick={() => {
-                    if (!storageForm.lotId && lots[0]?.id) {
-                      setStorageForm((prev) => ({ ...prev, lotId: lots[0].id }));
-                    }
-                    setIsStorageModalOpen(true);
-                  }}
-                >
-                  <Plus size={16} />
-                  <span>Unos u komoru / boksove</span>
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={styles.btnPrimary}
+                    onClick={() => {
+                      setChamberModalForm({
+                        id: '',
+                        name: '',
+                        storageType: 'HLADNJACA',
+                        hasEquipment: true,
+                        maxBoxes: '720',
+                      });
+                      setIsChamberModalOpen(true);
+                    }}
+                  >
+                    <Plus size={16} />
+                    <span>Nova komora</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={styles.btnBlue}
+                    onClick={() => {
+                      if (!storageForm.lotId && lots[0]?.id) {
+                        setStorageForm((prev) => ({ ...prev, lotId: lots[0].id }));
+                      }
+                      setIsStorageModalOpen(true);
+                    }}
+                  >
+                    <Plus size={16} />
+                    <span>Unos u komoru / boksove</span>
+                  </button>
+                </div>
               </div>
 
               <div className={styles.cardsGrid}>
@@ -1381,15 +1695,24 @@ const OnionDashboard: React.FC = () => {
 
                   return (
                     <div key={idx} className={styles.chamberCard}>
+                      {/* Header: Naziv komore i Oprema */}
                       <div className={styles.chamberTop}>
-                        <div className={styles.chamberTitle}>
-                          {ch.storageType === 'HLADNJACA' ? (
-                            <Snowflake size={18} color="#0891b2" />
-                          ) : (
-                            <Warehouse size={18} color="#4f46e5" />
-                          )}
-                          <span>{ch.locationOrChamber}</span>
+                        <div className={styles.chamberTitleGroup}>
+                          <div
+                            className={`${styles.chamberIconBadge} ${ch.storageType === 'HLADNJACA'
+                              ? styles.chamberIconBadgeCyan
+                              : styles.chamberIconBadgeIndigo
+                              }`}
+                          >
+                            {ch.storageType === 'HLADNJACA' ? (
+                              <Snowflake size={18} />
+                            ) : (
+                              <Warehouse size={18} />
+                            )}
+                          </div>
+                          <span className={styles.chamberTitle}>{ch.locationOrChamber}</span>
                         </div>
+
                         <span
                           className={styles.badgeStatus}
                           style={{
@@ -1403,58 +1726,50 @@ const OnionDashboard: React.FC = () => {
                         </span>
                       </div>
 
-                      <div
-                        style={{
-                          fontSize: '1.3rem',
-                          fontWeight: 800,
-                          color: 'var(--text-primary)',
-                        }}
-                      >
-                        {formatKgAndTons(ch.currentQuantityKg)}
+                      {/* Glavna metrika: Količina i tonaža */}
+                      <div className={styles.chamberHeroRow}>
+                        <div className={styles.chamberHeroQty}>
+                          {Number(ch.currentQuantityKg || 0).toLocaleString('sr-RS')}{' '}
+                          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                            kg
+                          </span>
+                        </div>
+                        <span className={styles.chamberHeroBadge}>
+                          {((ch.currentQuantityKg || 0) / 1000).toLocaleString('sr-RS', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}{' '}
+                          t
+                        </span>
                       </div>
 
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          fontSize: '0.82rem',
-                          fontWeight: 700,
-                          color: 'var(--text-secondary)',
-                        }}
-                      >
-                        <span>
-                          <Box size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-                          Boks palete (160x120x120):
+                      {/* Kapacitet boks paleta */}
+                      <div className={styles.chamberCapacityRow}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                          <Box size={14} style={{ color: '#0284c7' }} />
+                          <span>Boks palete (160x120x120):</span>
                         </span>
-                        <span style={{ color: '#0284c7' }}>
+                        <span className={styles.chamberCapacityHighlight}>
                           {curB} / {maxB} boksova ({fillPct}%)
                         </span>
                       </div>
 
-                      {/* Progress bar popunjenosti komore boks paletama */}
-                      <div
-                        style={{
-                          width: '100%',
-                          height: '8px',
-                          backgroundColor: 'var(--bg-card)',
-                          borderRadius: '999px',
-                          overflow: 'hidden',
-                          border: '1px solid var(--border-color)',
-                        }}
-                      >
+                      {/* Progress bar popunjenosti */}
+                      <div className={styles.chamberProgressBarTrack}>
                         <div
+                          className={styles.chamberProgressBarFill}
                           style={{
                             width: `${fillPct}%`,
-                            height: '100%',
                             backgroundColor: ch.hasEquipment ? '#0891b2' : '#d97706',
-                            transition: 'width 0.3s ease',
                           }}
                         />
                       </div>
 
+                      {/* Specifikacija i Zaduženo lice */}
                       <div className={styles.climateRow}>
                         <span className={styles.climatePill}>
-                          <span>1 boks = 1.100 kg (160x120x120 cm)</span>
+                          <Scale size={13} style={{ color: '#0284c7' }} />
+                          <span>1 boks = 1.100 kg</span>
                         </span>
                         <span className={styles.climatePill}>
                           <UserCheck size={13} color="#16a34a" />
@@ -1462,46 +1777,56 @@ const OnionDashboard: React.FC = () => {
                         </span>
                       </div>
 
+                      {/* LOT partije u komori */}
                       {ch.lots && ch.lots.length > 0 && (
-                        <div
-                          style={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.35rem',
-                            borderTop: '1px solid var(--border-color)',
-                            paddingTop: '0.6rem',
-                            fontSize: '0.78rem',
-                          }}
-                        >
+                        <div className={styles.chamberLotsSection}>
                           {ch.lots.map((l: any, i: number) => (
-                            <div
-                              key={i}
-                              style={{
-                                display: 'flex',
-                                justifySelf: 'stretch',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                              }}
-                            >
+                            <div key={i} className={styles.chamberLotRow}>
                               <span
-                                style={{
-                                  fontFamily: 'monospace',
-                                  fontWeight: 700,
-                                  cursor: 'pointer',
-                                  color: '#0284c7',
-                                }}
+                                className={styles.chamberLotLink}
                                 onClick={() => handleOpenTraceability(l.lotNumber)}
+                                title={`Prikaži sledljivost za LOT ${l.lotNumber}`}
                               >
                                 {l.lotNumber} ({l.parcelName})
                               </span>
-                              <span>
-                                <strong>{l.currentBoxes} boks.</strong> (
+                              <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                                <strong style={{ color: 'var(--text-primary)' }}>{l.currentBoxes} boks.</strong> (
                                 {formatKgAndTons(l.currentQuantityKg)})
                               </span>
                             </div>
                           ))}
                         </div>
                       )}
+
+                      {/* Donji elegantni panel akcija: Izmeni komoru & Obriši */}
+                      <div className={styles.chamberActionsRow}>
+                        <button
+                          type="button"
+                          className={styles.chamberActionEditBtn}
+                          onClick={() => {
+                            setChamberModalForm({
+                              id: ch.id || ch.locationOrChamber,
+                              name: ch.locationOrChamber,
+                              storageType: ch.storageType || 'HLADNJACA',
+                              hasEquipment: ch.hasEquipment,
+                              maxBoxes: String(ch.maxBoxes || 720),
+                            });
+                            setIsChamberModalOpen(true);
+                          }}
+                        >
+                          <Settings2 size={14} />
+                          <span>Podesi komoru</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.chamberActionDeleteBtn}
+                          title="Obriši komoru iz sistema"
+                          onClick={() => handleOpenDeleteChamberModal(ch)}
+                        >
+                          <Trash2 size={14} />
+                          <span>Obriši</span>
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -1635,7 +1960,7 @@ const OnionDashboard: React.FC = () => {
         )}
 
         {/* ============================================================ */}
-        {/* TAB 4: PAKOVANJE, PAKERICA (4 ŽENE) & DŽAKOVI 10KG / 5KG */}
+        {/* TAB 4: PAKOVANJE, PAKERICA & DŽAKOVI 10KG / 5KG */}
         {/* ============================================================ */}
         {activeTab === 'pakovanje' && (
           <>
@@ -1650,9 +1975,7 @@ const OnionDashboard: React.FC = () => {
                   </h3>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
                     Na paleti staje <strong>100 džakova po 10 kg (1.000 kg)</strong> ili{' '}
-                    <strong>200 džakova po 5 kg (1.000 kg)</strong> • Pakerica: podrazumevano{' '}
-                    <strong>4 žene</strong> (uz opciju izmene) • Zadužen:{' '}
-                    <strong>Bojan Ćorović</strong>
+                    <strong>200 džakova po 5 kg (1.000 kg)</strong>
                   </div>
                 </div>
 
@@ -1703,6 +2026,210 @@ const OnionDashboard: React.FC = () => {
               )}
             </div>
 
+            {/* Tabela: Raspoloživa sortirana I klasa spremna za pakovanje (po parcelama i LOT-ovima) */}
+            <div className={styles.sectionCard}>
+              <div className={styles.sectionHeader}>
+                <div>
+                  <h3 className={styles.sectionTitle}>
+                    <Scale size={20} color="#16a34a" />
+                    <span>Raspoloživ sortirani luk I klase za pakovanje (po parcelama & LOT-ovima)</span>
+                  </h3>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                    Sirova I klasa luka na stanju spremna za pakovanje u džakove • Ukupno raspoloživo:{' '}
+                    <strong style={{ color: '#16a34a' }}>
+                      {formatKgAndTons(kpi.unpackedQualityKg)}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className={styles.filterRow}>
+                  <div className={styles.searchInputWrap}>
+                    <Search size={16} className={styles.searchIcon} />
+                    <input
+                      type="text"
+                      className={styles.searchInput}
+                      placeholder="Pretraži po LOT-u, parceli..."
+                      value={readyLotSearch}
+                      onChange={(e) => {
+                        setReadyLotSearch(e.target.value);
+                        setReadyPage(1);
+                      }}
+                    />
+                  </div>
+
+                  <div className={styles.filterSelectWrap}>
+                    <CustomSelect
+                      value={readyParcelFilter}
+                      onChange={(val) => {
+                        setReadyParcelFilter(val);
+                        setReadyPage(1);
+                      }}
+                      options={harvestParcelFilterOptions}
+                      placeholder="Sve parcele"
+                    />
+                  </div>
+
+                  <div className={styles.filterSelectWrap}>
+                    <CustomSelect
+                      value={readySortOrder}
+                      onChange={(val: any) => {
+                        setReadySortOrder(val);
+                        setReadyPage(1);
+                      }}
+                      options={readySortOrderOptions}
+                      searchable={false}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className={styles.tableWrapper}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>LOT Broj</th>
+                      <th>Parcela porekla</th>
+                      <th>Sorta luka</th>
+                      <th>Sortirano I klasa</th>
+                      <th>Već spakovano</th>
+                      <th>Slobodno za pakovanje</th>
+                      <th>Mogućnost pakovanja</th>
+                      <th>Status</th>
+                      <th>Akcija</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredUnpackedLots.length === 0 ? (
+                      <tr>
+                        <td colSpan={9}>
+                          <div className={styles.emptyState}>
+                            <CheckCircle2 size={28} color="#16a34a" />
+                            <span>Nema pronađenih partija za izabrane filtere.</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      paginatedReadyLots.map((lot: any) => {
+                        const availKg = Math.max(0, lot.unpackedQualityKg || 0);
+                        const packedKg = Math.max(0, (lot.sortedQualityKg || 0) - availKg);
+                        const pal10 = Math.floor(availKg / 1000);
+                        const pal5 = Math.floor(availKg / 1000);
+
+                        return (
+                          <tr key={lot.id}>
+                            <td>
+                              <button
+                                type="button"
+                                className={styles.lotBadge}
+                                onClick={() => handleOpenTraceability(lot.lotNumber)}
+                                title="Otvori 360° sledljivost ovog LOT-a"
+                              >
+                                <QrCode size={13} />
+                                <span>{lot.lotNumber}</span>
+                              </button>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 700 }}>
+                                {lot.parcel ? `${lot.parcel.code} — ${lot.parcel.name}` : '-'}
+                              </div>
+                              {lot.parcel?.areaHa && (
+                                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                                  Površina: {lot.parcel.areaHa} ha
+                                </div>
+                              )}
+                            </td>
+                            <td style={{ fontWeight: 600 }}>
+                              {lot.cropVariety || lot.parcel?.currentCrop || 'Žuti luk'}
+                            </td>
+                            <td style={{ fontWeight: 700 }}>{formatKgAndTons(lot.sortedQualityKg)}</td>
+                            <td style={{ color: 'var(--text-secondary)' }}>
+                              {formatKgAndTons(packedKg)}
+                            </td>
+                            <td
+                              style={{
+                                fontWeight: 800,
+                                fontSize: '0.98rem',
+                                color: availKg > 0 ? '#16a34a' : 'var(--text-muted)',
+                              }}
+                            >
+                              {formatKgAndTons(availKg)}
+                            </td>
+                            <td>
+                              {availKg > 0 ? (
+                                <div style={{ fontSize: '0.78rem', lineHeight: 1.35 }}>
+                                  <div>
+                                    <strong style={{ color: '#d97706' }}>~{pal10} paleta</strong> od 10 kg ({pal10 * 100} kom)
+                                  </div>
+                                  <div style={{ color: 'var(--text-muted)' }}>
+                                    ili ~{pal5} paleta od 5 kg ({pal5 * 200} kom)
+                                  </div>
+                                </div>
+                              ) : (
+                                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>-</span>
+                              )}
+                            </td>
+                            <td>
+                              {availKg > 0 ? (
+                                <span
+                                  className={styles.badgeStatus}
+                                  style={{
+                                    backgroundColor: 'rgba(22, 163, 74, 0.12)',
+                                    color: '#16a34a',
+                                  }}
+                                >
+                                  Spremno
+                                </span>
+                              ) : (
+                                <span
+                                  className={styles.badgeStatus}
+                                  style={{
+                                    backgroundColor: 'rgba(100, 116, 139, 0.12)',
+                                    color: '#64748b',
+                                  }}
+                                >
+                                  100% Spakovano
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              {availKg > 0 ? (
+                                <button
+                                  type="button"
+                                  className={styles.btnAmberSmall}
+                                  onClick={() => {
+                                    setPackagingForm((prev) => ({
+                                      ...prev,
+                                      lotId: lot.id,
+                                    }));
+                                    setIsPackagingModalOpen(true);
+                                  }}
+                                  title={`Pokreni pakovanje za LOT ${lot.lotNumber}`}
+                                >
+                                  <Plus size={13} strokeWidth={2.5} />
+                                  <span>Spakuj</span>
+                                </button>
+                              ) : (
+                                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>-</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <TablePagination
+                currentPage={readyPage}
+                totalPages={totalReadyPages}
+                totalItems={filteredUnpackedLots.length}
+                pageSize={READY_PAGE_SIZE}
+                onPageChange={setReadyPage}
+                itemName="partija"
+              />
+            </div>
+
             <div className={styles.sectionCard}>
               <div className={styles.sectionHeader}>
                 <h3 className={styles.sectionTitle}>
@@ -1710,16 +2237,30 @@ const OnionDashboard: React.FC = () => {
                   <span>Evidencija rada pakerice i spakovanih paleta (sa opcijom izmene)</span>
                 </h3>
 
-                <div className={styles.filterSelectWrap}>
-                  <CustomSelect
-                    value={packagingTypeFilter}
-                    onChange={(val) => {
-                      setPackagingTypeFilter(val);
-                      setPackagingPage(1);
-                    }}
-                    options={packagingTypeFilterOptions}
-                    searchable={false}
-                  />
+                <div className={styles.filterRow}>
+                  <div className={styles.filterSelectWrap}>
+                    <CustomSelect
+                      value={packagingParcelFilter}
+                      onChange={(val) => {
+                        setPackagingParcelFilter(val);
+                        setPackagingPage(1);
+                      }}
+                      options={harvestParcelFilterOptions}
+                      placeholder="Sve parcele"
+                    />
+                  </div>
+
+                  <div className={styles.filterSelectWrap}>
+                    <CustomSelect
+                      value={packagingTypeFilter}
+                      onChange={(val) => {
+                        setPackagingTypeFilter(val);
+                        setPackagingPage(1);
+                      }}
+                      options={packagingTypeFilterOptions}
+                      searchable={false}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1729,18 +2270,19 @@ const OnionDashboard: React.FC = () => {
                     <tr>
                       <th>Datum</th>
                       <th>LOT Broj</th>
+                      <th>Parcela & Sorta</th>
                       <th>Tip pakovanja (10kg / 5kg)</th>
                       <th>Broj paleta & džakova</th>
                       <th>Preostalo na stanju</th>
-                      <th>Pakerica (Broj žena)</th>
+                      <th>Broj pakera</th>
                       <th>Zaduženo lice</th>
-                      <th>Izmena</th>
+                      <th>Akcije</th>
                     </tr>
                   </thead>
                   <tbody>
                     {(packagingData?.packagings || []).length === 0 ? (
                       <tr>
-                        <td colSpan={8}>
+                        <td colSpan={9}>
                           <div className={styles.emptyState}>
                             <span>Nema zapisa o pakovanju.</span>
                           </div>
@@ -1758,10 +2300,19 @@ const OnionDashboard: React.FC = () => {
                                 type="button"
                                 className={styles.lotBadge}
                                 onClick={() => handleOpenTraceability(pk.lot?.lotNumber)}
+                                title="Otvori 360° sledljivost ovog LOT-a"
                               >
                                 <QrCode size={13} />
                                 <span>{pk.lot?.lotNumber}</span>
                               </button>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 700 }}>
+                                {pk.lot?.parcel ? `${pk.lot.parcel.code} — ${pk.lot.parcel.name}` : '-'}
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                Sorta: {pk.lot?.cropVariety || pk.lot?.parcel?.currentCrop || 'Žuti luk'}
+                              </div>
                             </td>
                             <td style={{ fontWeight: 700 }}>
                               {PACKAGE_LABELS[pk.packageType] || pk.packageType}
@@ -1793,19 +2344,20 @@ const OnionDashboard: React.FC = () => {
                                 }}
                               >
                                 <Users size={13} />
-                                <span>Pakerica: {pk.packerCount || 4} žene</span>
+                                <span>{pk.packerCount || 4}</span>
                               </span>
-                              {pk.packerNotes && (
-                                <div
-                                  style={{
-                                    fontSize: '0.74rem',
-                                    color: 'var(--text-muted)',
-                                    marginTop: 2,
-                                  }}
-                                >
-                                  {pk.packerNotes}
-                                </div>
-                              )}
+                              {pk.packerNotes &&
+                                !/^pakerica:\s*\d+\s*(pakera|žene|zene|radnika)\s*(u\s*smeni)?$/i.test(pk.packerNotes.trim()) && (
+                                  <div
+                                    style={{
+                                      fontSize: '0.74rem',
+                                      color: 'var(--text-muted)',
+                                      marginTop: 2,
+                                    }}
+                                  >
+                                    {pk.packerNotes}
+                                  </div>
+                                )}
                             </td>
                             <td>
                               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
@@ -1814,21 +2366,48 @@ const OnionDashboard: React.FC = () => {
                               </span>
                             </td>
                             <td>
-                              <button
-                                type="button"
-                                className={styles.btnIconSmall}
-                                onClick={() =>
-                                  setEditingPackaging({
-                                    ...pk,
-                                    packerCount: pk.packerCount || 4,
-                                    responsiblePerson: pk.responsiblePerson || 'Bojan Ćorović',
-                                    palletsCount: pallets,
-                                  })
-                                }
-                              >
-                                <Pencil size={13} />
-                                <span>Izmeni</span>
-                              </button>
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}>
+                                <button
+                                  type="button"
+                                  className={styles.btnIconShip}
+                                  title={
+                                    pk.availableCount > 0
+                                      ? `Kreiraj novu isporuku za LOT ${pk.lot?.lotNumber || ''}`
+                                      : 'Sva roba sa ove palete je već isporučena kupcima'
+                                  }
+                                  disabled={pk.availableCount <= 0}
+                                  onClick={() => handleQuickShipmentFromPackaging(pk)}
+                                >
+                                  <Truck size={13} />
+                                  <span>Isporuči</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.btnIconSmall}
+                                  onClick={() =>
+                                    setEditingPackaging({
+                                      ...pk,
+                                      packerCount: pk.packerCount || 4,
+                                      responsiblePerson: pk.responsiblePerson || 'Bojan Ćorović',
+                                      palletsCount: pallets,
+                                    })
+                                  }
+                                >
+                                  <Pencil size={13} />
+                                  <span>Izmeni</span>
+                                </button>
+                                {isManager && (
+                                  <button
+                                    type="button"
+                                    className={styles.btnIconDanger}
+                                    title="Obriši zapis pakovanja"
+                                    onClick={() => handleOpenDeletePackagingModal(pk)}
+                                  >
+                                    <Trash2 size={13} />
+                                    <span>Obriši</span>
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1877,7 +2456,47 @@ const OnionDashboard: React.FC = () => {
                     />
                   </div>
 
-                  <div className={styles.filterSelectWrap}>
+                  <div className={styles.filterParcelColumn}>
+                    {isManager && (
+                      <div className={styles.filterParcelHeaderRow}>
+                        <span style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                          Parcela
+                        </span>
+                        <div className={styles.parcelHeaderActions}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setParcelQuickTarget('harvest-filter');
+                              setParcelToEdit(null);
+                              setParcelQuickModalOpen(true);
+                            }}
+                            className={styles.miniParcelAddBtn}
+                            title="Brzo dodaj novu parcelu"
+                          >
+                            <Plus size={11} strokeWidth={2.5} />
+                            <span>Dodaj</span>
+                          </button>
+                          {harvestParcelFilter && harvestParcelFilter !== 'ALL' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const found = parcels.find((p: any) => p.id === harvestParcelFilter);
+                                if (found) {
+                                  setParcelQuickTarget('harvest-filter');
+                                  setParcelToEdit(found);
+                                  setParcelQuickModalOpen(true);
+                                }
+                              }}
+                              className={styles.miniParcelEditBtn}
+                              title="Izmeni selektovanu parcelu"
+                            >
+                              <Pencil size={11} strokeWidth={2.5} />
+                              <span>Izmeni</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <CustomSelect
                       value={harvestParcelFilter}
                       onChange={(val) => {
@@ -1900,7 +2519,7 @@ const OnionDashboard: React.FC = () => {
                     }}
                   >
                     <Plus size={16} />
-                    <span>Novi dovoz sa njive</span>
+                    <span>Novi uvoz sa njive</span>
                   </button>
                 </div>
               </div>
@@ -2206,7 +2825,52 @@ const OnionDashboard: React.FC = () => {
                   />
                 </div>
 
-                <div className={styles.filterSelectWrap}>
+                <div className={styles.filterParcelColumn}>
+                  {isManager && (
+                    <div className={styles.filterParcelHeaderRow}>
+                      <span style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                        Kupac
+                      </span>
+                      <div className={styles.parcelHeaderActions}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBuyerQuickTarget('shipment-filter');
+                            setBuyerToEdit(null);
+                            setBuyerQuickModalOpen(true);
+                          }}
+                          className={styles.miniParcelAddBtn}
+                          style={{
+                            color: '#0284c7',
+                            background: 'rgba(2, 132, 199, 0.12)',
+                            borderColor: 'rgba(2, 132, 199, 0.35)',
+                          }}
+                          title="Brzo dodaj novog kupca"
+                        >
+                          <Plus size={11} strokeWidth={2.5} />
+                          <span>Dodaj</span>
+                        </button>
+                        {shipmentBuyerFilter && shipmentBuyerFilter !== 'ALL' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const found = buyers.find((b: any) => b.id === shipmentBuyerFilter);
+                              if (found) {
+                                setBuyerQuickTarget('shipment-filter');
+                                setBuyerToEdit(found);
+                                setBuyerQuickModalOpen(true);
+                              }
+                            }}
+                            className={styles.miniParcelEditBtn}
+                            title="Izmeni selektovanog kupca"
+                          >
+                            <Pencil size={11} strokeWidth={2.5} />
+                            <span>Izmeni</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <CustomSelect
                     value={shipmentBuyerFilter}
                     onChange={(val) => {
@@ -2514,236 +3178,441 @@ const OnionDashboard: React.FC = () => {
                 <QrCode size={32} />
                 <span>Izaberite ili unesite LOT broj za prikaz kompletne sledljivosti.</span>
               </div>
-            ) : (
-              <div className={styles.traceabilityGrid}>
-                {/* LEVA STRANA: ELEGANTAN PASOŠ SLEDLJIVOSTI PARTIJE */}
-                <div className={styles.traceSummaryBox}>
-                  {/* Zaglavlje: LOT Broj i Status */}
-                  <div className={styles.traceHeaderCard}>
-                    <div className={styles.traceLotBadgeRow}>
-                      <div className={styles.traceLotTag}>
-                        <QrCode size={18} className={styles.traceLotIcon} />
-                        <span className={styles.traceLotText}>{traceData.lot.lotNumber}</span>
-                      </div>
-                      <button
-                        type="button"
-                        className={styles.copyLotBtn}
-                        title="Kopiraj LOT broj"
-                        onClick={() => {
-                          navigator.clipboard.writeText(traceData.lot.lotNumber);
-                          showToast(`Kopiran LOT broj: ${traceData.lot.lotNumber}`);
-                        }}
-                      >
-                        <Copy size={13} />
-                      </button>
-                    </div>
+            ) : (() => {
+              const turas: any[] = traceData.turas || [];
+              const activeTura = turas.find((t: any) => t.id === selectedTuraId);
 
-                    <div className={styles.traceStatusWrapper}>
-                      <span
-                        className={`${styles.badgeStatus} ${
-                          traceData.lot.status === 'ISPORUCEN'
-                            ? styles.statusIsporucen
-                            : traceData.lot.status === 'U_OBRADI'
-                            ? styles.statusUObradi
-                            : styles.statusNaStanju
-                        } ${styles.badgeStatusLarge}`}
-                      >
-                        {traceData.lot.status === 'U_OBRADI' ? (
-                          <RotateCw size={14} className={styles.spinIcon} />
-                        ) : traceData.lot.status === 'ISPORUCEN' ? (
-                          <Truck size={14} />
-                        ) : (
-                          <CheckCircle2 size={14} />
-                        )}
-                        <span>{LOT_STATUS_LABELS[traceData.lot.status] || traceData.lot.status}</span>
+              // Filtriranje hronologije po turi:
+              // Ako je izabrana tura (npr. Tura 1), prikazuju se bazni koraci (dovoz, hladnjača, sortiranje)
+              // i isključivo pakovanje i isporuka te ture.
+              // Pakovanja i isporuke ostalih tura su sakriveni.
+              // Sve ture se vide samo na celokupnom pogledu (selectedTuraId === 'ALL').
+              const relatedPackagingIds = new Set<string>();
+              if (activeTura) {
+                if (activeTura.packagingId) {
+                  relatedPackagingIds.add(activeTura.packagingId);
+                }
+                if (activeTura.packagingDetails && Array.isArray(activeTura.packagingDetails)) {
+                  activeTura.packagingDetails.forEach((p: any) => {
+                    if (p.packagingId) relatedPackagingIds.add(p.packagingId);
+                  });
+                }
+              }
+
+              const allEvents = traceData.timeline || [];
+              const filteredTimeline = (!activeTura || selectedTuraId === 'ALL')
+                ? allEvents
+                : allEvents.filter((ev: any) => {
+                  if (ev.stage === 'ISPORUKA_KUPAC' || ev.id?.startsWith('shipment-')) {
+                    const shId = ev.id.replace('shipment-', '');
+                    return activeTura.shipmentId === shId;
+                  }
+                  if (ev.stage === 'PAKOVANJE' || ev.id?.startsWith('packaging-')) {
+                    const pkId = ev.id.replace('packaging-', '');
+                    return relatedPackagingIds.has(pkId);
+                  }
+                  return true;
+                });
+
+              return (
+                <>
+                  {/* NAVIGACIJA KROZ TURE (1, 2, 3...) POD ISTIM LOT BROJEM */}
+                  <div className={styles.turasNavContainer}>
+                    <div className={styles.turasNavHeader}>
+                      <div className={styles.turasNavTitle}>
+                        <Layers size={16} color="#0284c7" />
+                        <span>Ture i Faze Isporuke za LOT: {traceData.lot.lotNumber}</span>
+                      </div>
+                      <span className={styles.turasNavSubtitle}>
+                        {turas.length === 0
+                          ? 'Još nema formiranih tura pakovanja i isporuke za ovaj LOT'
+                          : `Ukupno ${turas.length} ${turas.length === 1 ? 'tura' : 'ture'} pod istim LOT brojem`}
                       </span>
                     </div>
-                  </div>
 
-                  {/* 1. Poreklo i Odgovorno Lice */}
-                  <div className={styles.traceSection}>
-                    <div className={styles.traceSectionTitle}>
-                      <Sprout size={14} color="#16a34a" />
-                      <span>Poreklo i Nadzor</span>
-                    </div>
-                    <div className={styles.traceInfoGrid}>
-                      <div className={styles.traceInfoItem}>
-                        <span className={styles.traceInfoLabel}>Parcela porekla:</span>
-                        <span className={styles.traceInfoVal}>
-                          <strong>{traceData.lot.parcel?.code}</strong> — {traceData.lot.parcel?.name}
-                          {traceData.lot.parcel?.areaHa && (
-                            <span className={styles.traceAreaBadge}>{traceData.lot.parcel.areaHa} ha</span>
-                          )}
-                        </span>
-                      </div>
-                      <div className={styles.traceInfoItem}>
-                        <span className={styles.traceInfoLabel}>Sorta / Hibrid:</span>
-                        <span className={styles.traceInfoVal}>{traceData.lot.cropVariety || 'Žuti holandski'}</span>
-                      </div>
-                      <div className={styles.traceInfoItem}>
-                        <span className={styles.traceInfoLabel}>Zaduženo lice:</span>
-                        <span className={styles.traceInfoVal}>
-                          <UserCheck size={13} color="#0284c7" style={{ verticalAlign: 'middle', marginRight: 4 }} />
-                          <strong>Bojan Ćorović</strong>
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                    <div className={styles.turasButtonsList}>
+                      <button
+                        type="button"
+                        className={`${styles.turaTabBtn} ${selectedTuraId === 'ALL' ? styles.turaTabBtnActive : ''}`}
+                        onClick={() => setSelectedTuraId('ALL')}
+                      >
+                        <span className={styles.turaBadgeAll}>Zbirno</span>
+                        <span className={styles.turaTitle}>Celokupan LOT</span>
+                        <span className={styles.turaTabWeight}>({formatKgAndTons(traceData.lot.initialQuantityKg)})</span>
+                      </button>
 
-                  {/* 2. Hero Karta: Ukupan Ulaz sa Njive */}
-                  <div className={styles.traceHeroCard}>
-                    <div className={styles.traceHeroHeader}>
-                      <Tractor size={15} color="#16a34a" />
-                      <span>Ukupno dovezeno sa njive</span>
-                    </div>
-                    <div className={styles.traceHeroValue}>
-                      {formatKgAndTons(traceData.lot.initialQuantityKg)}
-                    </div>
-                  </div>
+                      {turas.map((t: any) => {
+                        const isShipped = t.status === 'ISPORUCEN';
+                        const isSelected = selectedTuraId === t.id;
 
-                  {/* 3. Bilans i Stanje po Fazama */}
-                  <div className={styles.traceBalanceList}>
-                    <div className={styles.traceBalanceItem}>
-                      <div className={styles.traceBalanceLeft}>
-                        <div className={`${styles.traceIconWrap} ${styles.iconColdStorage}`}>
-                          <Snowflake size={15} />
-                        </div>
-                        <div>
-                          <div className={styles.traceBalanceLabel}>U hladnjači (Sirovo)</div>
-                          <div className={styles.traceBalanceSub}>Komore 1–6 (boksovi)</div>
-                        </div>
-                      </div>
-                      <div className={styles.traceBalanceRight}>
-                        <span className={styles.traceValColdStorage}>{formatKgAndTons(traceData.lot.rawStockKg)}</span>
-                      </div>
-                    </div>
-
-                    <div className={styles.traceBalanceItem}>
-                      <div className={styles.traceBalanceLeft}>
-                        <div className={`${styles.traceIconWrap} ${styles.iconSorted}`}>
-                          <Scale size={15} />
-                        </div>
-                        <div>
-                          <div className={styles.traceBalanceLabel}>Sortirano I klasa</div>
-                          <div className={styles.traceBalanceSub}>Pripremljeno za pakericu</div>
-                        </div>
-                      </div>
-                      <div className={styles.traceBalanceRight}>
-                        <span className={styles.traceValSorted}>{formatKgAndTons(traceData.lot.sortedQualityKg)}</span>
-                      </div>
-                    </div>
-
-                    <div className={styles.traceBalanceItem}>
-                      <div className={styles.traceBalanceLeft}>
-                        <div className={`${styles.traceIconWrap} ${styles.iconPackaged}`}>
-                          <Package size={15} />
-                        </div>
-                        <div>
-                          <div className={styles.traceBalanceLabel}>Spakovano na stanju</div>
-                          <div className={styles.traceBalanceSub}>Džakovi 10kg & 5kg</div>
-                        </div>
-                      </div>
-                      <div className={styles.traceBalanceRight}>
-                        <span className={styles.traceValPackaged}>{formatKgAndTons(traceData.lot.packagedStockKg)}</span>
-                      </div>
-                    </div>
-
-                    <div className={styles.traceBalanceItem}>
-                      <div className={styles.traceBalanceLeft}>
-                        <div className={`${styles.traceIconWrap} ${styles.iconShipped}`}>
-                          <Truck size={15} />
-                        </div>
-                        <div>
-                          <div className={styles.traceBalanceLabel}>Isporučeno kupcima</div>
-                          <div className={styles.traceBalanceSub}>Po zvaničnim otpremnicama</div>
-                        </div>
-                      </div>
-                      <div className={styles.traceBalanceRight}>
-                        <span className={styles.traceValShipped}>{formatKgAndTons(traceData.lot.shippedKg)}</span>
-                      </div>
-                    </div>
-
-                    <div className={styles.traceBalanceItem}>
-                      <div className={styles.traceBalanceLeft}>
-                        <div className={`${styles.traceIconWrap} ${styles.iconWaste}`}>
-                          <AlertTriangle size={15} />
-                        </div>
-                        <div>
-                          <div className={styles.traceBalanceLabel}>Ukupan otpis i kalo</div>
-                          <div className={styles.traceBalanceSub}>Prirodno sušenje, škart, trulež</div>
-                        </div>
-                      </div>
-                      <div className={styles.traceBalanceRight}>
-                        <span className={styles.traceValWaste}>{formatKgAndTons(traceData.lot.totalWasteKg)}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* DESNA STRANA: HRONOLOŠKI TOK PARTIJE */}
-                <div>
-                  <h4 style={{ margin: '0 0 1rem 0', fontSize: '0.98rem', color: 'var(--text-primary)' }}>
-                    Hronološki tok partije ({traceData.timeline?.length || 0} koraka)
-                  </h4>
-
-                  <div className={styles.timelineList}>
-                    {(traceData.timeline || []).map((ev: any) => (
-                      <div key={ev.id} className={styles.timelineItem}>
-                        <div className={styles.timelineDot}>
-                          <CheckCircle2 size={14} />
-                        </div>
-
-                        <div className={styles.timelineHeaderRow}>
-                          <div className={styles.timelineTitleBlock}>
-                            <span className={styles.timelineStageBadge}>
-                              {ev.stage || 'KORAK'}
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            className={`${styles.turaTabBtn} ${isSelected ? styles.turaTabBtnActive : ''}`}
+                            onClick={() => setSelectedTuraId(t.id)}
+                            title={`${t.title} — ${formatKgAndTons(t.weightKg)}`}
+                          >
+                            <span className={`${styles.turaNumberCircle} ${isShipped ? styles.circleShipped : styles.circlePacked}`}>
+                              {t.index}
                             </span>
-                            <strong className={styles.timelineTitle}>
-                              {ev.title}
-                            </strong>
+                            <span className={styles.turaTitle}>Tura {t.index}</span>
+                            <span className={styles.turaTabWeight}>({formatKgAndTons(t.weightKg)})</span>
+                            <span className={`${styles.turaMiniStatus} ${isShipped ? styles.miniShipped : styles.miniPacked}`}>
+                              {isShipped ? <Truck size={12} /> : <Package size={12} />}
+                              <span>{isShipped ? 'Isporučeno' : 'Spakovano'}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className={styles.traceabilityGrid}>
+                    {/* LEVA STRANA: ELEGANTAN PASOŠ SLEDLJIVOSTI PARTIJE */}
+                    <div className={styles.traceSummaryBox}>
+                      {/* Zaglavlje: LOT Broj i Status */}
+                      <div className={styles.traceHeaderCard}>
+                        <div className={styles.traceLotBadgeRow}>
+                          <div className={styles.traceLotTag}>
+                            <QrCode size={18} className={styles.traceLotIcon} />
+                            <span className={styles.traceLotText}>{traceData.lot.lotNumber}</span>
+                          </div>
+                          <button
+                            type="button"
+                            className={styles.copyLotBtn}
+                            title="Kopiraj LOT broj"
+                            onClick={() => {
+                              navigator.clipboard.writeText(traceData.lot.lotNumber);
+                              showToast(`Kopiran LOT broj: ${traceData.lot.lotNumber}`);
+                            }}
+                          >
+                            <Copy size={13} />
+                          </button>
+                        </div>
+
+                        <div className={styles.traceStatusWrapper}>
+                          {activeTura ? (
+                            <span
+                              className={`${styles.badgeStatus} ${activeTura.status === 'ISPORUCEN'
+                                ? styles.statusIsporucen
+                                : styles.statusUObradi
+                                } ${styles.badgeStatusLarge}`}
+                            >
+                              {activeTura.status === 'ISPORUCEN' ? (
+                                <Truck size={14} />
+                              ) : (
+                                <Package size={14} />
+                              )}
+                              <span>
+                                {activeTura.status === 'ISPORUCEN'
+                                  ? `Tura ${activeTura.index}: Isporučeno`
+                                  : `Tura ${activeTura.index}: Spakovano`}
+                              </span>
+                            </span>
+                          ) : (
+                            <span
+                              className={`${styles.badgeStatus} ${traceData.lot.status === 'ISPORUCEN'
+                                ? styles.statusIsporucen
+                                : traceData.lot.status === 'U_OBRADI'
+                                  ? styles.statusUObradi
+                                  : styles.statusNaStanju
+                                } ${styles.badgeStatusLarge}`}
+                            >
+                              {traceData.lot.status === 'U_OBRADI' ? (
+                                <RotateCw size={14} className={styles.spinIcon} />
+                              ) : traceData.lot.status === 'ISPORUCEN' ? (
+                                <Truck size={14} />
+                              ) : (
+                                <CheckCircle2 size={14} />
+                              )}
+                              <span>{LOT_STATUS_LABELS[traceData.lot.status] || traceData.lot.status}</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* KARTICA SELEKTOVANE TURE (AKO JE IZABRANA TURA 1, 2...) */}
+                      {activeTura && (
+                        <div className={styles.activeTuraCard}>
+                          <div className={styles.activeTuraHeader}>
+                            <div className={styles.activeTuraTitleRow}>
+                              <span className={styles.activeTuraIndexBadge}>{activeTura.index}</span>
+                              <strong>{activeTura.title}</strong>
+                            </div>
+                            <span
+                              className={`${styles.turaMiniStatus} ${activeTura.status === 'ISPORUCEN' ? styles.miniShipped : styles.miniPacked
+                                }`}
+                            >
+                              {activeTura.status === 'ISPORUCEN' ? <Truck size={12} /> : <Package size={12} />}
+                              <span>{activeTura.statusLabel}</span>
+                            </span>
                           </div>
 
-                          <div className={styles.timelineDateTimeBox}>
-                            <div className={styles.timelineDateRow}>
-                              <Calendar size={12} className={styles.timelineTimeIcon} />
-                              <span>{formatDateOnly(ev.date || ev.createdAt)}</span>
+                          <div className={styles.activeTuraGrid}>
+                            <div className={styles.activeTuraField}>
+                              <span className={styles.activeTuraLabel}>Količina ture:</span>
+                              <strong className={styles.activeTuraVal}>
+                                {formatKgAndTons(activeTura.weightKg)}
+                                {activeTura.packageCount > 0 && ` (${activeTura.packageCount.toLocaleString('sr-RS')} kom)`}
+                              </strong>
                             </div>
-                            <div className={styles.timelineTimeRow}>
-                              <Clock size={12} className={styles.timelineTimeIcon} />
-                              <span className={styles.timelineExactTime}>
-                                {formatTimeOnly(ev.createdAt, ev.date)} h
+
+                            {activeTura.buyerName && (
+                              <div className={styles.activeTuraField}>
+                                <span className={styles.activeTuraLabel}>Kupac:</span>
+                                <strong className={styles.activeTuraVal}>{activeTura.buyerName}</strong>
+                              </div>
+                            )}
+
+                            {activeTura.dispatchNumber && (
+                              <div className={styles.activeTuraField}>
+                                <span className={styles.activeTuraLabel}>Otpremnica:</span>
+                                <span className={styles.activeTuraDispatchBadge}>
+                                  <FileText size={12} />
+                                  <strong>{activeTura.dispatchNumber}</strong>
+                                </span>
+                              </div>
+                            )}
+
+                            <div className={styles.activeTuraField}>
+                              <span className={styles.activeTuraLabel}>Datum i vreme:</span>
+                              <span className={styles.activeTuraVal}>
+                                {formatDateOnly(activeTura.date)} {formatTimeOnly(activeTura.createdAt, activeTura.date)} h
                               </span>
                             </div>
+
+                            <div className={styles.activeTuraField}>
+                              <span className={styles.activeTuraLabel}>Zaduženo lice:</span>
+                              <span className={styles.activeTuraVal}>
+                                <UserCheck size={13} color="#0284c7" style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                                <strong>{activeTura.supervisor || 'Andrija Direktor'}</strong>
+                              </span>
+                            </div>
+
+                            {(activeTura.vehicleReg || activeTura.driverName) && (
+                              <div className={styles.activeTuraField}>
+                                <span className={styles.activeTuraLabel}>Prevoz / Vozilo:</span>
+                                <span className={styles.activeTuraVal}>
+                                  {[activeTura.vehicleReg, activeTura.driverName].filter(Boolean).join(' • ')}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         </div>
+                      )}
 
-                        <div className={styles.timelineQtyRow}>
-                          <span className={styles.timelineQtyLabel}>Količina:</span>
-                          <span>{formatKgAndTons(ev.quantityKg)}</span>
+                      {/* 1. Poreklo i Odgovorno Lice */}
+                      <div className={styles.traceSection}>
+                        <div className={styles.traceSectionTitle}>
+                          <Sprout size={14} color="#16a34a" />
+                          <span>Poreklo i Nadzor</span>
                         </div>
-
-                        <div className={styles.timelineDetailsText}>
-                          {ev.details}
+                        <div className={styles.traceInfoGrid}>
+                          <div className={styles.traceInfoItem}>
+                            <span className={styles.traceInfoLabel}>Parcela porekla:</span>
+                            <span className={styles.traceInfoVal}>
+                              <strong>{traceData.lot.parcel?.code}</strong> — {traceData.lot.parcel?.name}
+                              {traceData.lot.parcel?.areaHa && (
+                                <span className={styles.traceAreaBadge}>{traceData.lot.parcel.areaHa} ha</span>
+                              )}
+                            </span>
+                          </div>
+                          <div className={styles.traceInfoItem}>
+                            <span className={styles.traceInfoLabel}>Sorta / Hibrid:</span>
+                            <span className={styles.traceInfoVal}>{traceData.lot.cropVariety || 'Žuti holandski'}</span>
+                          </div>
+                          <div className={styles.traceInfoItem}>
+                            <span className={styles.traceInfoLabel}>Zaduženo lice:</span>
+                            <span className={styles.traceInfoVal}>
+                              <UserCheck size={13} color="#0284c7" style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                              <strong>Bojan Ćorović</strong>
+                            </span>
+                          </div>
                         </div>
-
-                        {ev.notes && (
-                          <div className={styles.timelineNotes}>
-                            <strong>Napomena:</strong> {ev.notes}
-                          </div>
-                        )}
-
-                        {ev.supervisor && (
-                          <div className={styles.timelineSupervisor}>
-                            <UserCheck size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                            <span>Zaduženo lice: <strong>{ev.supervisor}</strong></span>
-                          </div>
-                        )}
                       </div>
-                    ))}
+
+                      {/* 2. Hero Karta: Ukupan Ulaz sa Njive */}
+                      <div className={styles.traceHeroCard}>
+                        <div className={styles.traceHeroHeader}>
+                          <Tractor size={15} color="#16a34a" />
+                          <span>Ukupno dovezeno sa njive</span>
+                        </div>
+                        <div className={styles.traceHeroValue}>
+                          {formatKgAndTons(traceData.lot.initialQuantityKg)}
+                        </div>
+                      </div>
+
+                      {/* 3. Bilans i Stanje po Fazama */}
+                      <div className={styles.traceBalanceList}>
+                        <div className={styles.traceBalanceItem}>
+                          <div className={styles.traceBalanceLeft}>
+                            <div className={`${styles.traceIconWrap} ${styles.iconColdStorage}`}>
+                              <Snowflake size={15} />
+                            </div>
+                            <div>
+                              <div className={styles.traceBalanceLabel}>U hladnjači (Sirovo)</div>
+                              <div className={styles.traceBalanceSub}>Komore 1–6 (boksovi)</div>
+                            </div>
+                          </div>
+                          <div className={styles.traceBalanceRight}>
+                            <span className={styles.traceValColdStorage}>{formatKgAndTons(traceData.lot.rawStockKg)}</span>
+                          </div>
+                        </div>
+
+                        <div className={styles.traceBalanceItem}>
+                          <div className={styles.traceBalanceLeft}>
+                            <div className={`${styles.traceIconWrap} ${styles.iconSorted}`}>
+                              <Scale size={15} />
+                            </div>
+                            <div>
+                              <div className={styles.traceBalanceLabel}>Sortirano I klasa</div>
+                              <div className={styles.traceBalanceSub}>Pripremljeno za pakericu</div>
+                            </div>
+                          </div>
+                          <div className={styles.traceBalanceRight}>
+                            <span className={styles.traceValSorted}>{formatKgAndTons(traceData.lot.sortedQualityKg)}</span>
+                          </div>
+                        </div>
+
+                        <div className={styles.traceBalanceItem}>
+                          <div className={styles.traceBalanceLeft}>
+                            <div className={`${styles.traceIconWrap} ${styles.iconPackaged}`}>
+                              <Package size={15} />
+                            </div>
+                            <div>
+                              <div className={styles.traceBalanceLabel}>Spakovano na stanju</div>
+                              <div className={styles.traceBalanceSub}>Džakovi 10kg & 5kg</div>
+                            </div>
+                          </div>
+                          <div className={styles.traceBalanceRight}>
+                            <span className={styles.traceValPackaged}>{formatKgAndTons(traceData.lot.packagedStockKg)}</span>
+                          </div>
+                        </div>
+
+                        <div className={styles.traceBalanceItem}>
+                          <div className={styles.traceBalanceLeft}>
+                            <div className={`${styles.traceIconWrap} ${styles.iconShipped}`}>
+                              <Truck size={15} />
+                            </div>
+                            <div>
+                              <div className={styles.traceBalanceLabel}>Isporučeno kupcima</div>
+                              <div className={styles.traceBalanceSub}>Po zvaničnim otpremnicama</div>
+                            </div>
+                          </div>
+                          <div className={styles.traceBalanceRight}>
+                            <span className={styles.traceValShipped}>{formatKgAndTons(traceData.lot.shippedKg)}</span>
+                          </div>
+                        </div>
+
+                        <div className={styles.traceBalanceItem}>
+                          <div className={styles.traceBalanceLeft}>
+                            <div className={`${styles.traceIconWrap} ${styles.iconWaste}`}>
+                              <AlertTriangle size={15} />
+                            </div>
+                            <div>
+                              <div className={styles.traceBalanceLabel}>Ukupan otpis i kalo</div>
+                              <div className={styles.traceBalanceSub}>Prirodno sušenje, škart, trulež</div>
+                            </div>
+                          </div>
+                          <div className={styles.traceBalanceRight}>
+                            <span className={styles.traceValWaste}>{formatKgAndTons(traceData.lot.totalWasteKg)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* DESNA STRANA: HRONOLOŠKI TOK PARTIJE */}
+                    <div>
+                      <h4 style={{ margin: '0 0 1rem 0', fontSize: '0.98rem', color: 'var(--text-primary)' }}>
+                        {activeTura
+                          ? `Hronološki tok za Turu ${activeTura.index}`
+                          : `Hronološki tok celog LOTa - sve ture`}
+                      </h4>
+
+                      <div className={styles.timelineList}>
+                        {filteredTimeline.map((ev: any) => {
+                          // Oznaka ture u celokupnom pogledu (Tura: 1, Tura: 2, ...)
+                          const eventTura = (!activeTura && selectedTuraId === 'ALL')
+                            ? (ev.stage === 'ISPORUKA_KUPAC' || ev.id?.startsWith('shipment-'))
+                              ? turas.find((t: any) => t.shipmentId === ev.id.replace('shipment-', ''))
+                              : (ev.stage === 'PAKOVANJE' || ev.id?.startsWith('packaging-'))
+                                ? turas.find(
+                                  (t: any) =>
+                                    t.packagingId === ev.id.replace('packaging-', '') ||
+                                    (t.packagingDetails && t.packagingDetails.some((p: any) => p.packagingId === ev.id.replace('packaging-', '')))
+                                )
+                                : null
+                            : null;
+
+                          return (
+                            <div
+                              key={ev.id}
+                              className={styles.timelineItem}
+                            >
+                              <div className={styles.timelineDot}>
+                                <CheckCircle2 size={14} />
+                              </div>
+
+                              <div className={styles.timelineHeaderRow}>
+                                <div className={styles.timelineTitleBlock}>
+                                  <span className={styles.timelineStageBadge}>
+                                    {ev.stage || 'KORAK'}
+                                  </span>
+                                  <strong className={styles.timelineTitle}>
+                                    {ev.title}
+                                  </strong>
+                                  {eventTura && (
+                                    <span className={styles.activeTuraBadgeTag}>
+                                      Tura: {eventTura.index}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className={styles.timelineDateTimeBox}>
+                                  <div className={styles.timelineDateRow}>
+                                    <Calendar size={12} className={styles.timelineTimeIcon} />
+                                    <span>{formatDateOnly(ev.date || ev.createdAt)}</span>
+                                  </div>
+                                  <div className={styles.timelineTimeRow}>
+                                    <Clock size={12} className={styles.timelineTimeIcon} />
+                                    <span className={styles.timelineExactTime}>
+                                      {formatTimeOnly(ev.createdAt, ev.date)} h
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className={styles.timelineQtyRow}>
+                                <span className={styles.timelineQtyLabel}>Količina:</span>
+                                <span>{formatKgAndTons(ev.quantityKg)}</span>
+                              </div>
+
+                              <div className={styles.timelineDetailsText}>
+                                {ev.details}
+                              </div>
+
+                              {ev.notes && (
+                                <div className={styles.timelineNotes}>
+                                  <strong>Napomena:</strong> {ev.notes}
+                                </div>
+                              )}
+
+                              {ev.supervisor && (
+                                <div className={styles.timelineSupervisor}>
+                                  <UserCheck size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                                  <span>Zaduženo lice: <strong>{ev.supervisor}</strong></span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -2782,7 +3651,31 @@ const OnionDashboard: React.FC = () => {
                     </div>
 
                     <div className={styles.formGroup}>
-                      <label>Parcela sa koje stiže luk *</label>
+                      <div className={styles.labelWithActionsRow}>
+                        <label style={{ margin: 0 }}>Parcela sa koje stiže luk *</label>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                          {selectedHarvestParcelObj?.areaHa && (
+                            <span style={{ fontSize: '0.75rem', color: '#16a34a', fontWeight: 800 }}>
+                              Površina: {selectedHarvestParcelObj.areaHa} ha
+                            </span>
+                          )}
+                          {isManager && (
+                            <ParcelQuickActions
+                              selectedParcel={selectedHarvestParcelObj || null}
+                              onAddClick={() => {
+                                setParcelQuickTarget('harvest-form');
+                                setParcelToEdit(null);
+                                setParcelQuickModalOpen(true);
+                              }}
+                              onEditClick={(parcel) => {
+                                setParcelQuickTarget('harvest-form');
+                                setParcelToEdit(parcel);
+                                setParcelQuickModalOpen(true);
+                              }}
+                            />
+                          )}
+                        </div>
+                      </div>
                       <CustomSelect
                         value={harvestForm.parcelId}
                         onChange={(val) => setHarvestForm({ ...harvestForm, parcelId: val })}
@@ -3109,6 +4002,9 @@ const OnionDashboard: React.FC = () => {
                           });
                         }}
                       />
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                        Automatski proračun: 1 boks = 1.100 kg luka
+                      </div>
                     </div>
 
                     <div className={styles.formGroup}>
@@ -3291,7 +4187,7 @@ const OnionDashboard: React.FC = () => {
         )}
 
         {/* ============================================================ */}
-        {/* MODAL 4: PAKOVANJE NA PAKERICI (10KG / 5KG, 4 ŽENE, BOJAN ĆOROVIĆ) */}
+        {/* MODAL 4: PAKOVANJE NA PAKERICI (10KG / 5KG, BROJ PAKERA, BOJAN ĆOROVIĆ) */}
         {/* ============================================================ */}
         {isPackagingModalOpen && (
           <div className={styles.modalOverlay} onClick={() => setIsPackagingModalOpen(false)}>
@@ -3323,6 +4219,34 @@ const OnionDashboard: React.FC = () => {
                       placeholder="— Izaberi LOT sa I klasom —"
                     />
                   </div>
+
+                  {selectedPackagingLotObj && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '0.55rem 0.85rem',
+                        borderRadius: '8px',
+                        backgroundColor: 'var(--bg-secondary)',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '0.82rem',
+                        marginTop: '-0.35rem',
+                        marginBottom: '0.5rem',
+                      }}
+                    >
+                      <span>
+                        Parcela:{' '}
+                        <strong>
+                          {selectedPackagingLotObj.parcel?.code} — {selectedPackagingLotObj.parcel?.name}
+                        </strong>{' '}
+                        ({selectedPackagingLotObj.cropVariety || 'Žuti luk'})
+                      </span>
+                      <span style={{ color: '#16a34a', fontWeight: 700 }}>
+                        Raspoloživo I klasa: {formatKgAndTons(selectedPackagingLotObj.unpackedQualityKg)}
+                      </span>
+                    </div>
+                  )}
 
                   <div className={styles.formGrid2}>
                     <div className={styles.formGroup}>
@@ -3411,10 +4335,10 @@ const OnionDashboard: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Pakerica (4 žene - izmenljivo) i Bojan Ćorović */}
+                  {/* Pakerica (broj pakera - izmenljivo) i Bojan Ćorović */}
                   <div className={styles.formGrid2}>
                     <div className={styles.formGroup}>
-                      <label>Broj žena / radnika na pakerici (izmenljivo) *</label>
+                      <label>Broj pakera na pakerici (izmenljivo) *</label>
                       <input
                         type="number"
                         step="1"
@@ -3443,6 +4367,19 @@ const OnionDashboard: React.FC = () => {
                     </div>
                   </div>
 
+                  <div className={styles.formGroup}>
+                    <label>Napomena za pakericu (opciono)</label>
+                    <input
+                      type="text"
+                      className={styles.input}
+                      placeholder="npr. Druga smena, priprema za Maxi..."
+                      value={packagingForm.packerNotes}
+                      onChange={(e) =>
+                        setPackagingForm({ ...packagingForm, packerNotes: e.target.value })
+                      }
+                    />
+                  </div>
+
                   {Number(packagingForm.packageCount) > 0 && (
                     <div
                       style={{
@@ -3462,7 +4399,7 @@ const OnionDashboard: React.FC = () => {
                         )}
                       </strong>{' '}
                       ({packagingForm.palletsCount || (Number(packagingForm.packageCount) * Number(packagingForm.unitWeightKg)) / 1000}{' '}
-                      paleta) • Pakerica: {packagingForm.packerCount} radnice
+                      paleta) • Pakerica: {packagingForm.packerCount} pakera
                     </div>
                   )}
                 </div>
@@ -3486,7 +4423,7 @@ const OnionDashboard: React.FC = () => {
         )}
 
         {/* ============================================================ */}
-        {/* EDIT MODAL: IZMENA PAKOVANJA I RADA PAKERICE (4 ŽENE, 10KG/5KG) */}
+        {/* EDIT MODAL: IZMENA PAKOVANJA I RADA PAKERICE (BROJ PAKERA, 10KG/5KG) */}
         {/* ============================================================ */}
         {editingPackaging && (
           <div className={styles.modalOverlay} onClick={() => setEditingPackaging(null)}>
@@ -3494,7 +4431,7 @@ const OnionDashboard: React.FC = () => {
               <div className={styles.modalHeader}>
                 <h3>
                   <Pencil size={20} color="#d97706" />
-                  <span>Izmena pakovanja i postave na pakerici</span>
+                  <span>Izmena pakovanja i broja pakera</span>
                 </h3>
                 <button
                   type="button"
@@ -3544,7 +4481,7 @@ const OnionDashboard: React.FC = () => {
 
                   <div className={styles.formGrid2}>
                     <div className={styles.formGroup}>
-                      <label>Broj žena / radnika na pakerici *</label>
+                      <label>Broj pakera na pakerici *</label>
                       <input
                         type="number"
                         step="1"
@@ -3653,7 +4590,31 @@ const OnionDashboard: React.FC = () => {
               <form onSubmit={handleCreateShipment}>
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
-                    <label>Kupac (iz šifarnika partnera) *</label>
+                    <div className={styles.labelWithActionsRow}>
+                      <label style={{ margin: 0 }}>Kupac (iz šifarnika partnera) *</label>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                        {selectedShipmentBuyerObj?.pib && (
+                          <span style={{ fontSize: '0.75rem', color: '#0284c7', fontWeight: 800 }}>
+                            PIB: {selectedShipmentBuyerObj.pib}
+                          </span>
+                        )}
+                        {isManager && (
+                          <BuyerQuickActions
+                            selectedBuyer={selectedShipmentBuyerObj || null}
+                            onAddClick={() => {
+                              setBuyerQuickTarget('shipment-form');
+                              setBuyerToEdit(null);
+                              setBuyerQuickModalOpen(true);
+                            }}
+                            onEditClick={(buyer) => {
+                              setBuyerQuickTarget('shipment-form');
+                              setBuyerToEdit(buyer);
+                              setBuyerQuickModalOpen(true);
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
                     <CustomSelect
                       value={shipmentForm.buyerId}
                       onChange={(val) =>
@@ -3668,12 +4629,48 @@ const OnionDashboard: React.FC = () => {
                     <label>Izaberi spakovanu partiju / paletu sa stanja *</label>
                     <CustomSelect
                       value={shipmentForm.packagingId}
-                      onChange={(val) =>
-                        setShipmentForm({ ...shipmentForm, packagingId: val })
-                      }
+                      onChange={(val) => {
+                        const found = allAvailablePackagingsList.find((p: any) => p.id === val);
+                        setShipmentForm((prev) => ({
+                          ...prev,
+                          packagingId: val,
+                          packageCount: found?.availableCount ? String(found.availableCount) : prev.packageCount,
+                        }));
+                      }}
                       options={shipmentPackagingOptions}
                       placeholder="— Izaberi spakovani LOT (10kg ili 5kg) —"
                     />
+                    {selectedShipmentPackagingObj && (
+                      <div
+                        style={{
+                          marginTop: '0.55rem',
+                          padding: '0.65rem 0.85rem',
+                          borderRadius: '8px',
+                          backgroundColor: 'rgba(22, 163, 74, 0.08)',
+                          border: '1px solid rgba(22, 163, 74, 0.25)',
+                          fontSize: '0.82rem',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.25rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                            LOT: {selectedShipmentPackagingObj.lot?.lotNumber || 'N/A'} • {selectedShipmentPackagingObj.lot?.parcel ? `${selectedShipmentPackagingObj.lot.parcel.code} — ${selectedShipmentPackagingObj.lot.parcel.name}` : ''}
+                          </span>
+                          <span style={{ fontWeight: 800, color: '#16a34a' }}>
+                            {PACKAGE_LABELS[selectedShipmentPackagingObj.packageType] || selectedShipmentPackagingObj.packageType}
+                          </span>
+                        </div>
+                        <div style={{ color: 'var(--text-muted)' }}>
+                          Na stanju za isporuku:{' '}
+                          <strong style={{ color: '#16a34a' }}>
+                            {selectedShipmentPackagingObj.availableCount?.toLocaleString('sr-RS')} džakova
+                          </strong>{' '}
+                          ({formatKgAndTons(selectedShipmentPackagingObj.availableWeightKg)})
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className={styles.formGrid2}>
@@ -3862,6 +4859,511 @@ const OnionDashboard: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* ============================================================ */}
+        {/* MODAL 7: KREIRANJE / IZMENA KOMORE & MAX KAPACITETA BOKSOVA */}
+        {/* ============================================================ */}
+        {isChamberModalOpen && (
+          <div className={styles.modalOverlay} onClick={() => setIsChamberModalOpen(false)}>
+            <div className={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+              <div className={styles.modalHeader}>
+                <h3>
+                  {chamberModalForm.id ? (
+                    <>
+                      <Pencil size={20} color="#0891b2" />
+                      <span>Izmena komore ({chamberModalForm.name})</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={20} color="#16a34a" />
+                      <span>Dodavanje nove komore hladnjače</span>
+                    </>
+                  )}
+                </h3>
+                <button
+                  type="button"
+                  className={styles.btnIconSmall}
+                  onClick={() => setIsChamberModalOpen(false)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveChamber}>
+                <div className={styles.modalBody}>
+                  <div className={styles.formGrid2}>
+                    <div className={styles.formGroup}>
+                      <label>Naziv komore / lokacije *</label>
+                      <input
+                        type="text"
+                        className={styles.input}
+                        placeholder="npr. Komora 7 ili Nova Komora"
+                        value={chamberModalForm.name}
+                        onChange={(e) =>
+                          setChamberModalForm({ ...chamberModalForm, name: e.target.value })
+                        }
+                        required
+                      />
+                    </div>
+
+                    <div className={styles.formGroup}>
+                      <label>Tip skladišta</label>
+                      <CustomSelect
+                        value={chamberModalForm.storageType}
+                        onChange={(val: any) =>
+                          setChamberModalForm({ ...chamberModalForm, storageType: val })
+                        }
+                        options={[
+                          { value: 'HLADNJACA', label: 'Hladnjača (sa kontrolom)' },
+                          { value: 'MAGACIN', label: 'Podni Magacin (ambijentalno)' },
+                        ]}
+                        searchable={false}
+                      />
+                    </div>
+                  </div>
+
+                  <div className={styles.formGrid2}>
+                    <div className={styles.formGroup}>
+                      <label>Tehnička oprema komore</label>
+                      <CustomSelect
+                        value={chamberModalForm.hasEquipment ? 'true' : 'false'}
+                        onChange={(val) =>
+                          setChamberModalForm({
+                            ...chamberModalForm,
+                            hasEquipment: val === 'true',
+                          })
+                        }
+                        options={[
+                          { value: 'true', label: 'Komora sa opremom' },
+                          { value: 'false', label: 'Komora bez opreme' },
+                        ]}
+                        searchable={false}
+                      />
+                    </div>
+
+                    <div className={styles.formGroup}>
+                      <label>Maksimalan broj boks paleta (kapacitet) *</label>
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        className={styles.input}
+                        placeholder="npr. 720 (ili 500, 1000...)"
+                        value={chamberModalForm.maxBoxes}
+                        onChange={(e) =>
+                          setChamberModalForm({ ...chamberModalForm, maxBoxes: e.target.value })
+                        }
+                        required
+                      />
+                      <div
+                        style={{
+                          fontSize: '0.74rem',
+                          color: 'var(--text-muted)',
+                          marginTop: '0.25rem',
+                        }}
+                      >
+                        1 boks = 1.100 kg luka • Procenjen ukupan kapacitet:{' '}
+                        <strong>
+                          {formatKgAndTons(Number(chamberModalForm.maxBoxes || 0) * 1100)}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={styles.modalFooter}>
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    onClick={() => setIsChamberModalOpen(false)}
+                  >
+                    Odustani
+                  </button>
+                  <button
+                    type="submit"
+                    className={chamberModalForm.id ? styles.btnBlue : styles.btnPrimary}
+                    disabled={submitting}
+                  >
+                    <CheckCircle2 size={16} />
+                    <span>
+                      {submitting
+                        ? 'Čuvanje...'
+                        : chamberModalForm.id
+                          ? 'Sačuvaj izmene komore'
+                          : 'Kreiraj novu komoru'}
+                    </span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================ */}
+        {/* MODAL 8: POTVRDA BRISANJA KOMORE */}
+        {/* ============================================================ */}
+        {chamberToDelete && (
+          <div
+            className={styles.modalOverlay}
+            onClick={() => {
+              setChamberToDelete(null);
+              setDeleteChamberError(null);
+            }}
+          >
+            <div
+              className={styles.modalCard}
+              style={{ maxWidth: '520px' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={styles.modalHeader}>
+                <h3 style={{ color: '#dc2626' }}>
+                  <AlertTriangle size={20} color="#dc2626" />
+                  <span>Potvrda brisanja komore</span>
+                </h3>
+                <button
+                  type="button"
+                  className={styles.btnIconSmall}
+                  onClick={() => {
+                    setChamberToDelete(null);
+                    setDeleteChamberError(null);
+                  }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className={styles.modalBody}>
+                <p style={{ fontSize: '0.95rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.5 }}>
+                  Da li ste sigurni da želite da obrišete komoru{' '}
+                  <strong>"{chamberToDelete.locationOrChamber || chamberToDelete.name}"</strong>?
+                </p>
+
+                <div className={styles.chamberDeleteInfoCard}>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Tip skladišta:</span>
+                    <strong>
+                      {chamberToDelete.storageType === 'HLADNJACA' ? 'Hladnjača' : 'Podni Magacin'}
+                    </strong>
+                  </div>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Oprema komore:</span>
+                    <span
+                      className={styles.badgeStatus}
+                      style={{
+                        background: chamberToDelete.hasEquipment
+                          ? 'rgba(8, 145, 178, 0.14)'
+                          : 'rgba(217, 119, 6, 0.14)',
+                        color: chamberToDelete.hasEquipment ? '#0891b2' : '#d97706',
+                      }}
+                    >
+                      {chamberToDelete.hasEquipment ? 'Sa opremom' : 'Bez opreme'}
+                    </span>
+                  </div>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Kapacitet:</span>
+                    <strong>
+                      {chamberToDelete.maxBoxes || 720} boksova (
+                      {formatKgAndTons((chamberToDelete.maxBoxes || 720) * 1100)})
+                    </strong>
+                  </div>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Trenutno stanje luka:</span>
+                    <strong
+                      style={{
+                        color: (chamberToDelete.currentQuantityKg || 0) > 0 ? '#dc2626' : '#16a34a',
+                      }}
+                    >
+                      {formatKgAndTons(chamberToDelete.currentQuantityKg || 0)}
+                    </strong>
+                  </div>
+                </div>
+
+                {deleteChamberError && (
+                  <div className={styles.modalAlertDanger}>
+                    <AlertCircle size={22} className={styles.modalAlertDangerIcon} />
+                    <div className={styles.modalAlertContent}>
+                      <div className={styles.modalAlertTitle}>Nije moguće obrisati komoru</div>
+                      <div className={styles.modalAlertText}>{deleteChamberError}</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.modalFooter}>
+                <button
+                  type="button"
+                  className={styles.btnSecondary}
+                  onClick={() => {
+                    setChamberToDelete(null);
+                    setDeleteChamberError(null);
+                  }}
+                >
+                  {deleteChamberError ? 'Zatvori' : 'Odustani'}
+                </button>
+                <button
+                  type="button"
+                  className={styles.btnDangerSolid}
+                  disabled={isDeletingChamber}
+                  onClick={handleConfirmDeleteChamber}
+                >
+                  <Trash2 size={16} />
+                  <span>{isDeletingChamber ? 'Brisanje...' : 'Potvrdi brisanje'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================ */}
+        {/* MODAL 8B: POTVRDA BRISANJA PAKOVANJA SA PAKERICE */}
+        {/* ============================================================ */}
+        {packagingToDelete && (
+          <div
+            className={styles.modalOverlay}
+            onClick={() => {
+              setPackagingToDelete(null);
+              setDeletePackagingError(null);
+            }}
+          >
+            <div
+              className={styles.modalCard}
+              style={{ maxWidth: '560px' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={styles.modalHeader}>
+                <h3 style={{ color: '#dc2626' }}>
+                  <AlertTriangle size={20} color="#dc2626" />
+                  <span>Potvrda brisanja pakovanja</span>
+                </h3>
+                <button
+                  type="button"
+                  className={styles.btnIconSmall}
+                  onClick={() => {
+                    setPackagingToDelete(null);
+                    setDeletePackagingError(null);
+                  }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className={styles.modalBody}>
+                <p style={{ fontSize: '0.95rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.5 }}>
+                  Da li ste sigurni da želite da obrišete ovo pakovanje za partiju{' '}
+                  <strong>"{packagingToDelete.lot?.lotNumber}"</strong>?
+                </p>
+
+                {/* Pregled partije za brisanje */}
+                <div className={styles.chamberDeleteInfoCard}>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Parcela porekla:</span>
+                    <strong>
+                      {packagingToDelete.lot?.parcel
+                        ? `${packagingToDelete.lot.parcel.code} — ${packagingToDelete.lot.parcel.name}`
+                        : '-'}
+                    </strong>
+                  </div>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Tip ambalaže:</span>
+                    <strong style={{ color: '#d97706' }}>
+                      {PACKAGE_LABELS[packagingToDelete.packageType] || packagingToDelete.packageType}
+                    </strong>
+                  </div>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Količina u pakovanju:</span>
+                    <strong>
+                      {packagingToDelete.packageCount?.toLocaleString('sr-RS')} džakova (
+                      {packagingToDelete.palletsCount || (packagingToDelete.totalWeightKg / 1000).toFixed(1)} paleta •{' '}
+                      {formatKgAndTons(packagingToDelete.totalWeightKg)})
+                    </strong>
+                  </div>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Preostalo na stanju:</span>
+                    <strong
+                      style={{
+                        color: packagingToDelete.availableCount > 0 ? '#16a34a' : '#64748b',
+                      }}
+                    >
+                      {packagingToDelete.availableCount?.toLocaleString('sr-RS')} džakova (
+                      {formatKgAndTons(packagingToDelete.availableWeightKg)})
+                    </strong>
+                  </div>
+                  <div className={styles.chamberDeleteInfoRow}>
+                    <span>Zaduženo lice:</span>
+                    <span>{packagingToDelete.responsiblePerson || 'Bojan Ćorović'}</span>
+                  </div>
+                </div>
+
+                {/* Upozorenje o posledicama u bazi i skladištu */}
+                <div
+                  style={{
+                    backgroundColor: 'rgba(2, 132, 199, 0.08)',
+                    border: '1px solid rgba(2, 132, 199, 0.3)',
+                    borderRadius: '10px',
+                    padding: '0.85rem 1rem',
+                    fontSize: '0.84rem',
+                    color: 'var(--text-primary)',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontWeight: 700,
+                      color: '#0284c7',
+                      marginBottom: '0.35rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.4rem',
+                    }}
+                  >
+                    <AlertCircle size={16} />
+                    <span>Šta će se promeniti u sistemu nakon brisanja:</span>
+                  </div>
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: '1.25rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
+                    }}
+                  >
+                    <li>
+                      <strong>Vraćanje u I klasu:</strong> Celokupna masa od{' '}
+                      <span style={{ color: '#16a34a', fontWeight: 700 }}>
+                        {formatKgAndTons(packagingToDelete.totalWeightKg)}
+                      </span>{' '}
+                      se automatski vraća u nespakovanu I klasu partije{' '}
+                      <code>{packagingToDelete.lot?.lotNumber}</code> i ponovo postaje raspoloživa za
+                      pakovanje.
+                    </li>
+                    <li>
+                      <strong>Smanjenje zaliha:</strong> Sa stanja gotovih proizvoda briše se{' '}
+                      <strong>{packagingToDelete.packageCount} džakova</strong> (
+                      {packagingToDelete.palletsCount || (packagingToDelete.totalWeightKg / 1000).toFixed(1)}{' '}
+                      paleta).
+                    </li>
+                    <li>
+                      <strong>Evidencija:</strong> Ovaj zapis rada pakerice se trajno uklanja iz
+                      evidencije.
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Provera ako je već realizovana isporuka */}
+                {packagingToDelete.availableCount < packagingToDelete.packageCount && (
+                  <div className={styles.modalAlertDanger}>
+                    <AlertCircle size={22} className={styles.modalAlertDangerIcon} />
+                    <div className={styles.modalAlertContent}>
+                      <div className={styles.modalAlertTitle}>Nije moguće obrisati pakovanje</div>
+                      <div className={styles.modalAlertText}>
+                        Sa ovog pakovanja je već isporučeno{' '}
+                        <strong>
+                          {packagingToDelete.packageCount - packagingToDelete.availableCount} džakova
+                        </strong>{' '}
+                        kupcima preko otpremnice. Pre brisanja ovog pakovanja morate stornirati ili
+                        obrisati povezane otpremnice u tabu "Isporuka".
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {deletePackagingError && (
+                  <div className={styles.modalAlertDanger}>
+                    <AlertCircle size={22} className={styles.modalAlertDangerIcon} />
+                    <div className={styles.modalAlertContent}>
+                      <div className={styles.modalAlertTitle}>Greška pri brisanju</div>
+                      <div className={styles.modalAlertText}>{deletePackagingError}</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.modalFooter}>
+                <button
+                  type="button"
+                  className={styles.btnSecondary}
+                  onClick={() => {
+                    setPackagingToDelete(null);
+                    setDeletePackagingError(null);
+                  }}
+                >
+                  Odustani
+                </button>
+                <button
+                  type="button"
+                  className={styles.btnDangerSolid}
+                  disabled={
+                    isDeletingPackaging ||
+                    packagingToDelete.availableCount < packagingToDelete.packageCount
+                  }
+                  onClick={handleConfirmDeletePackaging}
+                >
+                  <Trash2 size={16} />
+                  <span>
+                    {isDeletingPackaging ? 'Brisanje...' : 'Potvrdi brisanje i vrati luk u I klasu'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================ */}
+        {/* MODAL 9: BRZO DODAVANJE / IZMENA PARCELE (ŠIFARNIK) */}
+        {/* ============================================================ */}
+        <ParcelQuickModal
+          isOpen={parcelQuickModalOpen}
+          onClose={() => setParcelQuickModalOpen(false)}
+          parcelToEdit={parcelToEdit}
+          onSaved={(savedParcel, mode) => {
+            queryClient.invalidateQueries({ queryKey: ['onion-lookup'] });
+            queryClient.invalidateQueries({ queryKey: ['onion-dashboard'] });
+            queryClient.invalidateQueries({ queryKey: ['onion-lots'] });
+            queryClient.invalidateQueries({ queryKey: ['onion-harvest'] });
+            queryClient.invalidateQueries({ queryKey: ['onion-traceability'] });
+
+            if (parcelQuickTarget === 'harvest-form') {
+              setHarvestForm((prev) => ({ ...prev, parcelId: savedParcel.id }));
+            } else if (parcelQuickTarget === 'harvest-filter') {
+              setHarvestParcelFilter(savedParcel.id);
+            }
+            showToast(
+              mode === 'create'
+                ? `Parcela "${savedParcel.code} — ${savedParcel.name}" uspešno dodata.`
+                : `Parcela "${savedParcel.code} — ${savedParcel.name}" uspešno izmenjena.`,
+              'success'
+            );
+          }}
+        />
+
+        {/* ============================================================ */}
+        {/* MODAL 10: BRZO DODAVANJE / IZMENA KUPCA (ŠIFARNIK PARTNERA) */}
+        {/* ============================================================ */}
+        <BuyerQuickModal
+          isOpen={buyerQuickModalOpen}
+          onClose={() => setBuyerQuickModalOpen(false)}
+          buyerToEdit={buyerToEdit}
+          onSaved={(savedBuyer, mode) => {
+            queryClient.invalidateQueries({ queryKey: ['onion-lookup'] });
+            queryClient.invalidateQueries({ queryKey: ['onion-dashboard'] });
+            queryClient.invalidateQueries({ queryKey: ['onion-shipment'] });
+            queryClient.invalidateQueries({ queryKey: ['onion-traceability'] });
+            queryClient.invalidateQueries({ queryKey: ['partners'] });
+
+            if (buyerQuickTarget === 'shipment-form') {
+              setShipmentForm((prev) => ({ ...prev, buyerId: savedBuyer.id }));
+            } else if (buyerQuickTarget === 'shipment-filter') {
+              setShipmentBuyerFilter(savedBuyer.id);
+            }
+            showToast(
+              mode === 'create'
+                ? `Kupac "${savedBuyer.name}" uspešno dodat.`
+                : `Podaci o kupcu "${savedBuyer.name}" uspešno izmenjeni.`,
+              'success'
+            );
+          }}
+        />
 
         {/* Toast Notifikacija */}
         {toast && (
