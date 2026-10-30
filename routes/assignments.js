@@ -1,12 +1,16 @@
+import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
+import { requireWorkerIdentity, resolveWorkerForUser, isManager as isManagerUser } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middlewares/auth.js";
+import { isActiveAssignmentConflict } from "../lib/assignmentConflict.js";
 
 const router = Router();
 
 // Svi endpointi zahtevaju prijavljenog korisnika
 router.use(requireAuth);
+router.use(requireWorkerIdentity);
 
 // ==========================================
 // 1. STATISTIKA ZADUŽIVANJA
@@ -52,8 +56,8 @@ router.get("/active", async (req, res) => {
     const { page = 1, limit = 25 } = req.query;
     const where = { status: "ZADUZENA" };
 
-    if (req.user.role === "OPERATER") {
-      const opFilter = await getOperatorFilter(req.user.id);
+    if (!isManagerUser(req.user)) {
+      const opFilter = getOperatorFilter(req.worker);
       where.AND = [opFilter];
     }
 
@@ -91,17 +95,8 @@ router.get("/active", async (req, res) => {
 });
 
 // Pomoćna funkcija za izolaciju podataka operatera (radnika)
-async function getOperatorFilter(userId) {
-  const linkedWorker = await prisma.worker.findFirst({
-    where: { userId },
-    select: { id: true },
-  });
-  if (linkedWorker) {
-    return {
-      OR: [{ createdById: userId }, { workerId: linkedWorker.id }],
-    };
-  }
-  return { createdById: userId };
+function getOperatorFilter(worker) {
+  return { workerId: worker.id };
 }
 
 // ==========================================
@@ -128,8 +123,8 @@ router.get("/", async (req, res) => {
     }
 
     // Izolacija podataka: Radnici/operateri vide isključivo sopstvena zaduženja
-    if (req.user.role === "OPERATER") {
-      const opFilter = await getOperatorFilter(req.user.id);
+    if (!isManagerUser(req.user)) {
+      const opFilter = getOperatorFilter(req.worker);
       where.AND = where.AND || [];
       where.AND.push(opFilter);
     }
@@ -180,7 +175,7 @@ const checkoutSchema = z.object({
   assignNotes: z.string().max(500).optional().nullable(),
 });
 
-router.post("/checkout", async (req, res) => {
+router.post("/checkout", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -191,40 +186,20 @@ router.post("/checkout", async (req, res) => {
 
     const { machineId, workerId, parcelId, startFuelLevel, startFuelLiters, startHours, assignNotes } = parsed.data;
 
-    // Automatsko prepoznavanje / vezivanje radnika za operatera
+    // Resolve identity only through the unique User -> Worker relation.
     let finalWorkerId = workerId;
-    if (req.user.role === "OPERATER" || !finalWorkerId) {
-      let worker = await prisma.worker.findFirst({
-        where: { userId: req.user.id },
-      });
-
-      if (!worker) {
-        worker = await prisma.worker.findFirst({
-          where: { name: { equals: req.user.name, mode: "insensitive" } },
-        });
-
-        if (worker) {
-          await prisma.worker.update({
-            where: { id: worker.id },
-            data: { userId: req.user.id },
-          });
-        }
+    if (!isManagerUser(req.user) || !finalWorkerId) {
+      const worker = req.worker || await resolveWorkerForUser(req.user);
+      if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
+      if (!isManagerUser(req.user) && workerId && workerId !== worker.id) {
+        return res.status(403).json({ error: "Možete unositi podatke samo za svoj profil radnika." });
       }
-
-      if (!worker) {
-        worker = await prisma.worker.create({
-          data: {
-            name: req.user.name,
-            userId: req.user.id,
-            type: "STALNI",
-          },
-        });
-      }
-
       finalWorkerId = worker.id;
     }
+    const targetWorker = await prisma.worker.findUnique({ where: { id: finalWorkerId } });
+    if (!targetWorker?.isActive) return res.status(400).json({ error: "Izabrani radnik nije aktivan ili ne postoji." });
 
-    // 1. Provera postojanja mašine i concurrency zaštita
+    // Early availability checks improve feedback; the database unique index prevents races.
     const machine = await prisma.machine.findUnique({
       where: { id: machineId },
     });
@@ -233,7 +208,7 @@ router.post("/checkout", async (req, res) => {
       return res.status(404).json({ error: "Izabrana mašina ne postoji u sistemu." });
     }
 
-    if (machine.status !== "SLOBODNA") {
+    if (machine.isActive === false || machine.status !== "SLOBODNA" || await hasOpenMaintenance(prisma, machineId)) {
       return res.status(409).json({
         error: `Mašina "${machine.name}" trenutno nije slobodna (status: ${machine.status}).`,
       });
@@ -312,10 +287,13 @@ router.post("/checkout", async (req, res) => {
       assignment,
     });
   } catch (error) {
+    if (isActiveAssignmentConflict(error)) {
+      return res.status(409).json({ error: "Mašina već ima aktivno zaduženje." });
+    }
     console.error("Greška pri zaduživanju mašine:", error);
     res.status(500).json({ error: "Greška na serveru pri zaduživanju mašine." });
   }
-});
+}));
 
 // ==========================================
 // 5. RAZDUŽIVANJE MAŠINE (CHECKIN)
@@ -329,7 +307,7 @@ const checkinSchema = z.object({
   returnNotes: z.string().max(500).optional().nullable(),
 });
 
-router.post("/checkin", async (req, res) => {
+router.post("/checkin", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = checkinSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -347,6 +325,10 @@ router.post("/checkin", async (req, res) => {
 
     if (!assignment) {
       return res.status(404).json({ error: "Zaduženje nije pronađeno." });
+    }
+
+    if (!isManagerUser(req.user) && assignment.workerId !== req.worker.id) {
+      return res.status(403).json({ error: "Možete razdužiti samo svoju mašinu." });
     }
 
     if (assignment.status !== "ZADUZENA") {
@@ -432,10 +414,11 @@ router.post("/checkin", async (req, res) => {
     }
 
     const [updatedAssignment] = await prisma.$transaction(txOperations);
+    const updatedMachine = await syncMachineStatus(prisma, assignment.machineId);
 
     res.json({
       message: isOperational
-        ? `Mašina "${assignment.machine.name}" je uspešno razdužena i vraćena u slobodan status.`
+        ? `Mašina "${assignment.machine.name}" je razdužena. Trenutni status: ${updatedMachine.status}.`
         : `Mašina "${assignment.machine.name}" je razdužena uz prijavu kvara (status: U KVARU).`,
       assignment: updatedAssignment,
     });
@@ -443,7 +426,7 @@ router.post("/checkin", async (req, res) => {
     console.error("Greška pri razduživanju mašine:", error);
     res.status(500).json({ error: "Greška na serveru pri razduživanju mašine." });
   }
-});
+}));
 
 // ==========================================
 // 6. DIREKTNO / RETROAKTIVNO ZADUŽENJE I RAZDUŽENJE U JEDNOM KORAKU (DIREKTOR & RUKOVODILAC)
@@ -463,7 +446,7 @@ const directAssignSchema = z.object({
   notes: z.string().max(500).optional().nullable(),
 });
 
-router.post("/direct", async (req, res) => {
+router.post("/direct", machineMutation(async (req, res, prisma) => {
   try {
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
     if (!isManager) {
@@ -618,6 +601,7 @@ router.post("/direct", async (req, res) => {
     }
 
     const [assignment] = await prisma.$transaction(directOps);
+    await syncMachineStatus(prisma, machineId);
 
     // Audit log zapis
     try {
@@ -653,7 +637,7 @@ router.post("/direct", async (req, res) => {
     console.error("Greška pri direktnom zaduživanju:", error);
     res.status(500).json({ error: "Greška na serveru pri direktnom zaduživanju." });
   }
-});
+}));
 
 // ==========================================
 // 7. IZMENA ZADUŽENJA (UZ PROVERU PRAVA I AUDIT LOG)
@@ -671,7 +655,7 @@ const updateAssignmentSchema = z.object({
   returnNotes: z.string().max(500).optional().nullable(),
 });
 
-router.put("/:id", async (req, res) => {
+router.put("/:id", machineMutation(async (req, res, prisma) => {
   try {
     const { id } = req.params;
     const existing = await prisma.machineAssignment.findUnique({
@@ -692,9 +676,7 @@ router.put("/:id", async (req, res) => {
 
     // Specifična pravila za operatera:
     if (isOperator) {
-      const isOwnAssignment =
-        existing.createdById === req.user.id ||
-        (existing.worker && existing.worker.userId === req.user.id);
+      const isOwnAssignment = existing.workerId === req.worker.id;
 
       if (!isOwnAssignment) {
         return res.status(403).json({ error: "Možete menjati isključivo sopstvena zaduženja." });
@@ -854,6 +836,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const [updated] = await prisma.$transaction(transactionOps);
+    if (newMachineStatus === "SLOBODNA") await syncMachineStatus(prisma, existing.machineId);
 
     if (changes.length > 0) {
       try {
@@ -883,6 +866,6 @@ router.put("/:id", async (req, res) => {
     console.error("Greška pri ažuriranju zaduženja:", error);
     res.status(500).json({ error: "Greška na serveru pri ažuriranju zaduženja." });
   }
-});
+}));
 
 export default router;

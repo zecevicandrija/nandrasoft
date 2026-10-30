@@ -1,47 +1,53 @@
+import { inventoryMutation } from "../lib/inventoryTransaction.js";
+import { requireWorkerIdentity, resolveWorkerForUser } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireManager } from "../middlewares/auth.js";
-import { generateBunnyUploadConfig, uploadBufferToBunny } from "../lib/bunnyStorage.js";
+import { isReceiptImage, MAX_RECEIPT_BYTES, uploadBufferToBunny } from "../lib/bunnyStorage.js";
 
 const router = Router();
 const uploadMemory = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB max za fallback
+  limits: { fileSize: MAX_RECEIPT_BYTES, files: 1, fields: 0, parts: 1 },
 });
 
 // Svi endpointi zahtevaju prijavljenog korisnika
 router.use(requireAuth);
+router.use(requireWorkerIdentity);
 
 // ==========================================
-// 0. BUNNY.NET DIREKTAN UPLOAD SLIKE RAČUNA
+// 0. UPLOAD SLIKE RAČUNA PREKO BACKENDA
 // ==========================================
-router.post("/upload-url", async (req, res) => {
-  try {
-    const { fileType } = req.body || {};
-    const config = generateBunnyUploadConfig(fileType || "image/webp");
-    res.json(config);
-  } catch (error) {
-    console.error("Greška pri generisanju Bunny upload linka:", error);
-    res.status(500).json({ error: error.message || "Greška pri pripremi otpremanja slike računa." });
-  }
+router.all(["/upload-url", "/upload-config"], (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.status(410).json({ error: "Koristite /api/fuel/upload za otpremanje slike računa." });
 });
 
-router.post("/upload-fallback", uploadMemory.single("file"), async (req, res) => {
+function parseReceiptUpload(req, res, next) {
+  uploadMemory.single("file")(req, res, (error) => {
+    if (error) {
+      return res.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
+        error: "Pošaljite jednu sliku računa do 8 MB, bez dodatnih polja.",
+      });
+    }
+    next();
+  });
+}
+
+router.post(["/upload", "/upload-fallback"], parseReceiptUpload, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "Slika računa nije prosleđena." });
     }
-    const result = await uploadBufferToBunny(
-      req.file.buffer,
-      req.file.mimetype || "image/webp",
-      req.body?.filePath || null
-    );
+    if (!isReceiptImage(req.file.buffer, req.file.mimetype)) {
+      return res.status(400).json({ error: "Dozvoljene su samo WebP, JPEG i PNG slike do 8 MB." });
+    }
+    const result = await uploadBufferToBunny(req.file.buffer, req.file.mimetype);
     res.json(result);
-  } catch (error) {
-    console.error("Greška pri fallback uploadu slike na Bunny.net:", error);
-    res.status(500).json({ error: error.message || "Greška pri otpremanju slike računa na CDN." });
+  } catch {
+    res.status(502).json({ error: "Otpremanje slike računa nije uspelo. Pokušajte ponovo." });
   }
 });
 
@@ -175,21 +181,7 @@ router.get("/entries", async (req, res) => {
 
     // Ako je korisnik radnik/operater, automatski ograniči SAMO na njegova točenja!
     if (!isManager) {
-      const userNameParts = (req.user.name || "").trim().split(" ");
-      const firstName = userNameParts[0] || "";
-      const linkedWorker = await prisma.worker.findFirst({
-        where: {
-          OR: [
-            { userId: req.user.id },
-            ...(firstName ? [{ name: { contains: firstName, mode: "insensitive" } }] : []),
-          ],
-        },
-      });
-      if (linkedWorker) {
-        where.OR = [{ workerId: linkedWorker.id }, { createdById: req.user.id }];
-      } else {
-        where.createdById = req.user.id;
-      }
+      where.workerId = req.worker.id;
     }
 
     if (scope === "today") {
@@ -332,7 +324,7 @@ const createFuelEntrySchema = z.object({
   date: z.string().optional().nullable(),
 });
 
-router.post("/entries", async (req, res) => {
+router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
   try {
     const parsed = createFuelEntrySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -364,22 +356,12 @@ router.post("/entries", async (req, res) => {
     // 2. Proveri radnika - za radnika je hardkodovan njegov profil
     let targetWorkerId = data.workerId;
     if (!isManager || !targetWorkerId) {
-      const userNameParts = (req.user.name || "").trim().split(" ");
-      const firstName = userNameParts[0] || "";
-      const linkedWorker = await prisma.worker.findFirst({
-        where: {
-          OR: [
-            { userId: req.user.id },
-            ...(firstName ? [{ name: { contains: firstName, mode: "insensitive" } }] : []),
-          ],
-        },
-      });
-      if (linkedWorker) {
-        targetWorkerId = linkedWorker.id;
-      } else if (!targetWorkerId) {
-        const anyWorker = await prisma.worker.findFirst({ where: { isActive: true } });
-        if (anyWorker) targetWorkerId = anyWorker.id;
+      const worker = req.worker || await resolveWorkerForUser(req.user);
+      if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
+      if (!isManager && data.workerId && data.workerId !== worker.id) {
+        return res.status(403).json({ error: "Možete unositi gorivo samo za svoj profil radnika." });
       }
+      targetWorkerId = worker.id;
     }
 
     if (!targetWorkerId) {
@@ -389,8 +371,8 @@ router.post("/entries", async (req, res) => {
     const worker = await prisma.worker.findUnique({
       where: { id: targetWorkerId },
     });
-    if (!worker) {
-      return res.status(404).json({ error: "Izabrani radnik ne postoji." });
+    if (!worker?.isActive) {
+      return res.status(404).json({ error: "Izabrani radnik nije aktivan ili ne postoji." });
     }
 
     // 3. Poslovno pravilo: U kanister i cisternu za firmu mogu da sipaju samo direktor i rukovodilac
@@ -472,6 +454,9 @@ router.post("/entries", async (req, res) => {
 
     // Pravilo A: Fizički kapacitet rezervoara mašine - STRIKTNA ZABRANA!
     const tankCapacity = machine.tankCapacityLiters || 250;
+    if ((machine.currentFuelLiters || 0) + data.liters > tankCapacity) {
+      return res.status(400).json({ error: "Ukupna količina goriva prelazi kapacitet rezervoara mašine." });
+    }
     if (data.liters > tankCapacity) {
       return res.status(400).json({
         error: `Nije moguće sipati više od maksimalnog kapaciteta rezervoara mašine "${machine.name}" (${tankCapacity} L). Pokušano sipanje: ${data.liters} L.`,
@@ -646,7 +631,7 @@ router.post("/entries", async (req, res) => {
     console.error("Greška pri unosu točenja goriva:", error);
     res.status(500).json({ error: "Greška na serveru pri unosu točenja." });
   }
-});
+}));
 
 // ==========================================
 // 4. IZMENA TOČENJA (DOZVOLJENO RADNIKU SAMO DO KRAJA DANA)
@@ -664,7 +649,7 @@ const updateFuelEntrySchema = z.object({
   receiptImageUrl: z.string().url("Neispravan link slike računa").max(1000).optional().nullable(),
 });
 
-router.put("/entries/:id", async (req, res) => {
+router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) => {
   try {
     const existing = await prisma.fuelEntry.findUnique({
       where: { id: req.params.id },
@@ -679,19 +664,7 @@ router.put("/entries/:id", async (req, res) => {
 
     // Ako je radnik: proverava da li je točenje njegovo i da li je današnji dan
     if (!isManager) {
-      const userNameParts = (req.user.name || "").trim().split(" ");
-      const firstName = userNameParts[0] || "";
-      const linkedWorker = await prisma.worker.findFirst({
-        where: {
-          OR: [
-            { userId: req.user.id },
-            ...(firstName ? [{ name: { contains: firstName, mode: "insensitive" } }] : []),
-          ],
-        },
-      });
-      const isOwner =
-        existing.createdById === req.user.id ||
-        (linkedWorker && existing.workerId === linkedWorker.id);
+      const isOwner = existing.workerId === req.worker.id;
 
       if (!isOwner) {
         return res.status(403).json({ error: "Nemate dozvolu za izmenu ovog točenja." });
@@ -745,7 +718,9 @@ router.put("/entries/:id", async (req, res) => {
     }
 
     // Ako je točenje iz cisterne i povećava se količina, proveri stanje u cisterni
-    if (newSource === "CISTERNA" && diffLiters > 0) {
+    const cisternDelta = (newSource === "CISTERNA" ? newLiters : 0) -
+      (existing.fuelSource === "CISTERNA" ? existing.liters : 0);
+    if (cisternDelta > 0) {
       const suppliesAgg = await prisma.fuelSupply.aggregate({
         _sum: { liters: true, totalCost: true },
       });
@@ -756,7 +731,7 @@ router.put("/entries/:id", async (req, res) => {
 
       const currentLitersInTank = (suppliesAgg._sum.liters || 0) - (dispensedAgg._sum.liters || 0);
 
-      if (currentLitersInTank < diffLiters) {
+      if (currentLitersInTank < cisternDelta) {
         return res.status(400).json({
           error: `Nedovoljno goriva u cisterni firme za dopunu od ${diffLiters} L. Trenutno stanje: ${currentLitersInTank.toFixed(1)} L.`,
         });
@@ -768,6 +743,9 @@ router.put("/entries/:id", async (req, res) => {
     const anomalyReasons = [];
 
     const tankCapacity = existing.machine.tankCapacityLiters || 250;
+    if ((existing.machine.currentFuelLiters || 0) + diffLiters > tankCapacity) {
+      return res.status(400).json({ error: "Ukupna količina goriva prelazi kapacitet rezervoara mašine." });
+    }
     if (newLiters > tankCapacity) {
       return res.status(400).json({
         error: `Nije moguće sipati više od maksimalnog kapaciteta rezervoara mašine "${existing.machine.name}" (${tankCapacity} L). Pokušano sipanje: ${newLiters} L.`,
@@ -884,12 +862,12 @@ router.put("/entries/:id", async (req, res) => {
     console.error("Greška pri izmeni točenja goriva:", error);
     res.status(500).json({ error: "Greška na serveru pri izmeni točenja." });
   }
-});
+}));
 
 // ==========================================
 // 5. BRISANJE / STORNO TOČENJA
 // ==========================================
-router.delete("/entries/:id", requireManager, async (req, res) => {
+router.delete("/entries/:id", requireManager, inventoryMutation("fuel", async (req, res, prisma) => {
   try {
     const entry = await prisma.fuelEntry.findUnique({
       where: { id: req.params.id },
@@ -927,7 +905,7 @@ router.delete("/entries/:id", requireManager, async (req, res) => {
     console.error("Greška pri brisanju točenja:", error);
     res.status(500).json({ error: "Greška na serveru pri storniranju točenja." });
   }
-});
+}));
 
 // ==========================================
 // 5. ULAZ GORIVA U CISTERNU (PRIJEM CISTERNE)
@@ -989,7 +967,7 @@ router.get("/supplies", async (req, res) => {
   }
 });
 
-router.post("/supplies", async (req, res) => {
+router.post("/supplies", inventoryMutation("fuel", async (req, res, prisma) => {
   try {
     // Samo Rukovodilac ili Direktor mogu uneti prijem cisterne
     if (!["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
@@ -1054,15 +1032,21 @@ router.post("/supplies", async (req, res) => {
     console.error("Greška pri unosu prijema cisterne:", error);
     res.status(500).json({ error: "Greška na serveru pri evidentiranju prijema goriva." });
   }
-});
+}));
 
-router.delete("/supplies/:id", requireManager, async (req, res) => {
+router.delete("/supplies/:id", requireManager, inventoryMutation("fuel", async (req, res, prisma) => {
   try {
     const supply = await prisma.fuelSupply.findUnique({
       where: { id: req.params.id },
     });
     if (!supply) {
       return res.status(404).json({ error: "Zapis o prijemu nije pronađen." });
+    }
+
+    const received = await prisma.fuelSupply.aggregate({ _sum: { liters: true } });
+    const dispensed = await prisma.fuelEntry.aggregate({ where: { fuelSource: "CISTERNA" }, _sum: { liters: true } });
+    if ((received._sum.liters || 0) - supply.liters < (dispensed._sum.liters || 0)) {
+      return res.status(400).json({ error: "Prijem nije moguće obrisati jer je gorivo već izdato iz cisterne." });
     }
 
     await prisma.$transaction([
@@ -1086,7 +1070,7 @@ router.delete("/supplies/:id", requireManager, async (req, res) => {
     console.error("Greška pri brisanju prijema cisterne:", error);
     res.status(500).json({ error: "Greška na serveru pri brisanju." });
   }
-});
+}));
 
 // ==========================================
 // 6. ANALITIKA POTROŠNJE L/ha PO OPERACIJAMA

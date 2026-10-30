@@ -1,3 +1,4 @@
+import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -89,7 +90,8 @@ const DEFAULT_FERTILIZER_CATALOG = [
 // ==========================================
 // 1. PREGLED SVIH PROIZVODA I KPI STATISTIKA MAGACINA
 // ==========================================
-router.get("/products", async (req, res) => {
+// This legacy read endpoint also initializes the catalog; protect that write.
+router.get("/products", inventoryMutation("fertilizer", async (req, res, prisma) => {
   try {
     const { includeInactive } = req.query;
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
@@ -200,7 +202,7 @@ router.get("/products", async (req, res) => {
     console.error("Greška pri dohvatanju proizvoda đubriva:", error);
     res.status(500).json({ error: "Greška na serveru pri učitavanju magacina đubriva." });
   }
-});
+}));
 
 // ==========================================
 // 2. DODAVANJE NOVOG ARTIKLA ĐUBRIVA U ŠIFARNIK
@@ -217,7 +219,7 @@ const createProductSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
-router.post("/products", requireWarehouseAccess, async (req, res) => {
+router.post("/products", requireWarehouseAccess, inventoryMutation("fertilizer", async (req, res, prisma) => {
   try {
     const parsed = createProductSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -295,7 +297,7 @@ router.post("/products", requireWarehouseAccess, async (req, res) => {
     console.error("Greška pri kreiranju artikla đubriva:", error);
     res.status(500).json({ error: "Greška na serveru pri dodavanju đubriva." });
   }
-});
+}));
 
 // ==========================================
 // 3. IZMENA ARTIKLA ĐUBRIVA (PRAG, CENA, LOKACIJA)
@@ -311,7 +313,7 @@ const updateProductSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-router.put("/products/:id", requireWarehouseAccess, async (req, res) => {
+router.put("/products/:id", requireWarehouseAccess, inventoryMutation("fertilizer", async (req, res, prisma) => {
   try {
     const existing = await prisma.fertilizerProduct.findUnique({
       where: { id: req.params.id },
@@ -372,7 +374,7 @@ router.put("/products/:id", requireWarehouseAccess, async (req, res) => {
     console.error("Greška pri izmeni artikla đubriva:", error);
     res.status(500).json({ error: "Greška na serveru pri izmeni đubriva." });
   }
-});
+}));
 
 // ==========================================
 // 4. DNEVNIK KRETANJA ĐUBRIVA (PRIJEMI, IZDAVANJA, POVRATI, OTPISI)
@@ -508,7 +510,7 @@ const updateMovementSchema = z.object({
   areaHa: z.number().positive("Površina parcele mora biti veća od 0 ha").optional().nullable(),
 });
 
-router.put("/movements/:id", async (req, res) => {
+router.put("/movements/:id", inventoryMutation("fertilizer", async (req, res, prisma) => {
   try {
     const existing = await prisma.fertilizerMovement.findUnique({
       where: { id: req.params.id },
@@ -574,7 +576,7 @@ router.put("/movements/:id", async (req, res) => {
 
     const result = await prisma.$transaction(async (tx) => {
       if (diffQty !== 0) {
-        if (existing.movementType === "PRIJEM_NABAVKA") {
+        if (["PRIJEM_NABAVKA", "POVRAT_SA_NJIVE"].includes(existing.movementType)) {
           const projectedStock = product.currentStock + diffQty;
           if (projectedStock < 0) {
             throw new Error(
@@ -664,12 +666,12 @@ router.put("/movements/:id", async (req, res) => {
     }
     res.status(500).json({ error: "Greška na serveru pri izmeni zapisa." });
   }
-});
+}));
 
 // ==========================================
 // 4c. BRISANJE / STORNIRANJE ZAPISA KRETANJA (DIREKTOR I RUKOVODILAC UVEK, MAGACIONER SAMO DANAS)
 // ==========================================
-router.delete("/movements/:id", async (req, res) => {
+router.delete("/movements/:id", inventoryMutation("fertilizer", async (req, res, prisma) => {
   try {
     const existing = await prisma.fertilizerMovement.findUnique({
       where: { id: req.params.id },
@@ -717,6 +719,9 @@ router.delete("/movements/:id", async (req, res) => {
           },
         });
       } else if (existing.movementType === "POVRAT_SA_NJIVE") {
+        if (product.currentStock < existing.quantity) {
+          throw new Error("Nije moguće obrisati povrat jer je deo robe već izdat.");
+        }
         await tx.fertilizerProduct.update({
           where: { id: product.id },
           data: {
@@ -751,7 +756,7 @@ router.delete("/movements/:id", async (req, res) => {
     }
     res.status(500).json({ error: "Greška na serveru pri brisanju zapisa." });
   }
-});
+}));
 
 // ==========================================
 // 5. PRIJEM ĐUBRIVA U MAGACIN (NABAVKA OD DOBAVLJAČA)
@@ -768,7 +773,7 @@ const receiveFertilizerSchema = z.object({
   notes: z.string().max(500).optional().nullable(),
 });
 
-router.post("/receive", requireWarehouseAccess, async (req, res) => {
+router.post("/receive", requireWarehouseAccess, inventoryMutation("fertilizer", async (req, res, prisma) => {
   try {
     const parsed = receiveFertilizerSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -882,7 +887,7 @@ router.post("/receive", requireWarehouseAccess, async (req, res) => {
     console.error("Greška pri prijemu đubriva:", error);
     res.status(500).json({ error: "Greška na serveru prilikom prijema robe u magacin." });
   }
-});
+}));
 
 // ==========================================
 // 6. IZDAVANJE ĐUBRIVA NA NJIVU / POVRAT / OTPIS
@@ -901,7 +906,7 @@ const issueFertilizerSchema = z.object({
   notes: z.string().max(500).optional().nullable(),
 });
 
-router.post("/issue", requireWarehouseAccess, async (req, res) => {
+router.post("/issue", requireWarehouseAccess, inventoryMutation("fertilizer", async (req, res, prisma) => {
   try {
     const parsed = issueFertilizerSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -1085,7 +1090,7 @@ router.post("/issue", requireWarehouseAccess, async (req, res) => {
     }
     res.status(500).json({ error: "Greška na serveru prilikom izdavanja đubriva." });
   }
-});
+}));
 
 // ==========================================
 // 7. AGREGIRANI IZVEŠTAJ UTROŠKA PO PARCELAMA I SEZONI

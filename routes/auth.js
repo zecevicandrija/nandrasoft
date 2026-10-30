@@ -1,11 +1,8 @@
 import "dotenv/config";
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
-
-const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
-const prisma = new PrismaClient({ adapter });
+import { prisma } from "../lib/prisma.js";
 
 export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000",
@@ -16,18 +13,32 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
+  databaseHooks: {
+    session: {
+      create: {
+        before: async (session, ctx) => {
+          const user = await ctx.context.internalAdapter.findUserById(session.userId);
+          if (user?.isActive !== true) {
+            throw new APIError("FORBIDDEN", { message: "Korisnički nalog je deaktiviran." });
+          }
+        },
+      },
+    },
+  },
   user: {
     additionalFields: {
       role: {
         type: "string",
         required: false,
         defaultValue: "OPERATER",
-        input: true,
+        // Authorization data is server-owned, including on sign-up and update-user.
+        input: false,
       },
       pin: {
         type: "string",
         required: false,
-        input: true,
+        input: false,
+        returned: false,
       },
       phone: {
         type: "string",

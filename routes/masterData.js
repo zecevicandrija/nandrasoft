@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { machineMutation, hasOpenMaintenance } from "../lib/machineAvailability.js";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
@@ -168,11 +169,16 @@ router.post("/machines", requireManager, async (req, res) => {
   }
 });
 
-router.put("/machines/:id", requireManager, async (req, res) => {
+router.put("/machines/:id", requireManager, machineMutation(async (req, res, prisma) => {
   try {
     const parsed = machineSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
+    }
+    if (parsed.data.status === "SLOBODNA" &&
+        (await hasOpenMaintenance(prisma, req.params.id) ||
+         await prisma.machineAssignment.findFirst({ where: { machineId: req.params.id, status: "ZADUZENA" } }))) {
+      return res.status(409).json({ error: "Mašina ima otvoren servis ili aktivno zaduženje i ne može biti označena kao slobodna." });
     }
     const machine = await prisma.machine.update({
       where: { id: req.params.id },
@@ -182,7 +188,7 @@ router.put("/machines/:id", requireManager, async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 router.delete("/machines/:id", requireManager, async (req, res) => {
   try {

@@ -1,0 +1,441 @@
+{
+  "generatedAt": "2026-10-30T22:11:33.710Z",
+  "businessDataChanged": false,
+  "limitation": "Compare with physical inventory, ENP provider statements and documented opening balances before correcting any discrepancy.",
+  "summary": {
+    "fertilizerReviewed": 6,
+    "fertilizerFlagged": 5,
+    "onionReviewed": 8,
+    "onionFlagged": 0,
+    "enpReviewed": 38,
+    "enpFlagged": 1
+  },
+  "fertilizer": [
+    {
+      "id": "cmvr2dv2q0001o8u8zaz041vm",
+      "name": "UREA 46% N",
+      "unit": "KG",
+      "stored": 3200,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 3200,
+      "needsReview": true
+    },
+    {
+      "id": "cmvr2dv2q0003o8u8olu3o7bx",
+      "name": "YaraMila Complex 12-11-18",
+      "unit": "KG",
+      "stored": 2500,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 2500,
+      "needsReview": true
+    },
+    {
+      "id": "cmvr2dv2q0004o8u82itkq83q",
+      "name": "YaraTera Kristalon 18-18-18",
+      "unit": "KG",
+      "stored": 180,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 180,
+      "needsReview": true
+    },
+    {
+      "id": "cmvr2dv2q0002o8u8t7qhr7mo",
+      "name": "KAN 27% N",
+      "unit": "KG",
+      "stored": 650,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 650,
+      "needsReview": true
+    },
+    {
+      "id": "cmvr2dv2q0000o8u82b7771pu",
+      "name": "NPK 16:16:16",
+      "unit": "KG",
+      "stored": 200,
+      "ledgerNet": -4300,
+      "unexplainedOpeningOrDifference": 4500,
+      "needsReview": true
+    },
+    {
+      "id": "cmvr90hug0000g8u8reanz50o",
+      "name": "MAP 12:52 (Monoamonijum fosfat)",
+      "unit": "KG",
+      "stored": 1350,
+      "ledgerNet": 1350,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    }
+  ],
+  "onion": [
+    {
+      "id": "cmvtzs7d30011rku8yxfkebgl",
+      "lotNumber": "LOT-20261029-P02-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmvtzs7d50014rku80hlzvvj9",
+      "lotNumber": "LOT-20261029-P03-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmvtzs7d80017rku8agstil7f",
+      "lotNumber": "LOT-20261029-P04-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmvtzs7da001arku8ls876peq",
+      "lotNumber": "LOT-20261029-P05-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmvtzs7dc001drku8ymk0qudx",
+      "lotNumber": "LOT-20261029-P06-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmvux55yd0001w0u825i08bbz",
+      "lotNumber": "LOT-20261030-P01-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmvuxgeb900002wu8erswnxos",
+      "lotNumber": "LOT-20261030-P08-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmvtzs7ci000trku8myn5a883",
+      "lotNumber": "LOT-20261029-P01-01",
+      "differences": [],
+      "packageErrors": 0,
+      "needsReview": false
+    }
+  ],
+  "enp": [
+    {
+      "id": "cmu37aife0005igu8bc6scva0",
+      "name": "John Deere (traktor)",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfh000r5cu8wh3ex9gm",
+      "name": "Audi",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxf5000i5cu88219asv1",
+      "name": "Fendt",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmu37aifj0007igu8mlc4rby8",
+      "name": "Belarus / Rus",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfu00115cu8pxg6f0du",
+      "name": "Vozilo Zlatko",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmu37aifh0006igu83s0a965j",
+      "name": "Claas Ares 657",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxez000f5cu8hn5dokce",
+      "name": "Claas Arion",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxf8000k5cu8od75xkkd",
+      "name": "Claas Mega",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmu37aifn000aigu8e8q34730",
+      "name": "Viljuškar",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxew000e5cu87ix846ag",
+      "name": "Claas Ares 816",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfd000n5cu8pkw9wh9l",
+      "name": "Dacia Duster KS",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfc000m5cu8yp1njtje",
+      "name": "ULT utovarivač",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfa000l5cu8uv739un7",
+      "name": "Bager",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfe000o5cu8anhcv6e7",
+      "name": "Dacia Duster OL",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfk000t5cu8u04n0owe",
+      "name": "GAZ",
+      "stored": 4000,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 4000,
+      "needsReview": true
+    },
+    {
+      "id": "cmva1cxfl000u5cu81w2d2n5r",
+      "name": "Mercedes Sprinter",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfm000v5cu8g394nz22",
+      "name": "MAN kamion Stefan",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfi000s5cu8mm231xr7",
+      "name": "Ford",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfp000x5cu8mccgjobq",
+      "name": "Vozilo VS-036-LI",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfo000w5cu8b6wibmpq",
+      "name": "Kamion VS-051-CK",
+      "stored": 29840,
+      "ledgerNet": 29840,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxff000p5cu8e34j0oyg",
+      "name": "Toyota Hilux",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfv00125cu86ns4cvuf",
+      "name": "Vozilo Marko Visković",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxft00105cu8o0s5zy6e",
+      "name": "Vozilo VS-023-UJ",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfq000y5cu81c2w4i4z",
+      "name": "Kamion VS-054-PB",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfz00155cu8q3ztnpvc",
+      "name": "Putničko vozilo",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfx00135cu8bjm4zkdi",
+      "name": "Rukometni klub vozilo",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxf1000g5cu8tr1k53ps",
+      "name": "Claas Arion Cebis",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfy00145cu8nafsrgmh",
+      "name": "Terensko vozilo",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmu37aifk0008igu8gtrd62yd",
+      "name": "Agregati za luk",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmu37aifm0009igu81kjmbjms",
+      "name": "Topovi za zalivanje",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxg400195cu8ninx5rxl",
+      "name": "Repa - zalivanje",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxg000165cu84d4scr1i",
+      "name": "Feketić agregati",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxg100175cu8xwctz0bv",
+      "name": "Pomični agregat",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxg200185cu8v4yiv6kl",
+      "name": "Šećerana agregat",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxf2000h5cu8idoxwc9b",
+      "name": "Claas Axion",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxf7000j5cu8icvdqg0j",
+      "name": "Claas Lexion",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfr000z5cu8xchtxnc6",
+      "name": "Kamion VS-053-CK",
+      "stored": 6000,
+      "ledgerNet": 6000,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    },
+    {
+      "id": "cmva1cxfg000q5cu8o09n6s2j",
+      "name": "VW Golf",
+      "stored": 0,
+      "ledgerNet": 0,
+      "unexplainedOpeningOrDifference": 0,
+      "needsReview": false
+    }
+  ],
+  "fuel": {
+    "receivedLiters": 11000,
+    "dispensedLiters": 260,
+    "ledgerCisternLiters": 10740,
+    "needsReview": false,
+    "invalidMachineLevels": [],
+    "limitation": "Machine fuel cannot be reconstructed from fueling alone; consumption and measured opening/closing levels must be verified."
+  }
+}

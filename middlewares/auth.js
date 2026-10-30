@@ -8,10 +8,16 @@ export async function requireAuth(req, res, next) {
   try {
     const session = await auth.api.getSession({
       headers: req.headers,
+      // Always check the database so revoked sessions cannot survive in cookies.
+      query: { disableCookieCache: true },
     });
 
     if (!session) {
       return res.status(401).json({ error: "Niste prijavljeni." });
+    }
+
+    if (session.user?.isActive !== true) {
+      return res.status(403).json({ error: "Korisnički nalog je deaktiviran." });
     }
 
     req.user = session.user;
@@ -30,6 +36,10 @@ export function requireRole(roles) {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ error: "Niste prijavljeni." });
+    }
+
+    if (req.user.isActive !== true) {
+      return res.status(403).json({ error: "Korisnički nalog je deaktiviran." });
     }
 
     if (!roles.includes(req.user.role)) {

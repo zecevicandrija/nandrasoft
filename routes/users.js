@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { hashPassword } from "better-auth/crypto";
 import { prisma } from "../lib/prisma.js";
 import { auth } from "./auth.js";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
@@ -62,7 +63,6 @@ router.get("/", async (req, res) => {
         email: true,
         role: true,
         phone: true,
-        pin: true,
         isActive: true,
         createdAt: true,
         updatedAt: true,
@@ -90,7 +90,6 @@ router.get("/:id", async (req, res) => {
         email: true,
         role: true,
         phone: true,
-        pin: true,
         isActive: true,
         createdAt: true,
         updatedAt: true,
@@ -121,6 +120,7 @@ router.post("/", async (req, res) => {
     }
 
     const { name, email, password, role, phone, pin } = parsed.data;
+    const hashedPin = pin ? await hashPassword(pin) : undefined;
 
     // Koristi Better Auth signUp da ispravno hashuje lozinku
     const result = await auth.api.signUpEmail({
@@ -128,48 +128,31 @@ router.post("/", async (req, res) => {
         name,
         email,
         password,
-        role,
         phone: phone || undefined,
-        pin: pin || undefined,
       },
     });
 
-    // Automatski poveži ili kreiraj profil u tabeli Worker kako bi korisnik mogao da prima radne naloge i notifikacije
-    if (result?.user?.id) {
-      const existingWorkerByName = await prisma.worker.findFirst({
-        where: {
-          name: { equals: name.trim(), mode: "insensitive" },
-          userId: null,
-        },
+    // signUpEmail always creates an OPERATER. Assign the requested role only
+    // here, after the router's DIREKTOR authorization checks. Discard the
+    // automatic sign-up session before granting privileges.
+    const user = await prisma.$transaction(async (tx) => {
+      await tx.session.deleteMany({ where: { userId: result.user.id } });
+      const createdUser = await tx.user.update({
+        where: { id: result.user.id },
+        data: { role, ...(hashedPin ? { pin: hashedPin } : {}) },
       });
-      if (existingWorkerByName) {
-        await prisma.worker
-          .update({
-            where: { id: existingWorkerByName.id },
-            data: { userId: result.user.id },
-          })
-          .catch(() => {});
-      } else {
-        await prisma.worker
-          .create({
-            data: {
-              name: name.trim(),
-              type: "STALNI",
-              phone: phone || null,
-              isActive: true,
-              userId: result.user.id,
-            },
-          })
-          .catch(() => {});
-      }
-    }
+      await tx.worker.create({
+        data: { name: name.trim(), type: "STALNI", phone: phone || null, isActive: true, userId: result.user.id },
+      });
+      return createdUser;
+    });
 
     res.status(201).json({
       user: {
         id: result.user.id,
         name: result.user.name,
         email: result.user.email,
-        role: result.user.role,
+        role: user.role,
       },
     });
   } catch (error) {
@@ -188,6 +171,33 @@ router.post("/", async (req, res) => {
 /**
  * PUT /api/users/:id — Ažuriranje korisnika (sa Zod validacijom)
  */
+// Explicit one-time linking by IDs. Existing links cannot be reassigned.
+router.put("/:id/worker", async (req, res) => {
+  const parsed = z.object({ workerId: z.string().min(1) }).strict().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Worker ID je obavezan." });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: req.params.id }, select: { id: true } });
+      if (!user) return { status: 404, body: { error: "Korisnik nije pronađen." } };
+      const existing = await tx.worker.findUnique({ where: { userId: user.id } });
+      if (existing) {
+        return existing.id === parsed.data.workerId
+          ? { status: 200, body: { workerId: existing.id, userId: user.id } }
+          : { status: 409, body: { error: "Korisnik već ima povezan profil radnika." } };
+      }
+      const linked = await tx.worker.updateMany({
+        where: { id: parsed.data.workerId, userId: null, isActive: true },
+        data: { userId: user.id },
+      });
+      if (linked.count !== 1) return { status: 409, body: { error: "Radnik nije aktivan, ne postoji ili je već povezan." } };
+      return { status: 200, body: { workerId: parsed.data.workerId, userId: user.id } };
+    });
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    res.status(error?.code === "P2002" ? 409 : 500).json({ error: "Povezivanje profila nije uspelo." });
+  }
+});
+
 router.put("/:id", async (req, res) => {
   try {
     const parsed = updateUserSchema.safeParse(req.body);
@@ -211,23 +221,28 @@ router.put("/:id", async (req, res) => {
     if (email !== undefined) updateData.email = email;
     if (role !== undefined) updateData.role = role;
     if (phone !== undefined) updateData.phone = phone;
-    if (pin !== undefined) updateData.pin = pin;
+    if (pin !== undefined) updateData.pin = pin === null ? null : await hashPassword(pin);
     if (isActive !== undefined) updateData.isActive = isActive;
 
-    const user = await prisma.user.update({
-      where: { id: req.params.id },
-      data: updateData,
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        phone: true,
-        pin: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+    const user = await prisma.$transaction(async (tx) => {
+      const updatedUser = await tx.user.update({
+        where: { id: req.params.id },
+        data: updateData,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          phone: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      if (isActive === false || (role !== undefined && role !== existing.role)) {
+        await tx.session.deleteMany({ where: { userId: req.params.id } });
+      }
+      return updatedUser;
     });
 
     res.json({ user });
@@ -275,9 +290,12 @@ router.put("/:id/password", async (req, res) => {
         .json({ error: "Nalog korisnika nije pronađen." });
     }
 
-    await prisma.account.update({
-      where: { id: account.id },
-      data: { password: hashedPassword },
+    await prisma.$transaction(async (tx) => {
+      await tx.account.update({
+        where: { id: account.id },
+        data: { password: hashedPassword },
+      });
+      await tx.session.deleteMany({ where: { userId: req.params.id } });
     });
 
     res.json({ message: "Lozinka uspešno promenjena." });

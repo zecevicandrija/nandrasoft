@@ -1,3 +1,6 @@
+import { reportingQuery, fieldWorkStats, unassignedWorkPage } from "../lib/fieldWorkReporting.js";
+import { machineMutation, hasOpenMaintenance } from "../lib/machineAvailability.js";
+import { requireWorkerIdentity, resolveWorkerForUser, isManager as isManagerUser, canAccessWorkerRecord } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import ExcelJS from "exceljs";
@@ -8,6 +11,7 @@ const router = Router();
 
 // Svi endpointi zahtevaju prijavljenog korisnika
 router.use(requireAuth);
+router.use(requireWorkerIdentity);
 
 /**
  * Pomoćna funkcija za automatsko računanje radnih sati iz startTime i endTime (npr. "07:00" i "15:30")
@@ -32,281 +36,33 @@ function calculateWorkHours(startTime, endTime) {
 }
 
 // Pomoćna funkcija za izolaciju podataka operatera (radnika)
-async function getOperatorFilter(userId) {
-  const linkedWorker = await prisma.worker.findFirst({
-    where: { userId },
-    select: { id: true },
-  });
-  if (linkedWorker) {
-    return {
-      OR: [{ createdById: userId }, { workerId: linkedWorker.id }],
-    };
-  }
-  return { createdById: userId };
+function getOperatorFilter(worker) {
+  return { workerId: worker.id };
 }
 
 // ==========================================
 // 1. STATISTIKA I AGREGACIJE RADOVA NA NJIVI
 // ==========================================
 router.get("/stats", async (req, res) => {
+  const parsed = reportingQuery.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: "Neispravni datumi ili filteri izveštaja." });
   try {
-    const { dateFrom, dateTo, period } = req.query;
-
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-
-    // Početak tekuće nedelje (ponedeljak)
-    const dayOfWeek = now.getDay() === 0 ? 6 : now.getDay() - 1;
-    const weekStart = new Date(todayStart);
-    weekStart.setDate(weekStart.getDate() - dayOfWeek);
-
-    // Početak tekućeg meseca
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
-
-    // Izolacija statistike za operatere: radnik vidi samo svoje agregate
-    let operatorFilter = null;
-    if (req.user.role === "OPERATER") {
-      operatorFilter = await getOperatorFilter(req.user.id);
-    }
-
-    const todayWhere = {
-      date: { gte: todayStart, lte: todayEnd },
-      status: { not: "STORNO" },
-      ...(operatorFilter ? operatorFilter : {}),
-    };
-
-    const weekWhere = {
-      date: { gte: weekStart, lte: todayEnd },
-      status: { not: "STORNO" },
-      ...(operatorFilter ? operatorFilter : {}),
-    };
-
-    const monthWhere = {
-      date: { gte: monthStart, lte: todayEnd },
-      status: { not: "STORNO" },
-      ...(operatorFilter ? operatorFilter : {}),
-    };
-
-    // Dinamički filter za izabrani raspon (Danas / Ova Nedelja / Ovaj Mesec / Prilagođen raspon / Svi unosi)
-    const currentWhere = {
-      status: { not: "STORNO" },
-      ...(operatorFilter ? operatorFilter : {}),
-    };
-
-    if (dateFrom || dateTo) {
-      currentWhere.date = {};
-      if (dateFrom) {
-        const start = new Date(String(dateFrom));
-        start.setHours(0, 0, 0, 0);
-        currentWhere.date.gte = start;
-      }
-      if (dateTo) {
-        const end = new Date(String(dateTo));
-        end.setHours(23, 59, 59, 999);
-        currentWhere.date.lte = end;
-      }
-    } else if (period === "danas") {
-      currentWhere.date = { gte: todayStart, lte: todayEnd };
-    } else if (period === "nedelja") {
-      currentWhere.date = { gte: weekStart, lte: todayEnd };
-    } else if (period === "mesec") {
-      currentWhere.date = { gte: monthStart, lte: todayEnd };
-    }
-
-    const groupWhere = {
-      status: { not: "STORNO" },
-      ...(operatorFilter ? operatorFilter : {}),
-    };
-
-    const [allWorksToday, allWorksWeek, allWorksMonth, currentWorks, workTypesBreakdown] = await Promise.all([
-      prisma.fieldWork.findMany({
-        where: todayWhere,
-        include: {
-          parcel: true,
-          machine: true,
-          attachment: true,
-          worker: true,
-          workType: true,
-        },
-      }),
-      prisma.fieldWork.findMany({
-        where: weekWhere,
-      }),
-      prisma.fieldWork.findMany({
-        where: monthWhere,
-      }),
-      prisma.fieldWork.findMany({
-        where: currentWhere,
-        select: { id: true, date: true, areaDoneHa: true, workHours: true, machineId: true },
-      }),
-      prisma.fieldWork.groupBy({
-        by: ["workTypeId"],
-        where: groupWhere,
-        _sum: { areaDoneHa: true, workHours: true },
-        _count: { id: true },
-      }),
-    ]);
-
-    const totalAreaToday = allWorksToday.reduce((sum, w) => sum + (w.areaDoneHa || 0), 0);
-    const totalHoursToday = allWorksToday.reduce((sum, w) => sum + (w.workHours || 0), 0);
-
-    const totalAreaWeek = allWorksWeek.reduce((sum, w) => sum + (w.areaDoneHa || 0), 0);
-    const totalHoursWeek = allWorksWeek.reduce((sum, w) => sum + (w.workHours || 0), 0);
-
-    const totalAreaMonth = allWorksMonth.reduce((sum, w) => sum + (w.areaDoneHa || 0), 0);
-
-    const currentArea = currentWorks.reduce((sum, w) => sum + (w.areaDoneHa || 0), 0);
-    const currentHours = currentWorks.reduce((sum, w) => sum + (w.workHours || 0), 0);
-    const currentCount = currentWorks.length;
-
-    // Detekcija radova gde traktor nije imao zaduženje (današnji i ukupni nerešeni)
-    const [allActiveWorks, allAssignments] = await Promise.all([
-      prisma.fieldWork.findMany({
-        where: {
-          status: { not: "STORNO" },
-          ...(operatorFilter ? operatorFilter : {}),
-        },
-        select: { id: true, date: true, machineId: true },
-      }),
-      prisma.machineAssignment.findMany({
-        select: { machineId: true, assignedAt: true },
-      }),
-    ]);
-
-    let unassignedWorksToday = 0;
-    let unassignedWorksWeek = 0;
-    let unassignedWorksMonth = 0;
-    let unassignedWorksTotal = 0;
-    let unassignedWorksCurrent = 0;
-    const todayDateStr = todayStart.toDateString();
-
-    const currentWorkIds = new Set(currentWorks.map((w) => w.id));
-
-    for (const w of allActiveWorks) {
-      const wDate = new Date(w.date);
-      const workDateStr = wDate.toDateString();
-      const hasAssignment = allAssignments.some(
-        (a) => a.machineId === w.machineId && new Date(a.assignedAt).toDateString() === workDateStr
-      );
-      if (!hasAssignment) {
-        unassignedWorksTotal++;
-        if (workDateStr === todayDateStr) {
-          unassignedWorksToday++;
-        }
-        if (wDate >= weekStart && wDate <= todayEnd) {
-          unassignedWorksWeek++;
-        }
-        if (wDate >= monthStart && wDate <= todayEnd) {
-          unassignedWorksMonth++;
-        }
-        if (currentWorkIds.has(w.id)) {
-          unassignedWorksCurrent++;
-        }
-      }
-    }
-
-    res.json({
-      unassignedWarningsTotal: unassignedWorksTotal,
-      current: {
-        count: currentCount,
-        areaDoneHa: Math.round(currentArea * 100) / 100,
-        workHours: Math.round(currentHours * 10) / 10,
-        unassignedWarnings: unassignedWorksCurrent,
-      },
-      today: {
-        count: allWorksToday.length,
-        areaDoneHa: Math.round(totalAreaToday * 100) / 100,
-        workHours: Math.round(totalHoursToday * 10) / 10,
-        unassignedWarnings: unassignedWorksToday,
-      },
-      week: {
-        count: allWorksWeek.length,
-        areaDoneHa: Math.round(totalAreaWeek * 100) / 100,
-        workHours: Math.round(totalHoursWeek * 10) / 10,
-        unassignedWarnings: unassignedWorksWeek,
-      },
-      month: {
-        count: allWorksMonth.length,
-        areaDoneHa: Math.round(totalAreaMonth * 100) / 100,
-        unassignedWarnings: unassignedWorksMonth,
-      },
-      workTypesBreakdown,
-    });
+    return res.json(await fieldWorkStats(prisma, parsed.data, isManagerUser(req.user) ? null : req.worker.id));
   } catch (error) {
-    console.error("Greška pri dohvatanju statistike radova:", error);
-    res.status(500).json({ error: "Greška na serveru." });
+    console.error("Field-work statistics failed:", error);
+    return res.status(500).json({ error: "Statistika nije učitana. Pokušajte ponovo." });
   }
 });
 
-// ==========================================
-// 1.1 RADOVI GDE MAŠINA NIJE BILA ZADUŽENA (DETALJI ZA RUKOVODIOCA)
-// ==========================================
 router.get("/unassigned-warnings", async (req, res) => {
+  if (!isManagerUser(req.user)) return res.status(403).json({ error: "Samo rukovodilac i direktor mogu pregledati neusklađenosti." });
+  const parsed = reportingQuery.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: "Neispravni datumi ili filteri izveštaja." });
   try {
-    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
-    if (!isManager) {
-      return res.status(403).json({ error: "Samo rukovodilac i direktor mogu pregledati neusklađenosti." });
-    }
-
-    const { dateFrom, dateTo } = req.query;
-
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-
-    let start = todayStart;
-    let end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-
-    if (dateFrom) {
-      start = new Date(String(dateFrom));
-      start.setHours(0, 0, 0, 0);
-    }
-    if (dateTo) {
-      end = new Date(String(dateTo));
-      end.setHours(23, 59, 59, 999);
-    }
-
-    const [works, assignments] = await Promise.all([
-      prisma.fieldWork.findMany({
-        where: {
-          date: { gte: start, lte: end },
-          status: { not: "STORNO" },
-        },
-        include: {
-          parcel: true,
-          machine: true,
-          attachment: true,
-          worker: true,
-          workType: true,
-          createdBy: { select: { id: true, name: true, email: true, role: true } },
-        },
-        orderBy: { date: "desc" },
-      }),
-      prisma.machineAssignment.findMany({
-        where: {
-          assignedAt: { gte: start, lte: end },
-        },
-        select: { machineId: true, assignedAt: true },
-      }),
-    ]);
-
-    // Filtriraj radove gde za taj datum i mašinu ne postoji zaduženje
-    const unassignedWorks = works.filter((w) => {
-      const workDateStr = new Date(w.date).toDateString();
-      const hasAssignment = assignments.some(
-        (a) => a.machineId === w.machineId && new Date(a.assignedAt).toDateString() === workDateStr
-      );
-      return !hasAssignment;
-    });
-
-    res.json({
-      count: unassignedWorks.length,
-      period: { from: start, to: end },
-      items: unassignedWorks,
-    });
+    return res.json(await unassignedWorkPage(prisma, parsed.data));
   } catch (error) {
-    console.error("Greška pri dohvatanju nezaduženih mašina:", error);
-    res.status(500).json({ error: "Greška na serveru." });
+    console.error("Unassigned-work reporting failed:", error);
+    return res.status(500).json({ error: "Neusklađenosti nisu učitane. Pokušajte ponovo." });
   }
 });
 
@@ -354,8 +110,8 @@ router.get("/", async (req, res) => {
     }
 
     // Izolacija podataka: Radnici/operateri vide isključivo sopstvene unose
-    if (req.user.role === "OPERATER") {
-      const opFilter = await getOperatorFilter(req.user.id);
+    if (!isManagerUser(req.user)) {
+      const opFilter = getOperatorFilter(req.worker);
       where.AND = where.AND || [];
       where.AND.push(opFilter);
     }
@@ -444,7 +200,7 @@ const fieldWorkSchema = z.object({
   returnNotes: z.string().max(500).optional().nullable(),
 });
 
-router.post("/", async (req, res) => {
+router.post("/", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = fieldWorkSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -471,42 +227,18 @@ router.post("/", async (req, res) => {
       autoAssignMachine,
     } = parsed.data;
 
-    // Automatsko prepoznavanje radnika za ulogovanog korisnika (operatera)
+    // Resolve identity only through the unique User -> Worker relation.
     let finalWorkerId = workerId;
-
-    if (req.user.role === "OPERATER" || !finalWorkerId) {
-      // 1. Potraži radnika povezanog sa ovim nalogom preko userId
-      let worker = await prisma.worker.findFirst({
-        where: { userId: req.user.id },
-      });
-
-      // 2. Ako nije povezan, potraži po imenu
-      if (!worker) {
-        worker = await prisma.worker.findFirst({
-          where: { name: { equals: req.user.name, mode: "insensitive" } },
-        });
-
-        if (worker) {
-          await prisma.worker.update({
-            where: { id: worker.id },
-            data: { userId: req.user.id },
-          });
-        }
+    if (!isManagerUser(req.user) || !finalWorkerId) {
+      const worker = req.worker || await resolveWorkerForUser(req.user);
+      if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
+      if (!isManagerUser(req.user) && workerId && workerId !== worker.id) {
+        return res.status(403).json({ error: "Možete unositi podatke samo za svoj profil radnika." });
       }
-
-      // 3. Ako profil radnika ne postoji, automatski ga kreiraj
-      if (!worker) {
-        worker = await prisma.worker.create({
-          data: {
-            name: req.user.name,
-            userId: req.user.id,
-            type: "STALNI",
-          },
-        });
-      }
-
       finalWorkerId = worker.id;
     }
+    const targetWorker = await prisma.worker.findUnique({ where: { id: finalWorkerId } });
+    if (!targetWorker?.isActive) return res.status(400).json({ error: "Izabrani radnik nije aktivan ili ne postoji." });
 
     // 1. Provera parcele i Plausibility provera hektara (max parcel.areaHa * 1.2)
     const parcel = await prisma.parcel.findUnique({
@@ -530,6 +262,23 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "Izabrana mašina ne postoji." });
     }
 
+    let linkedOrder = null;
+    if (parsed.data.workOrderId) {
+      linkedOrder = await prisma.workOrder.findUnique({ where: { id: parsed.data.workOrderId } });
+      if (!linkedOrder) return res.status(404).json({ error: "Radni nalog nije pronađen." });
+      if (!canAccessWorkerRecord(req, linkedOrder)) {
+        return res.status(403).json({ error: "Radni nalog ne pripada vašem profilu." });
+      }
+      if (linkedOrder.workerId !== finalWorkerId || linkedOrder.machineId !== machineId || linkedOrder.parcelId !== parcelId ||
+          (linkedOrder.workTypeId && linkedOrder.workTypeId !== workTypeId) ||
+          (linkedOrder.attachmentId || null) !== (attachmentId || null)) {
+        return res.status(400).json({ error: "Radnik, mašina, parcela i posao moraju odgovarati radnom nalogu." });
+      }
+      if (["ZAVRSEN", "OTKAZAN"].includes(linkedOrder.status)) {
+        return res.status(409).json({ error: "Radni nalog je već završen ili otkazan." });
+      }
+    }
+
     let activeAssignment = null;
     if (parsed.data.workOrderId) {
       activeAssignment = await prisma.machineAssignment.findFirst({
@@ -548,6 +297,16 @@ router.post("/", async (req, res) => {
         },
         orderBy: { assignedAt: "desc" },
       });
+    }
+
+    if (activeAssignment && (activeAssignment.workerId !== finalWorkerId || activeAssignment.machineId !== machineId ||
+        (linkedOrder && (activeAssignment.workOrderId !== linkedOrder.id || activeAssignment.parcelId !== parcelId)))) {
+      return res.status(403).json({ error: "Zaduženje mašine ne odgovara radniku i radnom nalogu." });
+    }
+
+    if ((!activeAssignment && machineObj.status === "ZADUZENA") ||
+        ["SERVIS", "U_KVARU"].includes(machineObj.status) || await hasOpenMaintenance(prisma, machineId)) {
+      return res.status(409).json({ error: "Mašina je u kvaru ili na servisu i nije dostupna za rad na njivi." });
     }
 
     if (!activeAssignment && !parsed.data.workOrderId) {
@@ -586,36 +345,55 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // 4. Kreiranje zapisa (labava veza - nikada ne blokira radnika na njivi)
-    const work = await prisma.fieldWork.create({
-      data: {
-        date: date ? new Date(date) : new Date(),
-        shift,
-        parcelId,
-        machineId,
-        attachmentId: attachmentId || null,
-        workerId: finalWorkerId,
-        workTypeId,
-        areaDoneHa,
-        startTime: startTime || null,
-        endTime: endTime || null,
-        workHours: finalWorkHours ?? null,
-        status,
-        notes: notes || null,
-        photoUrl: photoUrl || null,
-        createdById: req.user.id,
-      },
-      include: {
-        parcel: true,
-        machine: true,
-        attachment: true,
-        worker: true,
-        workType: true,
-      },
-    });
+    // Save the work, machine state and order completion atomically.
+    const work = await prisma.$transaction(async (tx) => {
+      const currentMachine = await tx.machine.findUnique({ where: { id: machineId } });
+      if (!currentMachine || ["status", "currentHours", "currentFuelLiters"]
+        .some((key) => currentMachine[key] !== machineObj[key])) {
+        throw Object.assign(new Error("Stanje mašine je promenjeno."), { status: 409 });
+      }
+      if (activeAssignment) {
+        const currentAssignment = await tx.machineAssignment.findUnique({ where: { id: activeAssignment.id } });
+        if (!currentAssignment || ["workerId", "machineId", "parcelId", "workOrderId", "status"]
+          .some((key) => currentAssignment[key] !== activeAssignment[key])) {
+          throw Object.assign(new Error("Zaduženje je promenjeno."), { status: 409 });
+        }
+      }
+      if (linkedOrder) {
+        const currentOrder = await tx.workOrder.findUnique({ where: { id: linkedOrder.id } });
+        if (!currentOrder || ["workerId", "machineId", "parcelId", "workTypeId", "attachmentId", "status"]
+          .some((key) => currentOrder[key] !== linkedOrder[key])) {
+          throw Object.assign(new Error("Radni nalog je promenjen. Osvežite podatke i pokušajte ponovo."), { status: 409 });
+        }
+      }
+      const work = await tx.fieldWork.create({
+        data: {
+          date: date ? new Date(date) : new Date(),
+          shift,
+          parcelId,
+          machineId,
+          attachmentId: attachmentId || null,
+          workerId: finalWorkerId,
+          workTypeId,
+          areaDoneHa,
+          startTime: startTime || null,
+          endTime: endTime || null,
+          workHours: finalWorkHours ?? null,
+          status,
+          notes: notes || null,
+          photoUrl: photoUrl || null,
+          createdById: req.user.id,
+        },
+        include: {
+          parcel: true,
+          machine: true,
+          attachment: true,
+          worker: true,
+          workType: true,
+        },
+      });
 
-    // 5. Pametno razduživanje ili povezivanje zaduženja mašine
-    try {
+      // 5. Pametno razduživanje ili povezivanje zaduženja mašine
       const workDate = date ? new Date(date) : new Date();
       const currentH = machineObj.currentHours || 0;
       const hoursToAdd = finalWorkHours || 0;
@@ -632,8 +410,8 @@ router.post("/", async (req, res) => {
 
       if (activeAssignment && status === "ZAVRSENO") {
         // Postojeće zaduženje: RAZDUŽI MAŠINU
-        await prisma.machineAssignment.update({
-          where: { id: activeAssignment.id },
+        await tx.machineAssignment.update({
+          where: { id: activeAssignment.id, workerId: finalWorkerId, machineId, status: "ZADUZENA" },
           data: {
             returnedAt: workDate,
             endHours: finalEndHours,
@@ -645,7 +423,7 @@ router.post("/", async (req, res) => {
         });
 
         // Ažuriraj stanje mašine (vraća se u SLOBODNA ili U_KVARU)
-        await prisma.machine.update({
+        await tx.machine.update({
           where: { id: machineId },
           data: {
             status: isOperational ? "SLOBODNA" : "U_KVARU",
@@ -655,7 +433,7 @@ router.post("/", async (req, res) => {
         });
 
         if (!isOperational) {
-          await prisma.maintenanceIssue.create({
+          await tx.maintenanceIssue.create({
             data: {
               serviceType: "KVAR_NJIVA",
               priority: "VISOKA",
@@ -672,7 +450,7 @@ router.post("/", async (req, res) => {
         }
       } else if (!activeAssignment && autoAssignMachine !== false) {
         // Ako nije bilo prethodnog jutarnjeg zaduženja, automatski evidentiraj zaduženje/razduženje
-        await prisma.machineAssignment.create({
+        await tx.machineAssignment.create({
           data: {
             machineId,
             workerId: finalWorkerId,
@@ -693,7 +471,7 @@ router.post("/", async (req, res) => {
         });
 
         if (status === "ZAVRSENO") {
-          await prisma.machine.update({
+          await tx.machine.update({
             where: { id: machineId },
             data: {
               status: isOperational ? "SLOBODNA" : "U_KVARU",
@@ -703,7 +481,7 @@ router.post("/", async (req, res) => {
           });
 
           if (!isOperational) {
-            await prisma.maintenanceIssue.create({
+            await tx.maintenanceIssue.create({
               data: {
                 serviceType: "KVAR_NJIVA",
                 priority: "VISOKA",
@@ -720,24 +498,18 @@ router.post("/", async (req, res) => {
           }
         }
       }
-    } catch (assignErr) {
-      console.warn("Greška pri razduživanju / zaduživanju mašine uz rad:", assignErr);
-    }
 
-    // 5. Automatsko zatvaranje radnog naloga ako je prosleđen workOrderId
-    if (parsed.data.workOrderId) {
-      try {
-        await prisma.workOrder.update({
-          where: { id: parsed.data.workOrderId },
-          data: {
-            status: "ZAVRSEN",
-            fieldWorkId: work.id,
+      if (linkedOrder && status === "ZAVRSENO") {
+        await tx.workOrder.update({
+          where: {
+            id: linkedOrder.id, workerId: finalWorkerId, machineId, parcelId,
+            status: linkedOrder.status,
           },
+          data: { status: "ZAVRSEN", fieldWorkId: work.id },
         });
-      } catch (woErr) {
-        console.warn("Greška pri zatvaranju radnog naloga:", woErr);
       }
-    }
+      return work;
+    }, { isolationLevel: "Serializable" });
 
     res.status(201).json({
       message: `Uspešno evidentiran rad na parceli "${parcel.name}".`,
@@ -749,14 +521,17 @@ router.post("/", async (req, res) => {
     });
   } catch (error) {
     console.error("Greška pri unosu rada na njivi:", error);
+    if (error.status === 409 || ["P2025", "P2034"].includes(error.code)) {
+      return res.status(409).json({ error: "Podaci su promenjeni. Osvežite podatke i pokušajte ponovo." });
+    }
     res.status(500).json({ error: "Greška na serveru pri čuvanju rada." });
   }
-});
+}));
 
 // ==========================================
 // 4. IZMENA RADA NA NJIVI (UZ PROVERU PRAVA I AUDIT LOG)
 // ==========================================
-router.put("/:id", async (req, res) => {
+router.put("/:id", machineMutation(async (req, res, prisma) => {
   try {
     const { id } = req.params;
     const existing = await prisma.fieldWork.findUnique({
@@ -778,9 +553,7 @@ router.put("/:id", async (req, res) => {
     // Specifična pravila za operatera (radnika):
     if (isOperator) {
       // 1. Sme da menja samo svoj unos
-      const isOwnWork =
-        existing.createdById === req.user.id ||
-        (existing.worker && existing.worker.userId === req.user.id);
+      const isOwnWork = existing.workerId === req.worker.id;
 
       if (!isOwnWork) {
         return res.status(403).json({ error: "Možete menjati isključivo sopstvene unose rada." });
@@ -979,12 +752,12 @@ router.put("/:id", async (req, res) => {
     console.error("Greška pri ažuriranju rada:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 5. STORNIRANJE / BRISANJE RADA (UZ AUDIT LOG)
 // ==========================================
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", machineMutation(async (req, res, prisma) => {
   try {
     const { id } = req.params;
     const existing = await prisma.fieldWork.findUnique({
@@ -1055,7 +828,7 @@ router.delete("/:id", async (req, res) => {
     console.error("Greška pri brisanju rada:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 6. IZVOZ U EXCEL (EXCEL EXPORT)
@@ -1080,8 +853,8 @@ router.get("/export/excel", async (req, res) => {
       }
     }
 
-    if (req.user.role === "OPERATER") {
-      const opFilter = await getOperatorFilter(req.user.id);
+    if (!isManagerUser(req.user)) {
+      const opFilter = getOperatorFilter(req.worker);
       where.AND = where.AND || [];
       where.AND.push(opFilter);
     }

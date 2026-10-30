@@ -6,6 +6,21 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Committed responses for safe replay of a user's POST request.
+// Receipts must be committed in the same transaction as the business writes.
+model MutationReceipt {
+  userId      String
+  key         String
+  route       String
+  fingerprint String
+  statusCode  Int
+  response    Json
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([userId, key])
+  @@map("mutation_receipt")
+}
+
 enum Role {
   DIREKTOR
   RUKOVODILAC
@@ -413,7 +428,10 @@ model MachineAssignment {
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
+  // Partial UNIQUE index on machineId WHERE status = 'ZADUZENA' is maintained
+  // by migration 20261030120000_one_active_machine_assignment (custom SQL).
   @@index([machineId, status])
+  @@index([machineId, assignedAt])
   @@map("machine_assignment")
 }
 
@@ -919,6 +937,19 @@ enum OnionLotStatus {
 enum OnionStorageType {
   HLADNJACA
   MAGACIN
+}
+
+// Keep native TEXT storage_type and existing column names to adopt legacy data.
+model OnionChamber {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  storageType   String   @default("HLADNJACA") @map("storage_type")
+  hasEquipment  Boolean  @default(true) @map("has_equipment")
+  maxBoxes      Int      @default(720) @map("max_boxes")
+  maxCapacityKg Float    @default(792000) @map("max_capacity_kg")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("onion_chambers")
 }
 
 enum OnionPackageType {

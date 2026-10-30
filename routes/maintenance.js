@@ -1,3 +1,5 @@
+import { machineMutation, syncMachineStatus } from "../lib/machineAvailability.js";
+import { requireWorkerIdentity, resolveWorkerForUser } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -8,44 +10,13 @@ const router = Router();
 
 // Svi endpointi radionice zahtevaju ulogovanog korisnika i ulogu MEHANICAR, RUKOVODILAC ili DIREKTOR
 router.use(requireAuth);
+router.use(requireWorkerIdentity);
 router.use(requireRole(["MEHANICAR", "RUKOVODILAC", "DIREKTOR"]));
-
-/**
- * Pomoćna funkcija za pronalaženje ili povezivanje radnika sa nalogom korisnika
- */
-async function getOrCreateWorkerForUser(user) {
-  let worker = await prisma.worker.findFirst({
-    where: { userId: user.id },
-  });
-
-  if (!worker) {
-    worker = await prisma.worker.findFirst({
-      where: { name: user.name },
-    });
-    if (worker) {
-      worker = await prisma.worker.update({
-        where: { id: worker.id },
-        data: { userId: user.id },
-      });
-    } else {
-      worker = await prisma.worker.create({
-        data: {
-          name: user.name,
-          userId: user.id,
-          type: "STALNI",
-          phone: user.phone || null,
-        },
-      });
-    }
-  }
-
-  return worker;
-}
 
 /**
  * Pomoćna funkcija za generisanje sledećeg broja radnog naloga
  */
-async function generateOrderNumber() {
+async function generateOrderNumber(prisma) {
   const currentYear = new Date().getFullYear();
   const prefix = `RN-${currentYear}-`;
 
@@ -94,11 +65,12 @@ async function syncBrokenMachines(userId) {
     });
 
     if (brokenWithoutIssue.length > 0) {
-      const defaultWorker = await prisma.worker.findFirst();
-      const defaultUser = await prisma.user.findFirst();
+      const reporter = await resolveWorkerForUser({ id: userId });
 
       for (const m of brokenWithoutIssue) {
         const lastAss = m.assignments[0];
+        const reporterId = lastAss?.workerId || reporter?.id;
+        if (!reporterId) continue;
         await prisma.maintenanceIssue.create({
           data: {
             serviceType: "KVAR_NJIVA",
@@ -106,11 +78,11 @@ async function syncBrokenMachines(userId) {
             status: "OTVOREN",
             machineId: m.id,
             parcelId: lastAss?.parcelId || null,
-            reportedById: lastAss?.workerId || defaultWorker?.id,
+            reportedById: reporterId,
             title: `Prijava kvara pri razduživanju: ${m.name}`,
             description: lastAss?.returnNotes || "Radnik prijavio neispravnost prilikom razduživanja mašine.",
             isMachineStopped: true,
-            createdById: lastAss?.createdById || userId || defaultUser?.id,
+            createdById: lastAss?.createdById || userId,
           },
         });
       }
@@ -249,7 +221,7 @@ const createIssueSchema = z.object({
   isMachineStopped: z.boolean().default(true),
 });
 
-router.post("/issues", async (req, res) => {
+router.post("/issues", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = createIssueSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -258,7 +230,8 @@ router.post("/issues", async (req, res) => {
       });
     }
 
-    const worker = await getOrCreateWorkerForUser(req.user);
+    const worker = req.worker || await resolveWorkerForUser(req.user);
+    if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
 
     const machine = await prisma.machine.findUnique({
       where: { id: parsed.data.machineId },
@@ -314,12 +287,12 @@ router.post("/issues", async (req, res) => {
     console.error("Greška pri prijavi kvara:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 4. RADNI NALOZI ZA REMONT (TAB 2)
 // ==========================================
-router.get("/remont-orders", async (req, res) => {
+router.get("/remont-orders", machineMutation(async (req, res, prisma) => {
   try {
     const { page, limit, machineId, workerId, search } = req.query;
 
@@ -452,7 +425,7 @@ router.get("/remont-orders", async (req, res) => {
     console.error("Greška pri dohvatanju naloga za remont:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 5. IZDAVANJE NALOGA ZA REMONT (RUKOVODILAC & DIREKTOR)
@@ -466,7 +439,7 @@ const createRemontOrderSchema = z.object({
   instructions: z.string().min(3, "Uputstvo/opis radova je obavezno"),
 });
 
-router.post("/remont-order", requireManager, async (req, res) => {
+router.post("/remont-order", requireManager, machineMutation(async (req, res, prisma) => {
   try {
     const parsed = createRemontOrderSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -480,7 +453,7 @@ router.post("/remont-order", requireManager, async (req, res) => {
     const machine = await prisma.machine.findUnique({ where: { id: machineId } });
     if (!machine) return res.status(404).json({ error: "Mašina nije pronađena." });
 
-    const orderNumber = await generateOrderNumber();
+    const orderNumber = await generateOrderNumber(prisma);
 
     // Kreiramo MaintenanceIssue i povezani WorkOrder u transakciji, a mašinu stavljamo u status SERVIS
     const issue = await prisma.maintenanceIssue.create({
@@ -538,7 +511,7 @@ router.post("/remont-order", requireManager, async (req, res) => {
     });
 
     // Pošalji Web Push notifikaciju mehaničaru/radniku na telefon
-    await sendWorkOrderPushNotification(workOrder.workerId, workOrder);
+    prisma.$afterCommit(() => sendWorkOrderPushNotification(workOrder.workerId, workOrder));
 
     res.status(201).json({
       message: `Radni nalog ${orderNumber} za remont je uspešno izdat.`,
@@ -548,7 +521,7 @@ router.post("/remont-order", requireManager, async (req, res) => {
     console.error("Greška pri kreiranju servisnog radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 6. PROMENA STATUSA KVARA (PREUZMI U RAD, ČEKA DELOVE)
@@ -557,7 +530,7 @@ const updateStatusSchema = z.object({
   status: z.enum(["OTVOREN", "U_RADU", "CEKA_DELOVE", "OTKAZAN"]),
 });
 
-router.put("/issues/:id/status", async (req, res) => {
+router.put("/issues/:id/status", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = updateStatusSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -567,7 +540,8 @@ router.put("/issues/:id/status", async (req, res) => {
     }
 
     const { status } = parsed.data;
-    const worker = await getOrCreateWorkerForUser(req.user);
+    const worker = req.worker || await resolveWorkerForUser(req.user);
+    if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
 
     const issue = await prisma.maintenanceIssue.findUnique({
       where: { id: req.params.id },
@@ -614,6 +588,8 @@ router.put("/issues/:id/status", async (req, res) => {
       });
     }
 
+    await syncMachineStatus(prisma, issue.machineId);
+
     await prisma.auditLog.create({
       data: {
         entityType: "MaintenanceIssue",
@@ -635,7 +611,7 @@ router.put("/issues/:id/status", async (req, res) => {
     console.error("Greška pri promeni statusa kvara:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 7. ZAVRŠETAK POPRAVKE & OSLOBAĐANJE MAŠINE
@@ -650,7 +626,7 @@ const resolveIssueSchema = z.object({
   downtimeHours: z.number().nonnegative().optional().nullable(),
 });
 
-router.post("/issues/:id/resolve", async (req, res) => {
+router.post("/issues/:id/resolve", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = resolveIssueSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -669,7 +645,8 @@ router.post("/issues/:id/resolve", async (req, res) => {
       downtimeHours = 0,
     } = parsed.data;
 
-    const worker = await getOrCreateWorkerForUser(req.user);
+    const worker = req.worker || await resolveWorkerForUser(req.user);
+    if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
 
     let issue = await prisma.maintenanceIssue.findUnique({
       where: { id: req.params.id },
@@ -694,8 +671,8 @@ router.post("/issues/:id/resolve", async (req, res) => {
 
     // Atomska transakcija:
     // 1. Ažuriraj MaintenanceIssue na POPRAVLJENO i upiši troškove i zamenjene delove
-    // 2. Automatski postavi status mašine na SLOBODNA!
-    const [resolvedIssue, updatedMachine] = await prisma.$transaction([
+    // 2. Recompute availability after synchronizing the linked order.
+    const [resolvedIssue] = await prisma.$transaction([
       prisma.maintenanceIssue.update({
         where: { id: issue.id },
         data: {
@@ -733,6 +710,8 @@ router.post("/issues/:id/resolve", async (req, res) => {
       });
     }
 
+    const updatedMachine = await syncMachineStatus(prisma, issue.machineId);
+
     await prisma.auditLog.create({
       data: {
         entityType: "MaintenanceIssue",
@@ -741,7 +720,7 @@ router.post("/issues/:id/resolve", async (req, res) => {
         userId: req.user.id,
         userName: req.user.name,
         userRole: req.user.role,
-        description: `Završena popravka za mašinu "${issue.machine.name}". Mašina je ponovo SLOBODNA za zaduživanje.`,
+        description: `Završena popravka za mašinu "${issue.machine.name}". Trenutni status: ${updatedMachine.status}.`,
         newValues: {
           issueId: issue.id,
           repairNotes,
@@ -749,13 +728,13 @@ router.post("/issues/:id/resolve", async (req, res) => {
           lubricantType,
           lubricantLiters,
           totalCost,
-          machineStatus: "SLOBODNA",
+          machineStatus: updatedMachine.status,
         },
       },
     });
 
     res.json({
-      message: `Mašina "${issue.machine.name}" je uspešno popravljena i vraćena u status SLOBODNA!`,
+      message: `Popravka mašine "${issue.machine.name}" je evidentirana. Trenutni status: ${updatedMachine.status}.`,
       issue: resolvedIssue,
       machine: updatedMachine,
     });
@@ -763,12 +742,12 @@ router.post("/issues/:id/resolve", async (req, res) => {
     console.error("Greška pri evidentiranju popravke:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 7.1 PONIŠTAVANJE ZAVRŠETKA (VRATI U RAD) — DO KRAJA ISTOG DANA
 // ==========================================
-router.post("/issues/:id/reopen", async (req, res) => {
+router.post("/issues/:id/reopen", machineMutation(async (req, res, prisma) => {
   try {
     let issue = await prisma.maintenanceIssue.findUnique({
       where: { id: req.params.id },
@@ -851,12 +830,12 @@ router.post("/issues/:id/reopen", async (req, res) => {
     console.error("Greška pri vraćanju naloga u rad:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 7.2 IZMENA IZVEŠTAJA ZAVRŠENE POPRAVKE — DO KRAJA ISTOG DANA
 // ==========================================
-router.put("/issues/:id/resolve", async (req, res) => {
+router.put("/issues/:id/resolve", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = resolveIssueSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -947,7 +926,7 @@ router.put("/issues/:id/resolve", async (req, res) => {
     console.error("Greška pri izmeni izveštaja popravke:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 8. SERVISNA KNJIŽICA / ISTORIJAT POPRAVKI (TAB 3)

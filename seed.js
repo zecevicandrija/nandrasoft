@@ -598,14 +598,24 @@ async function seed() {
   console.log("1️⃣ Kreiranje sistemskih korisnika...");
   for (const user of users) {
     try {
-      await auth.api.signUpEmail({
+      const result = await auth.api.signUpEmail({
         body: {
           name: user.name,
           email: user.email,
           password: user.password,
-          role: user.role,
           phone: user.phone,
         },
+      });
+      // Trusted local provisioning: roles cannot be supplied to signUpEmail.
+      await prisma.$transaction(async (tx) => {
+        await tx.session.deleteMany({ where: { userId: result.user.id } });
+        await tx.user.update({
+          where: { id: result.user.id },
+          data: { role: user.role },
+        });
+        await tx.worker.create({
+          data: { name: user.name, type: "STALNI", phone: user.phone, isActive: true, userId: result.user.id },
+        });
       });
       console.log(`  ✅ Korisnik: ${user.name} (${user.email}) [${user.role}]`);
     } catch (error) {

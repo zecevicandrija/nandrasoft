@@ -51,43 +51,6 @@ router.post("/subscribe", async (req, res) => {
     const { endpoint, keys } = parsed.data;
     const userAgent = req.headers["user-agent"] || null;
 
-    // Automatski osiguraj da je ovaj User povezan sa svojim Worker zapisom (ako već nije)
-    const existingWorker = await prisma.worker.findFirst({
-      where: { userId: req.user.id },
-      select: { id: true },
-    });
-
-    if (!existingWorker && req.user.name) {
-      const workerByName = await prisma.worker.findFirst({
-        where: {
-          name: { equals: req.user.name.trim(), mode: "insensitive" },
-          userId: null,
-        },
-        select: { id: true },
-      });
-
-      if (workerByName) {
-        await prisma.worker
-          .update({
-            where: { id: workerByName.id },
-            data: { userId: req.user.id },
-          })
-          .catch(() => {});
-      } else {
-        await prisma.worker
-          .create({
-            data: {
-              name: req.user.name.trim(),
-              type: "STALNI",
-              phone: req.user.phone || null,
-              isActive: true,
-              userId: req.user.id,
-            },
-          })
-          .catch(() => {});
-      }
-    }
-
     const subscription = await prisma.pushSubscription.upsert({
       where: { endpoint },
       update: {

@@ -1,3 +1,5 @@
+import { inventoryMutation } from "../lib/inventoryTransaction.js";
+import { requireWorkerIdentity, resolveWorkerForUser } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -7,6 +9,7 @@ const router = Router();
 
 // Svi endpointi zahtevaju prijavljenog korisnika
 router.use(requireAuth);
+router.use(requireWorkerIdentity);
 
 const tollEntrySchema = z.object({
   date: z.string().optional(),
@@ -52,48 +55,6 @@ function isRecordFromToday(entry) {
     c.getDate() === now.getDate();
 
   return sameEntryDay && sameCreatedDay;
-}
-
-// Pronalazi (ili po potrebi kreira) profil radnika za ulogovanog korisnika
-async function resolveWorkerForUser(user, createIfMissing = false) {
-  if (!user?.id) return null;
-
-  let worker = await prisma.worker.findFirst({
-    where: { userId: user.id },
-  });
-
-  if (!worker && user.name) {
-    worker = await prisma.worker.findFirst({
-      where: {
-        name: { equals: user.name.trim(), mode: "insensitive" },
-      },
-    });
-
-    if (worker && !worker.userId) {
-      worker = await prisma.worker
-        .update({
-          where: { id: worker.id },
-          data: { userId: user.id },
-        })
-        .catch(() => worker);
-    }
-  }
-
-  if (!worker && createIfMissing && user.name) {
-    worker = await prisma.worker
-      .create({
-        data: {
-          name: user.name.trim(),
-          type: "STALNI",
-          phone: user.phone || null,
-          isActive: true,
-          userId: user.id,
-        },
-      })
-      .catch(() => null);
-  }
-
-  return worker;
 }
 
 const tollTopUpSchema = z.object({
@@ -144,7 +105,7 @@ router.get("/", async (req, res) => {
     // Izolacija podataka: Radnik vidi isključivo sopstvene unose putarina (ne vidi tuđe)
     let linkedWorker = null;
     if (!isManager) {
-      linkedWorker = await resolveWorkerForUser(req.user, true);
+      linkedWorker = await resolveWorkerForUser(req.user);
       if (linkedWorker) {
         where.AND = [
           ...(where.AND || []),
@@ -156,7 +117,7 @@ router.get("/", async (req, res) => {
         where.createdById = req.user.id;
       }
     } else {
-      linkedWorker = await resolveWorkerForUser(req.user, false);
+      linkedWorker = await resolveWorkerForUser(req.user);
     }
 
     const dateFilter = {};
@@ -350,7 +311,7 @@ router.get("/", async (req, res) => {
 // ==========================================
 // 2. UNOS NOVE PUTARINE (VOZAČI, RUKOVODILAC, DIREKTOR)
 // ==========================================
-router.post("/", async (req, res) => {
+router.post("/", inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const parsed = tollEntrySchema.safeParse({
       ...req.body,
@@ -374,13 +335,13 @@ router.post("/", async (req, res) => {
     // Za radnika (ne-menadžera) uvek vezujemo unos za njegov sopstveni profil radnika
     let finalWorkerId = data.workerId;
     if (!isManager) {
-      const linkedWorker = await resolveWorkerForUser(req.user, true);
+      const linkedWorker = await resolveWorkerForUser(req.user);
       if (!linkedWorker) {
         return res.status(400).json({ error: "Nije moguće povezati profil radnika za vaš nalog." });
       }
       finalWorkerId = linkedWorker.id;
     } else if (!finalWorkerId) {
-      const linkedWorker = await resolveWorkerForUser(req.user, true);
+      const linkedWorker = await resolveWorkerForUser(req.user);
       if (linkedWorker) {
         finalWorkerId = linkedWorker.id;
       }
@@ -424,11 +385,10 @@ router.post("/", async (req, res) => {
 
       // Ako je plaćeno ENP tagom, umanji stanje kredita na ENP tagu vozila
       if (data.paymentMethod === "ENP_TAG") {
-        const currentBal = Number(machine.enpTagBalance || 0);
         await tx.machine.update({
           where: { id: machine.id },
           data: {
-            enpTagBalance: currentBal - data.amount,
+            enpTagBalance: { decrement: data.amount },
             ...(resolvedTagNumber && !machine.enpTagNumber ? { enpTagNumber: resolvedTagNumber } : {}),
           },
         });
@@ -466,12 +426,12 @@ router.post("/", async (req, res) => {
     console.error("Greška pri unosu putarine:", error);
     res.status(500).json({ error: "Greška na serveru pri čuvanju putarine." });
   }
-});
+}));
 
 // ==========================================
 // 3. IZMENA PUTARINE (MENADŽERI UVEK, RADNIK SAMO SVOJ UNOS DO KRAJA DANA)
 // ==========================================
-router.put("/:id", async (req, res) => {
+router.put("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const existing = await prisma.tollEntry.findUnique({
       where: { id: req.params.id },
@@ -485,7 +445,7 @@ router.put("/:id", async (req, res) => {
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
 
     if (!isManager) {
-      const linkedWorker = await resolveWorkerForUser(req.user, false);
+      const linkedWorker = await resolveWorkerForUser(req.user);
       const isOwner =
         existing.createdById === req.user.id ||
         (linkedWorker && existing.workerId === linkedWorker.id);
@@ -528,7 +488,7 @@ router.put("/:id", async (req, res) => {
           await tx.machine.update({
             where: { id: oldMachine.id },
             data: {
-              enpTagBalance: Number(oldMachine.enpTagBalance || 0) + Number(existing.amount || 0),
+              enpTagBalance: { increment: Number(existing.amount || 0) },
             },
           });
         }
@@ -541,7 +501,7 @@ router.put("/:id", async (req, res) => {
           await tx.machine.update({
             where: { id: targetMachine.id },
             data: {
-              enpTagBalance: Number(targetMachine.enpTagBalance || 0) - Number(newAmount || 0),
+              enpTagBalance: { decrement: Number(newAmount || 0) },
               ...(data.tagNumber ? { enpTagNumber: data.tagNumber.trim() } : {}),
             },
           });
@@ -596,12 +556,12 @@ router.put("/:id", async (req, res) => {
     console.error("Greška pri izmeni putarine:", error);
     res.status(500).json({ error: "Greška na serveru pri izmeni putarine." });
   }
-});
+}));
 
 // ==========================================
 // 4. BRISANJE PUTARINE (MENADŽERI UVEK, RADNIK SAMO SVOJ UNOS DO KRAJA DANA)
 // ==========================================
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const existing = await prisma.tollEntry.findUnique({
       where: { id: req.params.id },
@@ -615,7 +575,7 @@ router.delete("/:id", async (req, res) => {
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
 
     if (!isManager) {
-      const linkedWorker = await resolveWorkerForUser(req.user, false);
+      const linkedWorker = await resolveWorkerForUser(req.user);
       const isOwner =
         existing.createdById === req.user.id ||
         (linkedWorker && existing.workerId === linkedWorker.id);
@@ -641,7 +601,7 @@ router.delete("/:id", async (req, res) => {
           await tx.machine.update({
             where: { id: machine.id },
             data: {
-              enpTagBalance: Number(machine.enpTagBalance || 0) + Number(existing.amount || 0),
+              enpTagBalance: { increment: Number(existing.amount || 0) },
             },
           });
         }
@@ -668,12 +628,12 @@ router.delete("/:id", async (req, res) => {
     console.error("Greška pri brisanju putarine:", error);
     res.status(500).json({ error: "Greška na serveru pri brisanju putarine." });
   }
-});
+}));
 
 // ==========================================
 // 5. DOPUNA ENP TAGA (DIREKTOR I RUKOVODILAC)
 // ==========================================
-router.post("/top-up", requireManager, async (req, res) => {
+router.post("/top-up", requireManager, inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const parsed = tollTopUpSchema.safeParse({
       ...req.body,
@@ -710,11 +670,10 @@ router.post("/top-up", requireManager, async (req, res) => {
         },
       });
 
-      const currentBal = Number(machine.enpTagBalance || 0);
-      await tx.machine.update({
+      const updatedMachine = await tx.machine.update({
         where: { id: machine.id },
         data: {
-          enpTagBalance: currentBal + data.amount,
+          enpTagBalance: { increment: data.amount },
           ...(resolvedTag ? { enpTagNumber: resolvedTag } : {}),
         },
       });
@@ -732,7 +691,7 @@ router.post("/top-up", requireManager, async (req, res) => {
             machine: machine.name,
             tagNumber: resolvedTag,
             amount: data.amount,
-            newBalance: currentBal + data.amount,
+            newBalance: updatedMachine.enpTagBalance,
           },
         },
       });
@@ -745,12 +704,12 @@ router.post("/top-up", requireManager, async (req, res) => {
     console.error("Greška pri dopuni ENP taga:", error);
     res.status(500).json({ error: "Greška na serveru pri dopuni ENP taga." });
   }
-});
+}));
 
 // ==========================================
 // 6. BRISANJE DOPUNE ENP TAGA
 // ==========================================
-router.delete("/top-up/:id", requireManager, async (req, res) => {
+router.delete("/top-up/:id", requireManager, inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const existing = await prisma.tollTopUp.findUnique({
       where: { id: req.params.id },
@@ -767,7 +726,7 @@ router.delete("/top-up/:id", requireManager, async (req, res) => {
         await tx.machine.update({
           where: { id: machine.id },
           data: {
-            enpTagBalance: Number(machine.enpTagBalance || 0) - Number(existing.amount || 0),
+            enpTagBalance: { decrement: Number(existing.amount || 0) },
           },
         });
       }
@@ -780,12 +739,12 @@ router.delete("/top-up/:id", requireManager, async (req, res) => {
     console.error("Greška pri brisanju dopune ENP taga:", error);
     res.status(500).json({ error: "Greška na serveru pri brisanju dopune." });
   }
-});
+}));
 
 // ==========================================
 // 7. PODEŠAVANJE ENP TAGA I STANJA NA VOZILU
 // ==========================================
-router.put("/vehicle-tag/:machineId", requireManager, async (req, res) => {
+router.put("/vehicle-tag/:machineId", requireManager, inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const parsed = vehicleTagSchema.safeParse({
       enpTagNumber: req.body.enpTagNumber,
@@ -818,7 +777,7 @@ router.put("/vehicle-tag/:machineId", requireManager, async (req, res) => {
     console.error("Greška pri ažuriranju ENP taga vozila:", error);
     res.status(500).json({ error: "Greška na serveru pri ažuriranju ENP taga." });
   }
-});
+}));
 
 export default router;
 

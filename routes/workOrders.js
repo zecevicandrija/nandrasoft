@@ -1,13 +1,17 @@
+import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
+import { requireWorkerIdentity, resolveWorkerForUser, canAccessWorkerRecord } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireManager } from "../middlewares/auth.js";
 import { sendWorkOrderPushNotification } from "../lib/pushNotification.js";
+import { isActiveAssignmentConflict } from "../lib/assignmentConflict.js";
 
 const router = Router();
 
 // Svi endpointi zahtevaju prijavljenog korisnika
 router.use(requireAuth);
+router.use(requireWorkerIdentity);
 
 const orderTypeEnum = z.enum(["RAD_NJIVA", "REMONT_SERVIS", "OSTALO"]);
 const orderStatusEnum = z.enum(["PLANIRAN", "DODELJEN", "U_TOKU", "ZAVRSEN", "OTKAZAN"]);
@@ -30,7 +34,7 @@ const createWorkOrderSchema = z.object({
 /**
  * Pomoćna funkcija za generisanje sledećeg broja radnog naloga (npr. RN-2026-0001)
  */
-async function generateOrderNumber() {
+async function generateOrderNumber(prisma) {
   const currentYear = new Date().getFullYear();
   const prefix = `RN-${currentYear}-`;
   
@@ -60,36 +64,9 @@ async function generateOrderNumber() {
 // Koristi se za mobilni popup / banner radniku kada otvori aplikaciju
 router.get("/my-today", async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    // Pronađi radnika povezanog sa ovim nalogom (ili automatski poveži po imenu ako još nije)
-    let linkedWorker = await prisma.worker.findFirst({
-      where: { userId },
-      select: { id: true, name: true },
-    });
-
-    if (!linkedWorker && req.user.name) {
-      const workerByName = await prisma.worker.findFirst({
-        where: {
-          name: { equals: req.user.name.trim(), mode: "insensitive" },
-          userId: null,
-        },
-        select: { id: true, name: true },
-      });
-      if (workerByName) {
-        linkedWorker = workerByName;
-        await prisma.worker
-          .update({
-            where: { id: workerByName.id },
-            data: { userId },
-          })
-          .catch(() => {});
-      }
-    }
-
-    if (!linkedWorker) {
-      return res.json({ todayOrder: null });
-    }
+    // Identity comes exclusively from the unique userId foreign key.
+    const linkedWorker = req.worker || await resolveWorkerForUser(req.user);
+    if (!linkedWorker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
 
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -164,11 +141,8 @@ router.get("/", async (req, res) => {
     }
 
     // Ako je korisnik OPERATER ili MEHANICAR, vidi samo svoje radne naloge!
-    if (["OPERATER", "MEHANICAR"].includes(req.user.role)) {
-      const linkedWorker = await prisma.worker.findFirst({
-        where: { userId: req.user.id },
-        select: { id: true },
-      });
+    if (!["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
+      const linkedWorker = await resolveWorkerForUser(req.user);
       if (linkedWorker) {
         where.workerId = linkedWorker.id;
       } else {
@@ -299,6 +273,10 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Radni nalog nije pronađen." });
     }
 
+    if (!canAccessWorkerRecord(req, order)) {
+      return res.status(403).json({ error: "Nemate dozvolu za pristup ovom radnom nalogu." });
+    }
+
     res.json({ workOrder: order });
   } catch (error) {
     console.error("Greška pri dohvatanju radnog naloga:", error);
@@ -310,12 +288,12 @@ router.get("/:id", async (req, res) => {
 // 2c. PRIHVATANJE NALOGA & ZADUŽENJE MAŠINE (OPERATER)
 // ==========================================
 const acceptOrderSchema = z.object({
-  startFuelLiters: z.number().nonnegative("Početno gorivo ne može biti negativno"),
+  startFuelLiters: z.number().nonnegative("Početno gorivo ne može biti negativno").optional(),
   startHours: z.number().nonnegative("Radni sati ne mogu biti negativni").optional().nullable(),
   notes: z.string().max(500).optional().nullable(),
 });
 
-router.post("/:id/accept", async (req, res) => {
+router.post("/:id/accept", machineMutation(async (req, res, prisma) => {
   try {
     const parsed = acceptOrderSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -333,16 +311,46 @@ router.post("/:id/accept", async (req, res) => {
       return res.status(404).json({ error: "Radni nalog nije pronađen." });
     }
 
-    if (order.status === "ZAVRSEN" || order.status === "OTKAZAN") {
+    if (!canAccessWorkerRecord(req, order)) {
+      return res.status(403).json({ error: "Nemate dozvolu za pristup ovom radnom nalogu." });
+    }
+
+    if (!["PLANIRAN", "DODELJEN"].includes(order.status)) {
       return res.status(400).json({ error: `Nalog je već u statusu ${order.status}.` });
     }
 
     const { startFuelLiters, startHours, notes } = parsed.data;
 
+    // Workshop acceptance never creates an operator checkout or changes fuel/hours.
+    if (order.orderType === "REMONT_SERVIS") {
+      if (!order.machineId || !order.maintenanceId) {
+        return res.status(409).json({ error: "Servisni nalog nema povezanu mašinu i zapis servisa. Otvorite nalog u radionici." });
+      }
+      const issue = await prisma.maintenanceIssue.findUnique({ where: { id: order.maintenanceId } });
+      if (!issue || !["OTVOREN", "U_RADU", "CEKA_DELOVE"].includes(issue.status)) {
+        return res.status(409).json({ error: "Povezani servis nije aktivan." });
+      }
+      await prisma.maintenanceIssue.update({
+        where: { id: issue.id }, data: { status: "U_RADU", mechanicId: issue.mechanicId || order.workerId },
+      });
+      const updated = await prisma.workOrder.update({
+        where: { id: order.id, workerId: order.workerId, status: order.status },
+        data: { status: "U_TOKU" }, include: { machine: true, worker: true, maintenance: true },
+      });
+      await syncMachineStatus(prisma, order.machineId);
+      await prisma.auditLog.create({ data: {
+        entityType: "WorkOrder", entityId: order.id, action: "IZMENA", userId: req.user.id,
+        userName: req.user.name, userRole: req.user.role,
+        description: `Preuzet servisni nalog ${order.orderNumber}.`,
+        newValues: { status: "U_TOKU", maintenanceId: issue.id },
+      } });
+      return res.json({ message: "Servisni nalog je preuzet u rad. Mašina ostaje nedostupna za zaduživanje.", workOrder: updated });
+    }
+
     // Ako nalog nema pridruženu mašinu (npr. ručni magacinski rad)
     if (!order.machineId) {
       const updated = await prisma.workOrder.update({
-        where: { id: order.id },
+        where: { id: order.id, workerId: order.workerId, status: order.status },
         data: { status: "U_TOKU" },
         include: { worker: true, parcel: true, workType: true },
       });
@@ -350,6 +358,17 @@ router.post("/:id/accept", async (req, res) => {
         message: `Radni nalog ${order.orderNumber} je prihvaćen i stavljen u rad.`,
         workOrder: updated,
       });
+    }
+
+    if (startFuelLiters === undefined) {
+      return res.status(400).json({ error: "Početno gorivo je obavezno za zaduživanje mašine." });
+    }
+
+    const activeAssignment = await prisma.machineAssignment.findFirst({
+      where: { machineId: order.machineId, status: "ZADUZENA" },
+    });
+    if (activeAssignment || order.machine?.isActive === false || order.machine?.status !== "SLOBODNA" || await hasOpenMaintenance(prisma, order.machineId)) {
+      return res.status(409).json({ error: "Mašina nije dostupna za zaduživanje (zadužena, u kvaru ili na servisu)." });
     }
 
     // Provera kapaciteta rezervoara mašine
@@ -390,7 +409,7 @@ router.post("/:id/accept", async (req, res) => {
         },
       }),
       prisma.machine.update({
-        where: { id: order.machineId },
+        where: { id: order.machineId, status: order.machine.status },
         data: {
           status: "ZADUZENA",
           currentFuelLiters: startFuelLiters,
@@ -398,7 +417,7 @@ router.post("/:id/accept", async (req, res) => {
         },
       }),
       prisma.workOrder.update({
-        where: { id: order.id },
+        where: { id: order.id, workerId: order.workerId, status: order.status },
         data: { status: "U_TOKU" },
         include: {
           worker: true,
@@ -440,15 +459,18 @@ router.post("/:id/accept", async (req, res) => {
       assignment,
     });
   } catch (error) {
+    if (isActiveAssignmentConflict(error)) {
+      return res.status(409).json({ error: "Mašina već ima aktivno zaduženje." });
+    }
     console.error("Greška pri prihvatanju radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 3. IZDAVANJE NOVOG RADNOG NALOGA (RUKOVODILAC / DIREKTOR)
 // ==========================================
-router.post("/", requireManager, async (req, res) => {
+router.post("/", requireManager, machineMutation(async (req, res, prisma) => {
   try {
     const parsed = createWorkOrderSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -457,7 +479,7 @@ router.post("/", requireManager, async (req, res) => {
       });
     }
 
-    const orderNumber = await generateOrderNumber();
+    const orderNumber = await generateOrderNumber(prisma);
 
     let maintenanceId = null;
     if (parsed.data.orderType === "REMONT_SERVIS" && parsed.data.machineId) {
@@ -534,19 +556,19 @@ router.post("/", requireManager, async (req, res) => {
     });
 
     // Pošalji Web Push notifikaciju radniku na telefon/uređaj
-    await sendWorkOrderPushNotification(workOrder.workerId, workOrder);
+    prisma.$afterCommit(() => sendWorkOrderPushNotification(workOrder.workerId, workOrder));
 
     res.status(201).json({ workOrder });
   } catch (error) {
     console.error("Greška pri kreiranju radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 4. PROMENA STATUSA / IZMENA NALOGA
 // ==========================================
-router.patch("/:id/status", async (req, res) => {
+router.patch("/:id/status", machineMutation(async (req, res, prisma) => {
   try {
     const { status } = req.body;
     if (!status || !["PLANIRAN", "DODELJEN", "U_TOKU", "ZAVRSEN", "OTKAZAN"].includes(status)) {
@@ -561,12 +583,22 @@ router.patch("/:id/status", async (req, res) => {
       return res.status(404).json({ error: "Radni nalog nije pronađen." });
     }
 
+    if (!canAccessWorkerRecord(req, order)) {
+      return res.status(403).json({ error: "Nemate dozvolu za pristup ovom radnom nalogu." });
+    }
+
     // Samo rukovodilac/direktor može otkazati ili ponovo aktivirati nalog
     if (
       (status === "OTKAZAN" || order.status === "OTKAZAN") &&
       !["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)
     ) {
       return res.status(403).json({ error: "Samo rukovodilac ili direktor može otkazati ili ponovo aktivirati nalog." });
+    }
+
+    let machineStateChanged = Boolean(order.maintenanceId);
+    if (order.orderType === "REMONT_SERVIS" &&
+        (status === "ZAVRSEN" || (order.status === "ZAVRSEN" && status !== "OTKAZAN"))) {
+      return res.status(409).json({ error: "Završetak i ponovno otvaranje popravke obavite u radionici." });
     }
 
     // Ako se nalog otkazuje:
@@ -576,6 +608,7 @@ router.patch("/:id/status", async (req, res) => {
         where: { workOrderId: order.id, status: "ZADUZENA" },
       });
       if (activeAssignment) {
+        machineStateChanged = true;
         await prisma.machineAssignment.update({
           where: { id: activeAssignment.id },
           data: {
@@ -623,8 +656,12 @@ router.patch("/:id/status", async (req, res) => {
       }
     }
 
+    if (order.orderType === "REMONT_SERVIS" && order.maintenanceId && status === "U_TOKU") {
+      await prisma.maintenanceIssue.update({ where: { id: order.maintenanceId }, data: { status: "U_RADU" } });
+    }
+
     const updated = await prisma.workOrder.update({
-      where: { id: req.params.id },
+      where: { id: req.params.id, workerId: order.workerId, status: order.status },
       data: { status },
       include: {
         worker: true,
@@ -656,15 +693,16 @@ router.patch("/:id/status", async (req, res) => {
     });
 
     if (order.status === "OTKAZAN" && status !== "OTKAZAN") {
-      await sendWorkOrderPushNotification(updated.workerId, updated);
+      prisma.$afterCommit(() => sendWorkOrderPushNotification(updated.workerId, updated));
     }
 
+    if (machineStateChanged) await syncMachineStatus(prisma, order.machineId);
     res.json({ workOrder: updated });
   } catch (error) {
     console.error("Greška pri izmeni statusa naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 4.1 KOMPLETNA IZMENA RADNOG NALOGA (RUKOVODILAC / DIREKTOR)
@@ -673,7 +711,7 @@ const updateWorkOrderSchema = createWorkOrderSchema.partial().extend({
   status: orderStatusEnum.optional(),
 });
 
-router.put("/:id", requireManager, async (req, res) => {
+router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
   try {
     const { id } = req.params;
     const parsed = updateWorkOrderSchema.safeParse(req.body);
@@ -699,6 +737,13 @@ router.put("/:id", requireManager, async (req, res) => {
     }
 
     // Za direktore i rukovodioce uvek su dozvoljene izmene svih radnih naloga (uključujući i završene naloge od ranije)
+
+    if ((existing.orderType === "REMONT_SERVIS" || parsed.data.orderType === "REMONT_SERVIS") &&
+        ((parsed.data.status !== undefined && parsed.data.status !== existing.status) ||
+         (parsed.data.machineId !== undefined && parsed.data.machineId !== existing.machineId) ||
+         (parsed.data.orderType !== undefined && parsed.data.orderType !== existing.orderType))) {
+      return res.status(409).json({ error: "Status servisa menjajte u radionici. Za drugu mašinu ili vrstu rada kreirajte novi nalog." });
+    }
 
     const dataToUpdate = {};
     if (parsed.data.orderDate !== undefined) dataToUpdate.orderDate = new Date(parsed.data.orderDate);
@@ -750,7 +795,7 @@ router.put("/:id", requireManager, async (req, res) => {
       updated.workerId !== existing.workerId ||
       (existing.status === "OTKAZAN" && updated.status !== "OTKAZAN")
     ) {
-      await sendWorkOrderPushNotification(updated.workerId, updated);
+      prisma.$afterCommit(() => sendWorkOrderPushNotification(updated.workerId, updated));
     }
 
     res.json({ workOrder: updated });
@@ -758,12 +803,12 @@ router.put("/:id", requireManager, async (req, res) => {
     console.error("Greška pri izmeni radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 5. BRISANJE RADNOG NALOGA (DIREKTOR / RUKOVODILAC)
 // ==========================================
-router.delete("/:id", requireManager, async (req, res) => {
+router.delete("/:id", requireManager, machineMutation(async (req, res, prisma) => {
   try {
     const existing = await prisma.workOrder.findUnique({
       where: { id: req.params.id },
@@ -807,6 +852,6 @@ router.delete("/:id", requireManager, async (req, res) => {
     console.error("Greška pri brisanju radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru pri brisanju radnog naloga." });
   }
-});
+}));
 
 export default router;

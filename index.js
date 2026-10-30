@@ -5,6 +5,8 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { toNodeHandler } from "better-auth/node";
 import { auth } from "./routes/auth.js";
+import { prisma } from "./lib/prisma.js";
+import { installGracefulShutdown } from "./lib/shutdown.js";
 import usersRouter from "./routes/users.js";
 import masterDataRouter from "./routes/masterData.js";
 import assignmentsRouter from "./routes/assignments.js";
@@ -105,9 +107,11 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`✅ NANDRA Backend pokrenut na http://localhost:${PORT}`);
 });
+
+installGracefulShutdown(server, prisma);
 
 export default app;
 
