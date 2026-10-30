@@ -24,6 +24,7 @@ export const BOX_PALLET_SPEC = {
   totalMaxBoxes: 4320,
   totalMaxCapacityKg: 4800000, // 4.800 t
   defaultResponsiblePerson: "Bojan Ćorović",
+  defaultPackerCount: 4,
   defaultPackerWomenCount: 4,
   bagsPerPallet10kg: 100, // Na paletu staje 100 džakova po 10kg (1.000 kg)
   bagsPerPallet5kg: 200,  // Na paletu staje 200 džakova po 5kg (1.000 kg)
@@ -105,12 +106,320 @@ async function generateDispatchNumber(dateObj = new Date()) {
   }
 }
 
+let chambersTableInitialized = false;
+
+export async function ensureChambersTable() {
+  if (chambersTableInitialized) return;
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS onion_chambers (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        storage_type TEXT NOT NULL DEFAULT 'HLADNJACA',
+        has_equipment BOOLEAN NOT NULL DEFAULT true,
+        max_boxes INTEGER NOT NULL DEFAULT 720,
+        max_capacity_kg DOUBLE PRECISION NOT NULL DEFAULT 792000,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    const countResult = await prisma.$queryRawUnsafe(`SELECT COUNT(*)::int as count FROM onion_chambers;`);
+    const count = countResult[0]?.count || 0;
+
+    if (count === 0) {
+      for (const std of STANDARD_CHAMBERS) {
+        const id = `ch_${std.name.toLowerCase().replace(/\s+/g, "_")}`;
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO onion_chambers (id, name, storage_type, has_equipment, max_boxes, max_capacity_kg)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (name) DO NOTHING;`,
+          id,
+          std.name,
+          "HLADNJACA",
+          std.hasEquipment,
+          std.maxBoxes,
+          std.maxBoxes * BOX_PALLET_SPEC.capacityKgPerBox
+        );
+      }
+    }
+    chambersTableInitialized = true;
+  } catch (err) {
+    console.error("Greška pri inicijalizaciji tabele onion_chambers:", err);
+  }
+}
+
+export async function getAllChambers() {
+  await ensureChambersTable();
+  try {
+    const rows = await prisma.$queryRawUnsafe(`
+      SELECT 
+        id, 
+        name, 
+        storage_type as "storageType", 
+        has_equipment as "hasEquipment", 
+        max_boxes as "maxBoxes", 
+        max_capacity_kg as "maxCapacityKg",
+        created_at as "createdAt"
+      FROM onion_chambers
+      ORDER BY name ASC;
+    `);
+    if (rows && rows.length > 0) return rows;
+  } catch (e) {
+    console.error("Greška pri čitanju komora:", e);
+  }
+  return STANDARD_CHAMBERS.map((c) => ({
+    id: c.name,
+    name: c.name,
+    storageType: "HLADNJACA",
+    hasEquipment: c.hasEquipment,
+    maxBoxes: c.maxBoxes,
+    maxCapacityKg: c.maxCapacityKg,
+  }));
+}
+
+// =========================================================================
+// UPRAVLJANJE KOMORAMA HLADNJAČE (DINAMIČKI CRUD: KREIRANJE, IZMENA, BRISANJE)
+// =========================================================================
+router.get("/chambers", async (req, res) => {
+  try {
+    const chambers = await getAllChambers();
+    res.json({ chambers });
+  } catch (error) {
+    console.error("Greška pri dohvatanju komora:", error);
+    res.status(500).json({ error: "Greška na serveru pri dohvatanju komora." });
+  }
+});
+
+const chamberCreateSchema = z.object({
+  name: z.string().trim().min(1, "Naziv komore je obavezan."),
+  storageType: z.enum(["HLADNJACA", "MAGACIN"]).default("HLADNJACA"),
+  hasEquipment: z.boolean().default(true),
+  maxBoxes: z.number().int().positive("Maksimalan broj boksova mora biti veći od 0.").default(720),
+});
+
+router.post("/chambers", async (req, res) => {
+  try {
+    const parsed = chamberCreateSchema.safeParse({
+      ...req.body,
+      maxBoxes: Number(req.body.maxBoxes || 720),
+    });
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0].message });
+    }
+    const { name, storageType, hasEquipment, maxBoxes } = parsed.data;
+    await ensureChambersTable();
+
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT id FROM onion_chambers WHERE LOWER(name) = LOWER($1);`,
+      name
+    );
+    if (existing && existing.length > 0) {
+      return res.status(400).json({ error: `Komora sa nazivom "${name}" već postoji.` });
+    }
+
+    const id = `ch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const maxCapacityKg = maxBoxes * BOX_PALLET_SPEC.capacityKgPerBox;
+
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO onion_chambers (id, name, storage_type, has_equipment, max_boxes, max_capacity_kg)
+       VALUES ($1, $2, $3, $4, $5, $6);`,
+      id,
+      name,
+      storageType,
+      hasEquipment,
+      maxBoxes,
+      maxCapacityKg
+    );
+
+    const created = { id, name, storageType, hasEquipment, maxBoxes, maxCapacityKg };
+    res.status(201).json({
+      chamber: created,
+      message: `Komora "${name}" uspešno kreirana (kapacitet: ${maxBoxes} boks paleta).`,
+    });
+  } catch (error) {
+    console.error("Greška pri kreiranju komore:", error);
+    res.status(500).json({ error: "Greška na serveru pri kreiranju komore." });
+  }
+});
+
+router.put("/chambers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await ensureChambersTable();
+
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT * FROM onion_chambers WHERE id = $1 OR name = $1;`,
+      id
+    );
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: "Komora nije pronađena." });
+    }
+    const current = existing[0];
+    const newName = req.body.name ? String(req.body.name).trim() : current.name;
+    const newStorageType = req.body.storageType || current.storage_type;
+    const newHasEquipment =
+      req.body.hasEquipment !== undefined ? Boolean(req.body.hasEquipment) : current.has_equipment;
+    const newMaxBoxes = req.body.maxBoxes ? Number(req.body.maxBoxes) : current.max_boxes;
+    const newMaxCapacityKg = newMaxBoxes * BOX_PALLET_SPEC.capacityKgPerBox;
+
+    if (newName !== current.name) {
+      const duplicate = await prisma.$queryRawUnsafe(
+        `SELECT id FROM onion_chambers WHERE LOWER(name) = LOWER($1) AND id != $2;`,
+        newName,
+        current.id
+      );
+      if (duplicate && duplicate.length > 0) {
+        return res.status(400).json({ error: `Komora sa nazivom "${newName}" već postoji.` });
+      }
+      await prisma.onionStorageEntry.updateMany({
+        where: { locationOrChamber: current.name },
+        data: { locationOrChamber: newName, hasEquipment: newHasEquipment },
+      });
+    } else {
+      await prisma.onionStorageEntry.updateMany({
+        where: { locationOrChamber: current.name },
+        data: { hasEquipment: newHasEquipment },
+      });
+    }
+
+    await prisma.$executeRawUnsafe(
+      `UPDATE onion_chambers
+       SET name = $1, storage_type = $2, has_equipment = $3, max_boxes = $4, max_capacity_kg = $5
+       WHERE id = $6;`,
+      newName,
+      newStorageType,
+      newHasEquipment,
+      newMaxBoxes,
+      newMaxCapacityKg,
+      current.id
+    );
+
+    res.json({
+      message: `Komora "${newName}" uspešno ažurirana (kapacitet: ${newMaxBoxes} boksova).`,
+    });
+  } catch (error) {
+    console.error("Greška pri izmeni komore:", error);
+    res.status(500).json({ error: "Greška na serveru pri izmeni komore." });
+  }
+});
+
+router.delete("/chambers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await ensureChambersTable();
+
+    const existing = await prisma.$queryRawUnsafe(
+      `SELECT * FROM onion_chambers WHERE id = $1 OR name = $1 OR LOWER(name) = LOWER($1);`,
+      id
+    );
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: "Komora nije pronađena." });
+    }
+    const current = existing[0];
+
+    const activeEntries = await prisma.onionStorageEntry.findMany({
+      where: {
+        locationOrChamber: { equals: current.name, mode: "insensitive" },
+        currentQuantityKg: { gt: 0 },
+      },
+    });
+
+    const activeKg = activeEntries.reduce((sum, e) => sum + (e.currentQuantityKg || 0), 0);
+    if (activeKg > 0) {
+      return res.status(400).json({
+        error: `Nije moguće obrisati komoru "${current.name}" jer se u njoj trenutno nalazi ${activeKg.toLocaleString("sr-RS")} kg luka. Prvo ispraznite ili sortirajte luk.`,
+      });
+    }
+
+    await prisma.onionStorageEntry.deleteMany({
+      where: { locationOrChamber: current.name },
+    });
+
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM onion_chambers WHERE id = $1;`,
+      current.id
+    );
+
+    res.json({
+      message: `Komora "${current.name}" je uspešno obrisana.`,
+    });
+  } catch (error) {
+    console.error("Greška pri brisanju komore:", error);
+    res.status(500).json({ error: "Greška na serveru pri brisanju komore." });
+  }
+});
+
+// =========================================================================
+// UPRAVLJANJE KUPCIMA / PARTNERIMA ZA ISPORUKE (BRZO KREIRANJE I IZMENA)
+// =========================================================================
+const buyerSchema = z.object({
+  name: z.string().trim().min(2, "Naziv kupca mora imati barem 2 karaktera.").max(100),
+  type: z.enum(["KUPAC", "DOBAVLJAC", "SERVIS", "OBA"]).default("KUPAC"),
+  pib: z.string().trim().max(30).optional().nullable(),
+  phone: z.string().trim().max(30).optional().nullable(),
+  email: z
+    .string()
+    .trim()
+    .email("Neispravan email format")
+    .optional()
+    .nullable()
+    .or(z.literal(""))
+    .transform((v) => (v === "" ? null : v)),
+  address: z.string().trim().max(200).optional().nullable(),
+  notes: z.string().trim().max(500).optional().nullable(),
+  isActive: z.boolean().optional().default(true),
+});
+
+router.post("/buyers", async (req, res) => {
+  try {
+    const parsed = buyerSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
+    }
+    const buyer = await prisma.partner.create({
+      data: {
+        ...parsed.data,
+        type: parsed.data.type || "KUPAC",
+      },
+    });
+    res.status(201).json({
+      buyer,
+      partner: buyer,
+      message: `Kupac "${buyer.name}" uspešno sačuvan.`,
+    });
+  } catch (error) {
+    console.error("Greška pri kreiranju kupca:", error);
+    res.status(500).json({ error: "Greška na serveru pri kreiranju kupca." });
+  }
+});
+
+router.put("/buyers/:id", async (req, res) => {
+  try {
+    const parsed = buyerSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
+    }
+    const buyer = await prisma.partner.update({
+      where: { id: req.params.id },
+      data: parsed.data,
+    });
+    res.json({
+      buyer,
+      partner: buyer,
+      message: `Podaci o kupcu "${buyer.name}" uspešno ažurirani.`,
+    });
+  } catch (error) {
+    console.error("Greška pri izmeni kupca:", error);
+    res.status(500).json({ error: "Greška na serveru pri ažuriranju kupca." });
+  }
+});
+
 // =========================================================================
 // 0. POMOĆNI ŠIFARNICI ZA FORME (PARCELE, VOZILA, VOZAČI, KUPCI, SPECIFIKACIJA)
 // =========================================================================
 router.get("/lookup", async (req, res) => {
   try {
-    const [parcels, machines, workers, buyers, activeLots, availablePackagings] = await Promise.all([
+    const [parcels, machines, workers, buyers, activeLots, allLots, availablePackagings] = await Promise.all([
       prisma.parcel.findMany({
         where: { isActive: true },
         orderBy: { code: "asc" },
@@ -139,6 +448,14 @@ router.get("/lookup", async (req, res) => {
         },
         orderBy: { createdAt: "desc" },
       }),
+      prisma.onionLot.findMany({
+        include: {
+          parcel: { select: { id: true, code: true, name: true, areaHa: true, currentCrop: true } },
+          storageEntries: true,
+          packagings: true,
+        },
+        orderBy: { createdAt: "desc" },
+      }),
       prisma.onionPackaging.findMany({
         where: { availableWeightKg: { gt: 0 } },
         include: {
@@ -152,7 +469,7 @@ router.get("/lookup", async (req, res) => {
       }),
     ]);
 
-    const enrichedActiveLots = activeLots.map((lot) => {
+    const enrichLot = (lot) => {
       const totalPackedEverKg = lot.packagings.reduce((sum, p) => sum + (p.totalWeightKg || 0), 0);
       const unpackedQualityKg = Math.max(0, (lot.sortedQualityKg || 0) - totalPackedEverKg);
       const storedRawKg = lot.storageEntries.reduce(
@@ -167,7 +484,12 @@ router.get("/lookup", async (req, res) => {
         storedRawKg,
         unstoredRawKg,
       };
-    });
+    };
+
+    const enrichedActiveLots = activeLots.map(enrichLot);
+    const enrichedAllLots = allLots.map(enrichLot);
+
+    const allChambers = await getAllChambers();
 
     res.json({
       parcels,
@@ -175,9 +497,11 @@ router.get("/lookup", async (req, res) => {
       workers,
       buyers,
       activeLots: enrichedActiveLots,
+      allLots: enrichedAllLots,
       availablePackagings,
       spec: BOX_PALLET_SPEC,
-      standardChambers: STANDARD_CHAMBERS,
+      chambers: allChambers,
+      standardChambers: allChambers,
     });
   } catch (error) {
     console.error("Greška pri dohvatanju lookup podataka za luk:", error);
@@ -190,7 +514,7 @@ router.get("/lookup", async (req, res) => {
 // =========================================================================
 router.get("/dashboard", async (req, res) => {
   try {
-    const [lots, storageEntries, packagings, shipments, wastes] = await Promise.all([
+    const [lots, storageEntries, packagings, shipments, wastes, allChambers] = await Promise.all([
       prisma.onionLot.findMany({
         include: {
           parcel: { select: { id: true, code: true, name: true, currentCrop: true } },
@@ -222,6 +546,7 @@ router.get("/dashboard", async (req, res) => {
       prisma.onionWaste.findMany({
         orderBy: { date: "desc" },
       }),
+      getAllChambers(),
     ]);
 
     // 1. Ukupno dovezeno sa njive
@@ -230,24 +555,35 @@ router.get("/dashboard", async (req, res) => {
     // 2. Sirovi luk trenutno na stanju (ukupno nesortirano)
     const totalRawStockKg = lots.reduce((sum, l) => sum + Math.max(0, l.rawStockKg || 0), 0);
 
-    // 3. Inicijalizuj svih 6 standardnih komora hladnjače (3 sa opremom + 3 bez opreme)
+    // 3. Dinamički inicijalizuj sve komore hladnjače iz baze (bez fiksnog broja 6!)
     let inColdStorageKg = 0;
     let inWarehouseKg = 0;
     let totalColdStorageBoxes = 0;
+    let maxColdStorageBoxes = 0;
+    let maxColdStorageKg = 0;
+    let equippedChambersCount = 0;
+    let unequippedChambersCount = 0;
     const chamberMap = new Map();
 
-    for (const stdCh of STANDARD_CHAMBERS) {
-      chamberMap.set(`HLADNJACA::${stdCh.name}`, {
-        storageType: "HLADNJACA",
-        locationOrChamber: stdCh.name,
-        hasEquipment: stdCh.hasEquipment,
-        maxBoxes: stdCh.maxBoxes,
-        maxCapacityKg: stdCh.maxCapacityKg,
+    for (const ch of allChambers) {
+      if (ch.storageType === "HLADNJACA") {
+        maxColdStorageBoxes += ch.maxBoxes;
+        maxColdStorageKg += ch.maxCapacityKg;
+        if (ch.hasEquipment) equippedChambersCount++;
+        else unequippedChambersCount++;
+      }
+      chamberMap.set(`${ch.storageType}::${ch.name}`, {
+        id: ch.id,
+        storageType: ch.storageType,
+        locationOrChamber: ch.name,
+        hasEquipment: ch.hasEquipment,
+        maxBoxes: ch.maxBoxes,
+        maxCapacityKg: ch.maxCapacityKg,
         totalEnteredKg: 0,
         currentQuantityKg: 0,
         currentBoxes: 0,
-        temperatureC: stdCh.hasEquipment ? 1.5 : 4.0,
-        humidityPercent: stdCh.hasEquipment ? 72 : 68,
+        temperatureC: ch.hasEquipment ? 1.5 : 4.0,
+        humidityPercent: ch.hasEquipment ? 72 : 68,
         lotsCount: 0,
         lots: [],
       });
@@ -268,11 +604,12 @@ router.get("/dashboard", async (req, res) => {
           entry.locationOrChamber.includes("5") ||
           entry.locationOrChamber.includes("6");
         chamberMap.set(key, {
+          id: `ch_unknown_${entry.locationOrChamber}`,
           storageType: entry.storageType,
           locationOrChamber: entry.locationOrChamber,
           hasEquipment: entry.hasEquipment !== undefined ? entry.hasEquipment : !isUnkWithoutEq,
           maxBoxes: entry.storageType === "HLADNJACA" ? 720 : 1000,
-          maxCapacityKg: entry.storageType === "HLADNJACA" ? 800000 : 1100000,
+          maxCapacityKg: entry.storageType === "HLADNJACA" ? 792000 : 1100000,
           totalEnteredKg: 0,
           currentQuantityKg: 0,
           currentBoxes: 0,
@@ -286,8 +623,10 @@ router.get("/dashboard", async (req, res) => {
       ch.totalEnteredKg += entry.quantityKg || 0;
       ch.currentQuantityKg += cur;
       const entryCurrentBoxes =
-        entry.boxCount && entry.quantityKg > 0
-          ? Math.round((cur / entry.quantityKg) * entry.boxCount)
+        entry.boxCount !== null && entry.boxCount !== undefined && entry.boxCount > 0
+          ? (entry.quantityKg > 0 && cur < entry.quantityKg && Math.abs(cur - entry.quantityKg) > 100 && Math.round(cur / BOX_PALLET_SPEC.capacityKgPerBox) !== entry.boxCount
+              ? Math.round((cur / entry.quantityKg) * entry.boxCount)
+              : entry.boxCount)
           : Math.round(cur / BOX_PALLET_SPEC.capacityKgPerBox);
       ch.currentBoxes += entryCurrentBoxes;
 
@@ -367,8 +706,11 @@ router.get("/dashboard", async (req, res) => {
         totalRawStockKg,
         inColdStorageKg,
         totalColdStorageBoxes,
-        maxColdStorageBoxes: BOX_PALLET_SPEC.totalMaxBoxes,
-        maxColdStorageKg: BOX_PALLET_SPEC.totalMaxCapacityKg,
+        maxColdStorageBoxes,
+        maxColdStorageKg,
+        equippedChambersCount,
+        unequippedChambersCount,
+        totalChambersCount: allChambers.length,
         inWarehouseKg: inWarehouseKg + unallocatedRawKg,
         explicitWarehouseKg: inWarehouseKg,
         unallocatedRawKg,
@@ -390,6 +732,7 @@ router.get("/dashboard", async (req, res) => {
         responsiblePerson: BOX_PALLET_SPEC.defaultResponsiblePerson,
       },
       spec: BOX_PALLET_SPEC,
+      chambers: allChambers,
       packagedByType: Object.values(packagedByTypeMap),
       chambersSummary: Array.from(chamberMap.values()),
     });
@@ -677,7 +1020,8 @@ router.post("/harvest", async (req, res) => {
       let storageEntry = null;
       if (data.autoStore && data.locationOrChamber && data.locationOrChamber.trim()) {
         const chName = data.locationOrChamber.trim();
-        const stdCh = STANDARD_CHAMBERS.find((c) => c.name === chName);
+        const allChambers = await getAllChambers();
+        const stdCh = allChambers.find((c) => c.name === chName);
         const hasEq =
           data.hasEquipment !== undefined
             ? data.hasEquipment
@@ -825,7 +1169,8 @@ router.post("/storage", async (req, res) => {
       });
     }
 
-    const stdCh = STANDARD_CHAMBERS.find((c) => c.name === data.locationOrChamber);
+    const allChambers = await getAllChambers();
+    const stdCh = allChambers.find((c) => c.name === data.locationOrChamber);
     const hasEq =
       data.hasEquipment !== undefined
         ? data.hasEquipment
@@ -876,40 +1221,61 @@ router.put("/storage/:id", async (req, res) => {
       return res.status(404).json({ error: "Zapis u skladištu nije pronađen." });
     }
 
-    const updated = await prisma.onionStorageEntry.update({
-      where: { id },
-      data: {
-        ...(req.body.locationOrChamber !== undefined && {
-          locationOrChamber: String(req.body.locationOrChamber).trim(),
-        }),
-        ...(req.body.hasEquipment !== undefined && {
-          hasEquipment: Boolean(req.body.hasEquipment),
-        }),
-        ...(req.body.boxCount !== undefined && {
-          boxCount: req.body.boxCount !== null && req.body.boxCount !== "" ? Number(req.body.boxCount) : null,
-        }),
-        ...(req.body.currentQuantityKg !== undefined && {
-          currentQuantityKg: Number(req.body.currentQuantityKg),
-        }),
-        ...(req.body.temperatureC !== undefined && {
-          temperatureC:
-            req.body.temperatureC !== null && req.body.temperatureC !== ""
-              ? Number(req.body.temperatureC)
-              : null,
-        }),
-        ...(req.body.humidityPercent !== undefined && {
-          humidityPercent:
-            req.body.humidityPercent !== null && req.body.humidityPercent !== ""
-              ? Number(req.body.humidityPercent)
-              : null,
-        }),
-        ...(req.body.notes !== undefined && { notes: req.body.notes || null }),
-      },
-      include: {
-        lot: { include: { parcel: true } },
-        supervisor: { select: { id: true, name: true } },
-      },
-    });
+    const newCurKg =
+      req.body.currentQuantityKg !== undefined
+        ? Number(req.body.currentQuantityKg)
+        : existing.currentQuantityKg;
+    const diffKg = newCurKg - existing.currentQuantityKg;
+
+    const [updated] = await prisma.$transaction([
+      prisma.onionStorageEntry.update({
+        where: { id },
+        data: {
+          ...(req.body.locationOrChamber !== undefined && {
+            locationOrChamber: String(req.body.locationOrChamber).trim(),
+          }),
+          ...(req.body.hasEquipment !== undefined && {
+            hasEquipment: Boolean(req.body.hasEquipment),
+          }),
+          ...(req.body.boxCount !== undefined && {
+            boxCount: req.body.boxCount !== null && req.body.boxCount !== "" ? Number(req.body.boxCount) : null,
+          }),
+          ...(req.body.currentQuantityKg !== undefined && {
+            currentQuantityKg: newCurKg,
+            quantityKg: newCurKg,
+          }),
+          ...(req.body.temperatureC !== undefined && {
+            temperatureC:
+              req.body.temperatureC !== null && req.body.temperatureC !== ""
+                ? Number(req.body.temperatureC)
+                : null,
+          }),
+          ...(req.body.humidityPercent !== undefined && {
+            humidityPercent:
+              req.body.humidityPercent !== null && req.body.humidityPercent !== ""
+                ? Number(req.body.humidityPercent)
+                : null,
+          }),
+          ...(req.body.notes !== undefined && { notes: req.body.notes || null }),
+        },
+        include: {
+          lot: { include: { parcel: true } },
+          supervisor: { select: { id: true, name: true } },
+        },
+      }),
+      ...(diffKg !== 0 && existing.lotId
+        ? [
+            prisma.onionLot.update({
+              where: { id: existing.lotId },
+              data: {
+                rawStockKg: {
+                  increment: diffKg,
+                },
+              },
+            }),
+          ]
+        : []),
+    ]);
 
     res.json({
       entry: updated,
@@ -1107,10 +1473,13 @@ router.post("/sorting", async (req, res) => {
 // =========================================================================
 router.get("/packaging", async (req, res) => {
   try {
-    const { lotId, packageType, onlyAvailable, page, limit } = req.query;
+    const { lotId, parcelId, packageType, onlyAvailable, page, limit } = req.query;
     const where = {};
 
     if (lotId && lotId !== "ALL") where.lotId = String(lotId);
+    if (parcelId && parcelId !== "ALL") {
+      where.lot = { parcelId: String(parcelId) };
+    }
     if (packageType && packageType !== "ALL") where.packageType = String(packageType);
     if (onlyAvailable === "true") where.availableWeightKg = { gt: 0 };
 
@@ -1260,7 +1629,7 @@ router.post("/packaging", async (req, res) => {
 
     res.status(201).json({
       ...result,
-      message: `Uspešno spakovano ${data.packageCount} džakova (${data.palletsCount} paleta / ${totalWeightKg.toLocaleString("sr-RS")} kg) na pakerici (${data.packerCount || 4} radnika).`,
+      message: `Uspešno spakovano ${data.packageCount} džakova (${data.palletsCount} paleta / ${totalWeightKg.toLocaleString("sr-RS")} kg) na pakerici (${data.packerCount || 4} pakera).`,
     });
   } catch (error) {
     console.error("Greška pri pakovanju luka:", error);
@@ -1270,7 +1639,7 @@ router.post("/packaging", async (req, res) => {
 
 /**
  * PUT /api/onion/packaging/:id
- * Izmena podataka o pakovanju i pakerici (broj žena na pakerici, zaduženo lice, paleta, tip džaka 5kg/10kg, broj džakova)
+ * Izmena podataka o pakovanju i pakerici (broj pakera na pakerici, zaduženo lice, paleta, tip džaka 5kg/10kg, broj džakova)
  */
 router.put("/packaging/:id", async (req, res) => {
   try {
@@ -1362,6 +1731,73 @@ router.put("/packaging/:id", async (req, res) => {
   } catch (error) {
     console.error("Greška pri izmeni pakovanja:", error);
     res.status(400).json({ error: error.message || "Greška pri izmeni pakovanja." });
+  }
+});
+
+/**
+ * DELETE /api/onion/packaging/:id
+ * Brisanje pakovanja sa pakerice (samo DIREKTOR, RUKOVODILAC, ADMIN)
+ * Vraća nespakovanu količinu I klase u LOT i uklanja robu sa stanja gotovih proizvoda
+ */
+router.delete("/packaging/:id", requireRole(["DIREKTOR", "RUKOVODILAC", "ADMIN"]), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await prisma.onionPackaging.findUnique({
+      where: { id },
+      include: {
+        lot: true,
+        shipmentItems: {
+          include: {
+            shipment: { select: { dispatchNumber: true, date: true } },
+          },
+        },
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "Zapis o pakovanju nije pronađen." });
+    }
+
+    if (existing.shipmentItems && existing.shipmentItems.length > 0) {
+      const dispatchNumbers = existing.shipmentItems
+        .map((si) => si.shipment?.dispatchNumber)
+        .filter(Boolean)
+        .join(", ");
+      return res.status(400).json({
+        error: `Nije moguće obrisati ovo pakovanje jer je sa njega već isporučena roba kupcu preko otpremnice (${dispatchNumbers || "otpremnica"}). Prvo stornirajte ili obrišite povezane isporuke.`,
+      });
+    }
+
+    if (existing.availableCount < existing.packageCount) {
+      const shipped = existing.packageCount - existing.availableCount;
+      return res.status(400).json({
+        error: `Nije moguće obrisati ovo pakovanje jer je sa njega već realizovano ${shipped} džakova. Prvo stornirajte isporuke.`,
+      });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Smanjujemo packagedStockKg na LOT-u za totalWeightKg
+      // (time se ta količina automatski vraća u nespakovanu I klasu za pakericu)
+      await tx.onionLot.update({
+        where: { id: existing.lotId },
+        data: {
+          packagedStockKg: Math.max(0, (existing.lot?.packagedStockKg || 0) - existing.totalWeightKg),
+        },
+      });
+
+      // 2. Brišemo sam zapis o pakovanju
+      await tx.onionPackaging.delete({
+        where: { id },
+      });
+    });
+
+    res.json({
+      success: true,
+      message: `Pakovanje (${existing.packageCount} džakova / ${(existing.totalWeightKg / 1000).toFixed(2)} t) je uspešno obrisano. Količina je vraćena u nespakovanu I klasu luka.`,
+    });
+  } catch (error) {
+    console.error("Greška pri brisanju pakovanja:", error);
+    res.status(500).json({ error: error.message || "Greška pri brisanju pakovanja." });
   }
 });
 
@@ -1943,7 +2379,74 @@ router.get("/traceability/:lotQuery", async (req, res) => {
       return new Date(a.createdAt || a.date).getTime() - new Date(b.createdAt || b.date).getTime();
     });
 
-    res.json({ lot, timeline });
+    // Izgradnja pojedinačnih tura pod istim LOT-om (Tura 1, Tura 2, ...)
+    // Svaka realizovana isporuka kupcu je isporučena tura sa statusom 'ISPORUCENO'
+    // Svako preostalo spakovano na stanju je tura sa statusom 'SPAKOVANO'
+    const turas = [];
+    let turaIndex = 1;
+
+    // 1. Zvanične isporuke kupcima
+    for (const sh of lot.shipments) {
+      turas.push({
+        id: `tura-sh-${sh.id}`,
+        index: turaIndex++,
+        type: "ISPORUKA",
+        status: "ISPORUCENO",
+        statusLabel: "Isporučeno",
+        title: `Tura ${turaIndex - 1}: Isporuka kupcu ${sh.buyer?.name || "Kupac"}`,
+        date: sh.date,
+        createdAt: sh.createdAt,
+        weightKg: sh.totalWeightKg,
+        packageCount: sh.totalPackagesCount,
+        dispatchNumber: sh.dispatchNumber,
+        buyerName: sh.buyer?.name,
+        buyerId: sh.buyerId,
+        vehicleReg: sh.vehicleReg,
+        driverName: sh.driverName,
+        supervisor: sh.supervisor?.name || "Andrija Direktor",
+        notes: sh.notes,
+        shipmentId: sh.id,
+        packagingDetails: (sh.items || []).map((it) => ({
+          packagingId: it.packagingId,
+          packageType: it.packaging?.packageType,
+          unitWeightKg: it.packaging?.unitWeightKg,
+          packageCount: it.packageCount,
+          totalWeightKg: it.totalWeightKg,
+        })),
+      });
+    }
+
+    // 2. Pakovanja koja su spakovana na stanju (još neisporučena)
+    for (const pk of lot.packagings) {
+      const remainingKg = pk.availableWeightKg !== undefined ? pk.availableWeightKg : pk.totalWeightKg;
+      const remainingCount = pk.availableCount !== undefined ? pk.availableCount : pk.packageCount;
+
+      if (remainingKg > 0.5) {
+        const typeLabel = packageLabels[pk.packageType] || pk.packageType;
+        turas.push({
+          id: `tura-pk-${pk.id}`,
+          index: turaIndex++,
+          type: "PAKOVANJE",
+          status: "SPAKOVANO",
+          statusLabel: "Spakovano na stanju",
+          title: `Tura ${turaIndex - 1}: Spakovano na pakerici (${typeLabel})`,
+          date: pk.date,
+          createdAt: pk.createdAt,
+          weightKg: remainingKg,
+          packageCount: remainingCount,
+          unitWeightKg: pk.unitWeightKg,
+          packageType: pk.packageType,
+          palletsCount: pk.palletsCount,
+          palletNumber: pk.palletNumber,
+          packerCount: pk.packerCount,
+          supervisor: pk.responsiblePerson || pk.supervisor?.name || "Bojan Ćorović",
+          notes: pk.notes,
+          packagingId: pk.id,
+        });
+      }
+    }
+
+    res.json({ lot, timeline, turas });
   } catch (error) {
     console.error("Greška pri LOT sledljivosti:", error);
     res.status(500).json({ error: "Greška na serveru pri pretrazi sledljivosti LOT-a." });

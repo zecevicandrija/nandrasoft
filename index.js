@@ -18,6 +18,7 @@ import notificationsRouter from "./routes/notifications.js";
 import fertilizerRouter from "./routes/fertilizer.js";
 import seasonalWorkersRouter from "./routes/seasonalWorkers.js";
 import onionRouter from "./routes/onion.js";
+import analyticsRouter from "./routes/analytics.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -97,6 +98,7 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/fertilizer", fertilizerRouter);
 app.use("/api/seasonal", seasonalWorkersRouter);
 app.use("/api/onion", onionRouter);
+app.use("/api/analytics", analyticsRouter);
 
 // Health check
 app.get("/api/health", (req, res) => {
