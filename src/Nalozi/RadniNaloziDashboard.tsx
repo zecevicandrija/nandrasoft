@@ -1,3 +1,5 @@
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -195,6 +197,9 @@ const RadniNaloziDashboard: React.FC = () => {
     instructions: '',
   });
 
+  const orderDraft = useDurableSubmission('create-work-order', currentUser?.id, formData,
+    (draft) => { setFormData(draft); setIsModalOpen(true); });
+
   // Modal za izmenu radnog naloga
   const [editingOrder, setEditingOrder] = useState<WorkOrder | null>(null);
   const [editFormData, setEditFormData] = useState({
@@ -327,11 +332,11 @@ const RadniNaloziDashboard: React.FC = () => {
   }, [page, datePreset, customDate, statusFilter, typeFilter]);
 
   // Kreiranje naloga
-  const handleCreateOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateOrder = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
     setModalError('');
 
-    if (!formData.workerId) {
+    if (!replay && !formData.workerId) {
       setModalError('Molimo izaberite radnika kome se nalog izdaje.');
       return;
     }
@@ -339,7 +344,7 @@ const RadniNaloziDashboard: React.FC = () => {
     setModalLoading(true);
 
     try {
-      const payload: any = {
+      const payload: any = replay && orderDraft.pending ? orderDraft.pending.payload : {
         ...formData,
         plannedAreaHa: formData.plannedAreaHa ? parseFloat(formData.plannedAreaHa) : null,
         machineId: formData.machineId || null,
@@ -348,17 +353,8 @@ const RadniNaloziDashboard: React.FC = () => {
         workTypeId: formData.workTypeId || null,
       };
 
-      const res = await fetch(`${API}/work-orders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload),
-      });
-
-      const resData = await res.json();
-      if (!res.ok) {
-        throw new Error(resData.error || 'Greška pri kreiranju radnog naloga.');
-      }
+      await orderDraft.request(`${API}/work-orders`, payload);
+      orderDraft.clear();
 
       setIsModalOpen(false);
       // Reset forme
@@ -953,6 +949,8 @@ const RadniNaloziDashboard: React.FC = () => {
 
   return (
     <AppLayout pageTitle="Radni Nalozi & Dispečing">
+      <SubmissionRecovery pending={!!orderDraft.pending} busy={modalLoading} error={orderDraft.storageError || (!isModalOpen ? modalError : '')}
+        onRetry={() => void handleCreateOrder(undefined, true)} />
       <div className={styles.container}>
         {/* Header Bar */}
         <div className={styles.headerBar}>
@@ -971,7 +969,7 @@ const RadniNaloziDashboard: React.FC = () => {
           </div>
 
           {isManager && (
-            <button className={styles.newOrderBtn} onClick={() => setIsModalOpen(true)}>
+            <button className={styles.newOrderBtn} onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}>
               <Plus size={18} />
               <span>Izdaj novi nalog</span>
             </button>
@@ -1119,7 +1117,7 @@ const RadniNaloziDashboard: React.FC = () => {
             <strong>Nema izdatih radnih naloga</strong>
             <p>Za izabrani period i filtere trenutno nema evidentiranih radnih naloga.</p>
             {isManager && (
-              <button className={styles.newOrderBtn} onClick={() => setIsModalOpen(true)}>
+              <button className={styles.newOrderBtn} onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}>
                 <Plus size={18} /> Izdaj novi nalog
               </button>
             )}
@@ -1385,6 +1383,9 @@ const RadniNaloziDashboard: React.FC = () => {
                   <X size={20} />
                 </button>
               </div>
+
+              <SubmissionRecovery pending={!!orderDraft.pending} busy={modalLoading} error={orderDraft.storageError}
+                onRetry={() => void handleCreateOrder(undefined, true)} />
 
               {modalError && (
                 <div style={{ padding: '0.75rem 1.5rem', background: '#fee2e2', color: '#b91c1c' }}>

@@ -56,66 +56,20 @@ export const SlikaRacunaUpload: React.FC<SlikaRacunaUploadProps> = ({
 
       setStatus('UPLOADING');
 
-      // 2. Zatraži Bunny.net konfiguraciju za direktan upload sa našeg backenda
-      const authRes = await fetch(`${API}/fuel/upload-url`, {
+      // Upload through the authenticated backend; storage credentials stay on the server.
+      const formData = new FormData();
+      formData.append('file', compressed.blob, compressed.fileName);
+      const response = await fetch(`${API}/fuel/upload`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({
-          filename: compressed.fileName,
-          fileType: compressed.mimeType,
-        }),
+        body: formData,
       });
-
-      if (!authRes.ok) {
-        const errData = await authRes.json().catch(() => ({}));
-        throw new Error(errData.error || 'Nije moguće dobiti autorizaciju za otpremanje slike.');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Otpremanje slike računa nije uspelo.');
       }
-
-      const uploadConfig = await authRes.json();
-      let finalCdnUrl = uploadConfig.fileUrl;
-
-      // 3. Pokušaj DIREKTAN upload iz browsera na Bunny.net Storage (0% opterećenja VPS-a)
-      let directSuccess = false;
-      try {
-        const directRes = await fetch(uploadConfig.uploadUrl, {
-          method: uploadConfig.method || 'PUT',
-          headers: uploadConfig.headers,
-          body: compressed.blob,
-        });
-
-        if (directRes.ok || directRes.status === 201) {
-          directSuccess = true;
-        }
-      } catch {
-        // Ukoliko pretraživač blokira CORS ka storage.bunnycdn.com, aktivira se automatski fallback
-        directSuccess = false;
-      }
-
-      // 4. Automatski fallback preko backenda ako direktan PUT nije prošao zbog CORS-a
-      if (!directSuccess) {
-        const formData = new FormData();
-        formData.append('file', compressed.blob, compressed.fileName);
-        if (uploadConfig.filePath) {
-          formData.append('filePath', uploadConfig.filePath);
-        }
-
-        const fallbackRes = await fetch(`${API}/fuel/upload-fallback`, {
-          method: 'POST',
-          credentials: 'include',
-          body: formData,
-        });
-
-        if (!fallbackRes.ok) {
-          const fbErr = await fallbackRes.json().catch(() => ({}));
-          throw new Error(fbErr.error || 'Otpremanje slike računa na Bunny CDN nije uspelo.');
-        }
-
-        const fbData = await fallbackRes.json();
-        finalCdnUrl = fbData.fileUrl;
-      }
-
-      onChange(finalCdnUrl);
+      const data = await response.json();
+      onChange(data.fileUrl);
       setStatus('DONE');
     } catch (err: any) {
       console.error('Greška pri otpremanju slike računa:', err);

@@ -1,3 +1,5 @@
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, Link, useNavigate } from 'react-router-dom';
@@ -85,6 +87,14 @@ const MasineZaduzenje: React.FC = () => {
   const currentUser = (session as any)?.user;
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(currentUser?.role || '');
   const isOperator = currentUser?.role === 'OPERATER';
+
+  const checkinDraft = useDurableSubmission('checkin', currentUser?.id,
+    { selectedAssignment, checkinEndHours, checkinFuelLiters, checkinOperational, checkinNotes },
+    (draft) => {
+      setSelectedAssignment(draft.selectedAssignment); setCheckinEndHours(draft.checkinEndHours);
+      setCheckinFuelLiters(draft.checkinFuelLiters); setCheckinOperational(draft.checkinOperational);
+      setCheckinNotes(draft.checkinNotes); if (draft.selectedAssignment) setCheckinModalOpen(true);
+    });
 
   // Search parametri (za direktno rešavanje neusklađenosti ili brzi završetak dana)
   const [searchParams] = useSearchParams();
@@ -329,19 +339,11 @@ const MasineZaduzenje: React.FC = () => {
   // MUTACIJA: RAZDUŽIVANJE MAŠINE (CHECKIN)
   const checkinMutation = useMutation({
     mutationFn: async (payload: any) => {
-      const res = await fetch(`${API}/assignments/checkin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include',
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Greška pri razduživanju.');
-      }
+      const data = await checkinDraft.request(`${API}/assignments/checkin`, payload);
       return data;
     },
     onSuccess: (data) => {
+      checkinDraft.clear();
       queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
@@ -357,6 +359,9 @@ const MasineZaduzenje: React.FC = () => {
   });
 
   const handleOpenCheckin = (assignment: any) => {
+    if (checkinDraft.pending) { setCheckinModalOpen(true); return; }
+    checkinDraft.resume();
+    if (checkinDraft.hasDraft && selectedAssignment?.id === assignment.id) { setCheckinModalOpen(true); return; }
     setSelectedAssignment(assignment);
     setCheckinEndHours(assignment.startHours);
     setCheckinFuelLiters(
@@ -713,6 +718,8 @@ const MasineZaduzenje: React.FC = () => {
 
   return (
     <AppLayout pageTitle="Zaduživanje Mašina">
+      <SubmissionRecovery pending={!!checkinDraft.pending} busy={checkinMutation.isPending} error={checkinDraft.storageError}
+        onRetry={() => checkinDraft.pending && checkinMutation.mutate(checkinDraft.pending.payload)} />
       <div className={styles.container}>
         {/* Toast */}
         {toast && (
@@ -1783,6 +1790,8 @@ const MasineZaduzenje: React.FC = () => {
 
               <form onSubmit={handleCheckinSubmit}>
                 <div className={styles.modalBody}>
+                  <SubmissionRecovery pending={!!checkinDraft.pending} busy={checkinMutation.isPending} error={checkinDraft.storageError}
+                    onRetry={() => checkinDraft.pending && checkinMutation.mutate(checkinDraft.pending.payload)} />
                   {/* Info o početnom stanju */}
                   <div
                     style={{

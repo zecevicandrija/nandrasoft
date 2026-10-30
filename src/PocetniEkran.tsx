@@ -356,7 +356,15 @@ const PocetniEkran: React.FC = () => {
                 )}
               </div>
 
-              {todayOrder.status === 'U_TOKU' ? (
+              {todayOrder.orderType === 'REMONT_SERVIS' ? (
+                <Link
+                  to={`/masine-kvarovi?orderId=${todayOrder.id}&machineId=${todayOrder.machineId || ''}`}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginTop: '0.75rem', padding: '0.7rem 1rem', borderRadius: '6px', fontWeight: 700 }}
+                >
+                  <Wrench size={16} />
+                  <span>Otvori nalog u radionici</span>
+                </Link>
+              ) : todayOrder.status === 'U_TOKU' ? (
                 <Link
                   to={`/radovi/novi?orderId=${todayOrder.id}&parcelId=${todayOrder.parcelId || ''}&machineId=${
                     todayOrder.machineId || ''

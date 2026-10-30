@@ -1,3 +1,5 @@
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -72,6 +74,16 @@ const BrziUnosRada: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [submittedData, setSubmittedData] = useState<any | null>(null);
 
+  const durable = useDurableSubmission(`field-work:${orderIdParam || 'manual'}`, currentUser?.id,
+    { shift, parcelId, machineId, attachmentId, workerId, workTypeId, areaDoneHa, startTime, endTime, notes, endFuelLiters, endHours, isOperational, returnNotes },
+    (draft) => {
+      setShift(draft.shift); setParcelId(draft.parcelId); setMachineId(draft.machineId);
+      setAttachmentId(draft.attachmentId); setWorkerId(draft.workerId); setWorkTypeId(draft.workTypeId);
+      setAreaDoneHa(draft.areaDoneHa); setStartTime(draft.startTime); setEndTime(draft.endTime);
+      setNotes(draft.notes); setEndFuelLiters(draft.endFuelLiters); setEndHours(draft.endHours);
+      setIsOperational(draft.isOperational); setReturnNotes(draft.returnNotes);
+    });
+
   // Dohvatanje detalja radnog naloga ako je prosleđen
   const { data: orderData } = useQuery({
     queryKey: ['work-order-detail', orderIdParam],
@@ -128,11 +140,7 @@ const BrziUnosRada: React.FC = () => {
   // Prepoznavanje da li trenutni radnik (ili izabrani workerId) ima zadužen traktor
   const userActiveAssignment = activeAssignmentsData?.assignments?.find((a: any) => {
     if (isOperator) {
-      return (
-        a.createdBy?.id === currentUser?.id ||
-        a.worker?.userId === currentUser?.id ||
-        (currentUser?.name && a.worker?.name?.toLowerCase() === currentUser?.name?.toLowerCase())
-      );
+      return a.worker?.userId === currentUser?.id;
     }
     return workerId ? a.workerId === workerId : false;
   });
@@ -140,6 +148,7 @@ const BrziUnosRada: React.FC = () => {
   // Postavi inicijalne vrednosti (prioritet ima radni nalog pa aktivno zaduženje!)
   // Ako unosimo rad ručno (bez radnog naloga i bez aktivnog zaduženja), polja ostaju prazna
   useEffect(() => {
+    if (durable.hasDraft) return;
     if (orderIdParam) {
       if (parcelIdParam) setParcelId(parcelIdParam);
       if (machineIdParam) setMachineId(machineIdParam);
@@ -160,9 +169,10 @@ const BrziUnosRada: React.FC = () => {
         setParcelId(userActiveAssignment.parcelId);
       }
     }
-  }, [userActiveAssignment, orderIdParam, parcelIdParam, machineIdParam, attachmentIdParam, workTypeIdParam, workerIdParam]);
+  }, [userActiveAssignment, orderIdParam, parcelIdParam, machineIdParam, attachmentIdParam, workTypeIdParam, workerIdParam, currentUser?.id]);
 
   useEffect(() => {
+    if (durable.hasDraft) return;
     if (orderData?.workOrder) {
       const wo = orderData.workOrder;
       if (wo.parcelId && !parcelId) setParcelId(wo.parcelId);
@@ -172,19 +182,21 @@ const BrziUnosRada: React.FC = () => {
       if (wo.workerId && !workerId) setWorkerId(wo.workerId);
       if (wo.plannedAreaHa && !areaDoneHa) setAreaDoneHa(wo.plannedAreaHa);
     }
-  }, [orderData]);
+  }, [orderData, currentUser?.id]);
 
   useEffect(() => {
+    if (durable.hasDraft) return;
     if (workerIdParam) {
       setWorkerId(workerIdParam);
     }
-  }, [workerIdParam]);
+  }, [workerIdParam, currentUser?.id]);
 
   useEffect(() => {
+    if (durable.hasDraft) return;
     if (workTypeIdParam) {
       setWorkTypeId(workTypeIdParam);
     }
-  }, [workTypeIdParam]);
+  }, [workTypeIdParam, currentUser?.id]);
 
   // Pronađi trenutno izabranu parcelu za kalkulaciju
   const selectedParcelObj = parcelsData?.parcels?.find((p: any) => p.id === parcelId);
@@ -298,19 +310,11 @@ const BrziUnosRada: React.FC = () => {
   // MUTACIJA ZA SLANJE RADA NA NJIVI
   const submitMutation = useMutation({
     mutationFn: async (payload: any) => {
-      const res = await fetch(`${API}/field-work`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include',
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Greška pri čuvanju rada.');
-      }
+      const data = await durable.request(`${API}/field-work`, payload);
       return data;
     },
     onSuccess: (data) => {
+      durable.clear();
       queryClient.invalidateQueries({ queryKey: ['field-works'] });
       queryClient.invalidateQueries({ queryKey: ['field-work-stats'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
@@ -384,12 +388,15 @@ const BrziUnosRada: React.FC = () => {
   };
 
   const handleResetForNext = () => {
+    durable.resume();
     setSubmittedData(null);
     setAreaDoneHa('');
     setAttachmentId('');
     setEndHours('');
     setEndFuelLiters('');
     setNotes('');
+    setIsOperational(true);
+    setReturnNotes('');
     setErrorMsg('');
   };
 
@@ -397,6 +404,8 @@ const BrziUnosRada: React.FC = () => {
 
   return (
     <AppLayout pageTitle="Brzi Unos Rada">
+      <SubmissionRecovery pending={!!durable.pending} busy={submitMutation.isPending} error={durable.storageError}
+        onRetry={() => durable.pending && submitMutation.mutate(durable.pending.payload)} />
       <div className={styles.mobileContainer}>
         {/* Navigacija nazad */}
         <div className={styles.topNav}>

@@ -290,11 +290,7 @@ const PutarineDashboard: React.FC = () => {
     if (currentWorkerFromServer?.id) return currentWorkerFromServer.id;
     if (!currentUser || workers.length === 0) return '';
     const byId = workers.find((w) => w.userId === currentUser.id);
-    if (byId) return byId.id;
-    const byName = workers.find(
-      (w) => w.name.toLowerCase() === (currentUser.name || '').trim().toLowerCase()
-    );
-    return byName ? byName.id : '';
+    return byId?.id || '';
   };
 
   const openNewEntryModal = (preselectedMachineId?: string) => {

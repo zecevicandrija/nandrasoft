@@ -12,6 +12,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
+import TablePagination from '../components/TablePagination/TablePagination';
 import { useSession } from '../lib/auth-client';
 import styles from './Neuskladjenosti.module.css';
 
@@ -30,40 +31,45 @@ const NeuskladjenostiMasina: React.FC = () => {
   const [period, setPeriod] = useState<PeriodType>(
     urlPeriod && ['danas', 'nedelja', 'mesec', 'sve'].includes(urlPeriod) ? urlPeriod : 'danas'
   );
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     if (urlPeriod && ['danas', 'nedelja', 'mesec', 'sve'].includes(urlPeriod)) {
       setPeriod(urlPeriod);
+      setPage(1);
     }
   }, [urlPeriod]);
 
   const handleSelectPeriod = (p: PeriodType) => {
     setPeriod(p);
+    setPage(1);
     setSearchParams({ period: p });
   };
 
   // Izračunaj datume za odabrani period
   const getDateRange = (p: PeriodType) => {
     const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Belgrade', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(now).map((part) => [part.type, part.value]));
+    const todayStr = `${parts.year}-${parts.month}-${parts.day}`;
 
     if (p === 'danas') {
       return { dateFrom: todayStr, dateTo: todayStr };
     }
     if (p === 'nedelja') {
-      const startOfWeek = new Date(now);
-      const day = startOfWeek.getDay();
-      const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1);
-      startOfWeek.setDate(diff);
+      const startOfWeek = new Date(`${todayStr}T12:00:00Z`);
+      const day = startOfWeek.getUTCDay();
+      const diff = startOfWeek.getUTCDate() - day + (day === 0 ? -6 : 1);
+      startOfWeek.setUTCDate(diff);
       return {
         dateFrom: startOfWeek.toISOString().split('T')[0],
         dateTo: todayStr,
       };
     }
     if (p === 'mesec') {
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       return {
-        dateFrom: startOfMonth.toISOString().split('T')[0],
+        dateFrom: `${todayStr.slice(0, 7)}-01`,
         dateTo: todayStr,
       };
     }
@@ -73,10 +79,10 @@ const NeuskladjenostiMasina: React.FC = () => {
   const { dateFrom, dateTo } = getDateRange(period);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['unassigned-warnings', period, dateFrom, dateTo],
+    queryKey: ['unassigned-warnings', period, dateFrom, dateTo, page],
     queryFn: async () => {
       const res = await fetch(
-        `${API}/field-work/unassigned-warnings?dateFrom=${dateFrom}&dateTo=${dateTo}`,
+        `${API}/field-work/unassigned-warnings?dateFrom=${dateFrom}&dateTo=${dateTo}&page=${page}&limit=50`,
         {
           credentials: 'include',
         }
@@ -311,6 +317,8 @@ const NeuskladjenostiMasina: React.FC = () => {
                 </div>
               )}
             </div>
+            {!isLoading && !isError && <TablePagination currentPage={page} totalPages={data?.totalPages || 0}
+              totalItems={count} pageSize={50} onPageChange={setPage} itemName="upozorenja" />}
           </>
         )}
       </div>

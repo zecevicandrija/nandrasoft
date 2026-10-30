@@ -100,18 +100,14 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
   // Automatski selektuj radnika ako je povezan sa prijavljenim nalogom
   useEffect(() => {
     if (isOpen && workers.length > 0) {
-      const currentUserName = (session as any)?.user?.name?.toLowerCase() || '';
-      const firstName = currentUserName.split(' ')[0] || '';
-      const matched = workers.find(
-        (w) =>
-          w.userId === currentUserId ||
-          (firstName && w.name.toLowerCase().includes(firstName))
-      );
-      if (matched && !workerId) {
+      const matched = workers.find((w) => w.userId === currentUserId);
+      if (!isManager) {
+        setWorkerId(matched?.id || '');
+      } else if (matched && !workerId) {
         setWorkerId(matched.id);
       }
     }
-  }, [isOpen, workers, currentUserId, session]);
+  }, [isOpen, workers, currentUserId, isManager, workerId]);
 
   const selectedMachine = machines.find((m) => m.id === machineId);
 
@@ -174,16 +170,11 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
     }
 
     let effectiveWorkerId = workerId;
-    if (!effectiveWorkerId && !isManager) {
-      const currentUserName = (session as any)?.user?.name?.toLowerCase() || '';
-      const firstName = currentUserName.split(' ')[0] || '';
-      const matched = workers.find(
-        (w) =>
-          w.userId === currentUserId ||
-          (firstName && w.name.toLowerCase().includes(firstName))
-      );
-      if (matched) {
-        effectiveWorkerId = matched.id;
+    if (!isManager) {
+      effectiveWorkerId = workers.find((w) => w.userId === currentUserId)?.id || '';
+      if (!effectiveWorkerId) {
+        setError('Nalog nije povezan sa profilom radnika. Obratite se administratoru.');
+        return;
       }
     }
 

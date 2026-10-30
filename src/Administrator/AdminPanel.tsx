@@ -66,7 +66,6 @@ interface User {
   email: string;
   role: string;
   phone: string | null;
-  pin: string | null;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -184,7 +183,7 @@ const AdminPanel: React.FC = () => {
     setFormEmail(user.email);
     setFormRole(user.role);
     setFormPhone(user.phone || '');
-    setFormPin(user.pin || '');
+    setFormPin('');
     setSelectedUser(user);
     setModal('edit');
   };
@@ -251,7 +250,7 @@ const AdminPanel: React.FC = () => {
           email: formEmail,
           role: formRole,
           phone: formPhone || null,
-          pin: formPin || null,
+          pin: formPin || undefined,
         }),
       });
       const data = await res.json();
@@ -685,7 +684,7 @@ const AdminPanel: React.FC = () => {
                 </div>
               </div>
               <div className={styles.mFormGroup}>
-                <label className={styles.mFormLabel}>PIN</label>
+                <label className={styles.mFormLabel}>Novi PIN (prazno zadržava postojeći)</label>
                 <input
                   className={styles.mFormInput}
                   type="text"
