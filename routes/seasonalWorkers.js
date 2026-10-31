@@ -1,3 +1,7 @@
+import { writeAudit, writeAuditBatch } from "../lib/audit.js";
+import { addMoney } from "../lib/money.js";
+import { seasonalLogInput, validateWorkHours, validateAppliedWage } from "../lib/seasonalWorkValidation.js";
+import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
 import { z } from "zod";
 import ExcelJS from "exceljs";
@@ -39,7 +43,7 @@ const seasonalWorkerSchema = z.object({
   phone: z.string().trim().optional().nullable(),
   city: z.string().trim().optional().nullable(),
   groupName: z.string().trim().optional().nullable(),
-  dailyWage: z.number().nonnegative().optional().nullable(),
+  dailyWage: z.number().finite().positive().optional().nullable(),
   notes: z.string().trim().optional().nullable(),
   isActive: z.boolean().optional(),
 });
@@ -123,7 +127,7 @@ router.get("/workers", async (req, res) => {
  * POST /api/seasonal/workers
  * Kreiranje novog sezonca
  */
-router.post("/workers", async (req, res) => {
+router.post("/workers", inventoryMutation("workers", async (req, res, prisma) => {
   try {
     const data = seasonalWorkerSchema.parse(req.body);
 
@@ -150,24 +154,24 @@ router.post("/workers", async (req, res) => {
           dailyWage: worker.dailyWage,
           isActive: worker.isActive,
         },
-      })
-      .catch((err) => console.error("Greška pri sinhronizaciji Worker tabele iz Sezonaca:", err));
+      });
 
+    await writeAudit(prisma, req, { entityType: "SeasonalWorker", entityId: worker.id, action: "KREIRANJE", description: "KREIRANJE: sezonac", oldValues: null, newValues: worker });
     res.status(201).json({ worker, message: `Sezonac ${worker.name} uspešno kreiran.` });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: error.errors[0].message });
+      return res.status(400).json({ error: error.issues[0].message });
     }
     console.error("Greška pri kreiranju sezonca:", error);
     res.status(500).json({ error: "Greška pri kreiranju sezonca." });
   }
-});
+}));
 
 /**
  * PUT /api/seasonal/workers/:id
  * Izmena podataka o sezoncu
  */
-router.put("/workers/:id", async (req, res) => {
+router.put("/workers/:id", inventoryMutation("workers", async (req, res, prisma) => {
   try {
     const { id } = req.params;
     const data = seasonalWorkerSchema.partial().parse(req.body);
@@ -207,25 +211,25 @@ router.put("/workers/:id", async (req, res) => {
             dailyWage: worker.dailyWage,
             isActive: worker.isActive,
           },
-        })
-        .catch((err) => console.error("Greška pri sinhronizaciji Worker tabele iz Sezonaca:", err));
+        });
     }
 
+    await writeAudit(prisma, req, { entityType: "SeasonalWorker", entityId: worker.id, action: "IZMENA", description: "IZMENA: sezonac", oldValues: existing, newValues: worker });
     res.json({ worker, message: `Podaci za ${worker.name} uspešno ažurirani.` });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: error.errors[0].message });
+      return res.status(400).json({ error: error.issues[0].message });
     }
     console.error("Greška pri izmeni sezonca:", error);
     res.status(500).json({ error: "Greška pri ažuriranju podataka sezonca." });
   }
-});
+}));
 
 /**
  * DELETE /api/seasonal/workers/:id
  * Brisanje ili deaktivacija sezonca
  */
-router.delete("/workers/:id", async (req, res) => {
+router.delete("/workers/:id", inventoryMutation("workers", async (req, res, prisma) => {
   try {
     const { id } = req.params;
 
@@ -244,6 +248,7 @@ router.delete("/workers/:id", async (req, res) => {
         where: { id },
         data: { isActive: false },
       });
+      await writeAudit(prisma, req, { entityType: "SeasonalWorker", entityId: existing.id, action: "DEAKTIVACIJA", description: "Deaktiviran sezonac", oldValues: existing, newValues: { isActive: false } });
       return res.json({
         message: `Sezonac ${existing.name} ima evidentirane dane rada, pa je prebačen u status Neaktivan.`,
         deactivated: true,
@@ -256,15 +261,15 @@ router.delete("/workers/:id", async (req, res) => {
     await prisma.worker
       .deleteMany({
         where: { name: { equals: existing.name.trim(), mode: "insensitive" }, type: "SEZONAC" },
-      })
-      .catch((err) => console.error("Greška pri brisanju iz Worker tabele:", err));
+      });
 
+    await writeAudit(prisma, req, { entityType: "SeasonalWorker", entityId: existing.id, action: "BRISANJE", description: "Obrisan sezonac", oldValues: existing });
     res.json({ message: `Sezonac ${existing.name} uspešno obrisan.` });
   } catch (error) {
     console.error("Greška pri brisanju sezonca:", error);
     res.status(500).json({ error: "Greška pri brisanju sezonca." });
   }
-});
+}));
 
 // =========================================================================
 // 1.1 GRUPE SEZONACA (GROUPS CRUD & MANAGEMENT)
@@ -317,12 +322,7 @@ router.get("/groups", async (req, res) => {
             count: 0,
             workers: [],
           });
-          // Automatski sačuvaj ako do sada nije bila u bazi
-          prisma.seasonalGroup.upsert({
-            where: { name: gName },
-            update: {},
-            create: { name: gName },
-          }).catch(() => {});
+
         }
         const g = groupMap.get(gName);
         g.count += 1;
@@ -349,7 +349,7 @@ router.get("/groups", async (req, res) => {
  * POST /api/seasonal/groups
  * Kreiranje nove grupe i opciona dodela označenih radnika
  */
-router.post("/groups", async (req, res) => {
+router.post("/groups", inventoryMutation("seasonal", async (req, res, prisma) => {
   try {
     const { name, workerIds } = req.body;
     if (!name || !name.trim()) {
@@ -357,8 +357,11 @@ router.post("/groups", async (req, res) => {
     }
     const cleanName = name.trim();
 
+    const previousGroup = await prisma.seasonalGroup.findUnique({ where: { name: cleanName } });
+    const previousMembers = await prisma.seasonalWorker.findMany({ where: { groupName: cleanName }, select: { id: true, name: true, groupName: true } });
+
     // 1. Sačuvaj grupu u seasonalGroup tabeli (trajno perzistirana i sa 0 radnika)
-    await prisma.seasonalGroup.upsert({
+    const savedGroup = await prisma.seasonalGroup.upsert({
       where: { name: cleanName },
       update: {},
       create: { name: cleanName },
@@ -372,26 +375,31 @@ router.post("/groups", async (req, res) => {
       });
     }
 
+    const members = await prisma.seasonalWorker.findMany({ where: { groupName: cleanName }, select: { id: true, name: true, groupName: true } });
+    await writeAudit(prisma, req, { entityType: "SeasonalGroup", entityId: savedGroup.id, action: previousGroup ? "IZMENA" : "KREIRANJE",
+      description: "Promena grupe sezonaca", oldValues: previousGroup || previousMembers.length ? { name: cleanName, members: previousMembers } : null, newValues: { name: cleanName, members } });
     res.status(201).json({ message: `Grupa "${cleanName}" je uspešno sačuvana.` });
   } catch (error) {
     console.error("Greška pri kreiranju grupe:", error);
     res.status(500).json({ error: "Greška pri kreiranju grupe." });
   }
-});
+}));
 
 /**
  * PUT /api/seasonal/groups/:groupName
  * Izmena naziva grupe i/ili ažuriranje članova grupe
  */
-router.put("/groups/:groupName", async (req, res) => {
+router.put("/groups/:groupName", inventoryMutation("seasonal", async (req, res, prisma) => {
   try {
     const currentGroupName = decodeURIComponent(req.params.groupName).trim();
     const { newName, workerIds } = req.body;
 
     const finalName = newName && newName.trim() ? newName.trim() : currentGroupName;
 
+    const previousMembers = await prisma.seasonalWorker.findMany({ where: { groupName: currentGroupName }, select: { id: true, name: true, groupName: true } });
+
     // Ažuriraj ili kreiraj u seasonalGroup
-    await prisma.seasonalGroup.upsert({
+    const savedGroup = await prisma.seasonalGroup.upsert({
       where: { name: currentGroupName },
       update: { name: finalName },
       create: { name: finalName },
@@ -425,20 +433,26 @@ router.put("/groups/:groupName", async (req, res) => {
       }
     }
 
+    const members = await prisma.seasonalWorker.findMany({ where: { groupName: finalName }, select: { id: true, name: true, groupName: true } });
+    await writeAudit(prisma, req, { entityType: "SeasonalGroup", entityId: savedGroup.id, action: "IZMENA",
+      description: "Promena grupe sezonaca", oldValues: { name: currentGroupName, members: previousMembers }, newValues: { name: finalName, members } });
     res.json({ message: `Grupa "${finalName}" uspešno ažurirana.` });
   } catch (error) {
     console.error("Greška pri izmeni grupe:", error);
     res.status(500).json({ error: "Greška pri izmeni grupe." });
   }
-});
+}));
 
 /**
  * DELETE /api/seasonal/groups/:groupName
  * Brisanje / raspuštanje grupe (radnici postaju bez grupe, ne brišu se)
  */
-router.delete("/groups/:groupName", async (req, res) => {
+router.delete("/groups/:groupName", inventoryMutation("seasonal", async (req, res, prisma) => {
   try {
     const groupName = decodeURIComponent(req.params.groupName).trim();
+
+    const previousGroup = await prisma.seasonalGroup.findUnique({ where: { name: groupName } });
+    const previousMembers = await prisma.seasonalWorker.findMany({ where: { groupName: groupName }, select: { id: true, name: true, groupName: true } });
 
     // Obriši iz seasonalGroup tabele
     await prisma.seasonalGroup.deleteMany({
@@ -451,12 +465,14 @@ router.delete("/groups/:groupName", async (req, res) => {
       data: { groupName: null },
     });
 
+    await writeAudit(prisma, req, { entityType: "SeasonalGroup", entityId: previousGroup?.id || groupName, action: "BRISANJE",
+      description: "Promena grupe sezonaca", oldValues: { name: groupName, members: previousMembers } });
     res.json({ message: `Grupa "${groupName}" je uspešno obrisana.` });
   } catch (error) {
     console.error("Greška pri brisanju grupe:", error);
     res.status(500).json({ error: "Greška pri brisanju grupe." });
   }
-});
+}));
 
 // =========================================================================
 // 2. DNEVNA EVIDENCIJA RADA (LOGS)
@@ -554,7 +570,7 @@ router.get("/logs", async (req, res) => {
  * POST /api/seasonal/logs
  * Pojedinačni unos rada za jednog sezonca
  */
-router.post("/logs", async (req, res) => {
+router.post("/logs", inventoryMutation("seasonal", async (req, res, prisma) => {
   try {
     const {
       seasonalWorkerId,
@@ -569,7 +585,7 @@ router.post("/logs", async (req, res) => {
       groupName,
       groupCount,
       notes,
-    } = req.body;
+    } = seasonalLogInput.parse(req.body);
 
     if (!seasonalWorkerId) {
       return res.status(400).json({ error: "Izbor sezonskog radnika je obavezan." });
@@ -590,12 +606,14 @@ router.post("/logs", async (req, res) => {
       hoursWorked !== undefined && hoursWorked !== null && hoursWorked !== ""
         ? Number(hoursWorked)
         : calculateHoursWorked(startTime, endTime, breakMinutes);
+    validateWorkHours(computedHours);
 
     // Dnevnica: ako je prosleđena u zahtevu koristi se ona, inače radnikova default dnevnica
     const finalWage =
       dailyWageApplied !== undefined && dailyWageApplied !== null && dailyWageApplied !== ""
         ? Number(dailyWageApplied)
         : worker.dailyWage || null;
+    validateAppliedWage(finalWage);
 
     const log = await prisma.seasonalWorkLog.create({
       data: {
@@ -620,18 +638,22 @@ router.post("/logs", async (req, res) => {
       },
     });
 
+    await writeAudit(prisma, req, { entityType: "SeasonalWorkLog", entityId: log.id, action: "KREIRANJE", description: "Evidentiran rad i dnevnica sezonca", newValues: log, context: { workerName: worker.name } });
     res.status(201).json({ log, message: "Radni dan uspešno evidentiran." });
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: error.issues.map((issue) => issue.message).join(". ") });
+    }
     console.error("Greška pri unosu rada sezonca:", error);
     res.status(500).json({ error: "Greška na serveru pri evidentiranju rada." });
   }
-});
+}, { idempotent: true }));
 
 /**
  * POST /api/seasonal/logs/group
  * Grupni unos rada — u jednoj transakciji kreira zapise za celu grupu radnika
  */
-router.post("/logs/group", async (req, res) => {
+router.post("/logs/group", inventoryMutation("seasonal", async (req, res, prisma) => {
   try {
     const {
       workerIds,
@@ -645,7 +667,7 @@ router.post("/logs/group", async (req, res) => {
       dailyWage,
       groupName,
       notes,
-    } = req.body;
+    } = seasonalLogInput.parse(req.body);
 
     if (!Array.isArray(workerIds) || workerIds.length === 0) {
       return res.status(400).json({ error: "Morate označiti barem jednog radnika." });
@@ -666,54 +688,60 @@ router.post("/logs/group", async (req, res) => {
       hoursWorked !== undefined && hoursWorked !== null && hoursWorked !== ""
         ? Number(hoursWorked)
         : calculateHoursWorked(startTime, endTime, breakMinutes);
+    validateWorkHours(computedHours);
 
     const logDate = date ? new Date(date) : new Date();
     const groupCount = workers.length;
 
-    // Kreiramo zapise za svakog označenog radnika kroz prisma transakciju
-    const createdLogs = await prisma.$transaction(
-      workers.map((w) => {
-        const finalWage =
-          dailyWage !== undefined && dailyWage !== null && dailyWage !== ""
-            ? Number(dailyWage)
-            : w.dailyWage || null;
+    // Validate every worker's effective wage before starting any group writes.
+    const preparedWorkers = workers.map((w) => ({
+      worker: w,
+      finalWage: validateAppliedWage(dailyWage !== undefined && dailyWage !== null ? dailyWage : w.dailyWage || null),
+    }));
+    const logsData = preparedWorkers.map(({ worker: w, finalWage }) => ({
+      date: logDate,
+      seasonalWorkerId: w.id,
+      parcelId: parcelId || null,
+      jobDescription: jobDescription.trim(),
+      startTime: startTime || null,
+      endTime: endTime || null,
+      breakMinutes: Number(breakMinutes) || 0,
+      hoursWorked: computedHours,
+      dailyWageApplied: finalWage,
+      supervisorId: req.user.id,
+      groupName: groupName || w.groupName || null,
+      groupCount,
+      notes: notes || null,
+    }));
 
-        return prisma.seasonalWorkLog.create({
-          data: {
-            date: logDate,
-            seasonalWorkerId: w.id,
-            parcelId: parcelId || null,
-            jobDescription: jobDescription.trim(),
-            startTime: startTime || null,
-            endTime: endTime || null,
-            breakMinutes: Number(breakMinutes) || 0,
-            hoursWorked: computedHours,
-            dailyWageApplied: finalWage,
-            supervisorId: req.user.id,
-            groupName: groupName || w.groupName || null,
-            groupCount,
-            notes: notes || null,
-          },
-        });
-      })
-    );
+    const createdLogs = typeof prisma.seasonalWorkLog.createManyAndReturn === "function"
+      ? await prisma.seasonalWorkLog.createManyAndReturn({ data: logsData })
+      : await prisma.$transaction(logsData.map((data) => prisma.seasonalWorkLog.create({ data })));
 
+    await writeAuditBatch(prisma, req, createdLogs.map((log, index) => ({
+      entityType: "SeasonalWorkLog", entityId: log.id, action: "KREIRANJE",
+      description: "Grupni unos rada i dnevnica", newValues: log,
+      context: { workerName: preparedWorkers[index].worker.name, groupSize: createdLogs.length },
+    })));
     res.status(201).json({
       success: true,
       count: createdLogs.length,
       message: `Uspešno evidentiran rad za ${createdLogs.length} radnika (${computedHours}h po radniku).`,
     });
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: error.issues.map((issue) => issue.message).join(". ") });
+    }
     console.error("Greška pri grupnom unosu rada:", error);
     res.status(500).json({ error: "Greška na serveru pri grupnom unosu rada." });
   }
-});
+}, { idempotent: true }));
 
 /**
  * PUT /api/seasonal/logs/:id
  * Izmena postojećeg zapisa iz dnevnika rada
  */
-router.put("/logs/:id", async (req, res) => {
+router.put("/logs/:id", inventoryMutation("seasonal", async (req, res, prisma) => {
   try {
     const { id } = req.params;
     const {
@@ -723,13 +751,13 @@ router.put("/logs/:id", async (req, res) => {
       date,
       startTime,
       endTime,
-      breakMinutes = 0,
+      breakMinutes,
       hoursWorked,
       dailyWageApplied,
       groupName,
       groupCount,
       notes,
-    } = req.body;
+    } = seasonalLogInput.parse(req.body);
 
     const existing = await prisma.seasonalWorkLog.findUnique({ where: { id } });
     if (!existing) {
@@ -751,12 +779,16 @@ router.put("/logs/:id", async (req, res) => {
 
     const newStartTime = startTime !== undefined ? startTime : existing.startTime;
     const newEndTime = endTime !== undefined ? endTime : existing.endTime;
-    const newBreak = breakMinutes !== undefined ? Number(breakMinutes) || 0 : existing.breakMinutes;
+    const newBreak = breakMinutes !== undefined ? breakMinutes : existing.breakMinutes;
 
     const computedHours =
       hoursWorked !== undefined && hoursWorked !== null && hoursWorked !== ""
         ? Number(hoursWorked)
-        : calculateHoursWorked(newStartTime, newEndTime, newBreak);
+        : (startTime !== undefined || endTime !== undefined || breakMinutes !== undefined)
+          ? calculateHoursWorked(newStartTime, newEndTime, newBreak)
+          : existing.hoursWorked;
+    validateWorkHours(computedHours);
+    if (dailyWageApplied !== undefined && dailyWageApplied !== null) validateAppliedWage(dailyWageApplied);
 
     const updatedLog = await prisma.seasonalWorkLog.update({
       where: { id },
@@ -783,18 +815,22 @@ router.put("/logs/:id", async (req, res) => {
       },
     });
 
+    await writeAudit(prisma, req, { entityType: "SeasonalWorkLog", entityId: existing.id, action: "IZMENA", description: "Izmenjen rad i dnevnica sezonca", oldValues: existing, newValues: updatedLog });
     res.json({ log: updatedLog, message: "Zapis o radu uspešno ažuriran." });
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: error.issues.map((issue) => issue.message).join(". ") });
+    }
     console.error("Greška pri izmeni zapisa rada:", error);
     res.status(500).json({ error: "Greška na serveru pri izmeni zapisa rada." });
   }
-});
+}));
 
 /**
  * DELETE /api/seasonal/logs/:id
  * Brisanje zapisa iz dnevnika rada
  */
-router.delete("/logs/:id", async (req, res) => {
+router.delete("/logs/:id", inventoryMutation("seasonal", async (req, res, prisma) => {
   try {
     const { id } = req.params;
 
@@ -804,12 +840,13 @@ router.delete("/logs/:id", async (req, res) => {
     }
 
     await prisma.seasonalWorkLog.delete({ where: { id } });
+    await writeAudit(prisma, req, { entityType: "SeasonalWorkLog", entityId: existing.id, action: "BRISANJE", description: "Obrisan rad i dnevnica sezonca", oldValues: existing });
     res.json({ message: "Zapis o radu uspešno obrisan." });
   } catch (error) {
     console.error("Greška pri brisanju zapisa rada:", error);
     res.status(500).json({ error: "Greška pri brisanju zapisa rada." });
   }
-});
+}));
 
 // =========================================================================
 // 3. AGREGACIJE & ZBIROVI SATI
@@ -875,7 +912,7 @@ router.get("/summary", async (req, res) => {
       const hours = Number(log.hoursWorked) || 0;
       const wage = Number(log.dailyWageApplied) || 0;
       totalHours += hours;
-      totalDailyWage += wage;
+      totalDailyWage = addMoney(totalDailyWage, wage);
 
       // Radnik
       const wId = log.seasonalWorkerId;
@@ -893,7 +930,7 @@ router.get("/summary", async (req, res) => {
       const wObj = workerMap.get(wId);
       wObj.daysCount.add(log.date.toISOString().split("T")[0]);
       wObj.totalHours += hours;
-      wObj.totalWage += wage;
+      wObj.totalWage = addMoney(wObj.totalWage, wage);
 
       // Parcela
       const pKey = log.parcelId || "NO_PARCEL";
@@ -912,7 +949,7 @@ router.get("/summary", async (req, res) => {
       const pObj = parcelMap.get(pKey);
       pObj.logsCount += 1;
       pObj.totalHours += hours;
-      pObj.totalWage += wage;
+      pObj.totalWage = addMoney(pObj.totalWage, wage);
 
       // Dan
       const dKey = log.date.toISOString().split("T")[0];
@@ -929,7 +966,7 @@ router.get("/summary", async (req, res) => {
       dObj.workersSet.add(wId);
       dObj.logsCount += 1;
       dObj.totalHours += hours;
-      dObj.totalWage += wage;
+      dObj.totalWage = addMoney(dObj.totalWage, wage);
 
       // Posao
       const jKey = log.jobDescription.trim();
@@ -944,7 +981,7 @@ router.get("/summary", async (req, res) => {
       const jObj = jobMap.get(jKey);
       jObj.logsCount += 1;
       jObj.totalHours += hours;
-      jObj.totalWage += wage;
+      jObj.totalWage = addMoney(jObj.totalWage, wage);
 
       // Grupa
       const gKey = (log.groupName || log.seasonalWorker.groupName || "Bez grupe (Pojedinačni)").trim();
@@ -961,7 +998,7 @@ router.get("/summary", async (req, res) => {
       gObj.workersSet.add(wId);
       gObj.logsCount += 1;
       gObj.totalHours += hours;
-      gObj.totalWage += wage;
+      gObj.totalWage = addMoney(gObj.totalWage, wage);
     }
 
     const byWorker = Array.from(workerMap.values())
@@ -1158,7 +1195,7 @@ router.get("/export-excel", async (req, res) => {
       const hours = Number(log.hoursWorked) || 0;
       const wage = Number(log.dailyWageApplied) || 0;
       totalHoursSum += hours;
-      totalWageSum += wage;
+      totalWageSum = addMoney(totalWageSum, wage);
 
       const dateStr = log.date.toLocaleDateString("sr-RS");
       const parcelStr = log.parcel

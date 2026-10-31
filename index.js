@@ -1,12 +1,17 @@
 import "dotenv/config";
+import { sentryRequestScope, sentryErrorHandler, flushSentry } from "./lib/sentry.js";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import { installApiAccess } from "./lib/rateLimiting.js";
 import { toNodeHandler } from "better-auth/node";
 import { auth } from "./routes/auth.js";
 import { prisma } from "./lib/prisma.js";
 import { installGracefulShutdown } from "./lib/shutdown.js";
+import { createHealthCheck, rejectWhileDraining } from "./lib/health.js";
+import { startStorageMonitor } from "./lib/storageUsage.js";
+import { startPushOutboxWorker } from "./lib/pushOutbox.js";
+import { sendPushSubscription, isPushConfigured } from "./lib/pushNotification.js";
 import usersRouter from "./routes/users.js";
 import masterDataRouter from "./routes/masterData.js";
 import assignmentsRouter from "./routes/assignments.js";
@@ -24,6 +29,8 @@ import analyticsRouter from "./routes/analytics.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+app.use(sentryRequestScope);
 
 // Dozvoli rad iza proksija (ngrok, localtunnel, Cloudflare, Nginx)
 app.set("trust proxy", 1);
@@ -55,33 +62,11 @@ app.use(
   })
 );
 
-// Globalni rate limiter prilagođen za deljenu kompanijsku mrežu / WiFi (NAT)
-// Omogućava nesmetan istovremeni rad desetinama radnika sa iste IP adrese (npr. 3000 req / 15 min)
-const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 3000,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Prekoračen broj zahteva sa vaše mreže. Molimo sačekajte koji minut." },
-});
-app.use(globalLimiter);
+// Readiness must remain available independently of application rate limits.
+app.get("/api/health", createHealthCheck(prisma, { isStopping: () => shutdown.isStopping() }));
+app.use(rejectWhileDraining(() => shutdown.isStopping()));
 
-// Auth rate limiter:
-// - skipSuccessfulRequests: true -> USPEŠNA logovanja radnika na smeni NE troše kvotu
-// - Broje se samo NEUSPEŠNI pokušaji sa pogrešnim lozinkama (max 60 pogrešnih pokušaja u 15 min)
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 60,
-  skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Previše neuspešnih pokušaja prijave sa vaše mreže. Molimo sačekajte 15 minuta." },
-});
-app.use("/api/auth/sign-in", authLimiter);
-app.use("/api/auth/sign-up", authLimiter);
-
-// Better Auth - sve /api/auth/* rute (pre body parsera jer sam handluje request)
-app.all("/api/auth/{*splat}", toNodeHandler(auth));
+installApiAccess(app, toNodeHandler(auth));
 
 // JSON body parser za ostale rute
 app.use(express.json());
@@ -102,16 +87,19 @@ app.use("/api/seasonal", seasonalWorkersRouter);
 app.use("/api/onion", onionRouter);
 app.use("/api/analytics", analyticsRouter);
 
-// Health check
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
+app.use(sentryErrorHandler);
 
+const stopStorageMonitor = startStorageMonitor(prisma);
+const stopPushWorker = startPushOutboxWorker(prisma, sendPushSubscription, { enabled: isPushConfigured() });
 const server = app.listen(PORT, () => {
   console.log(`✅ NANDRA Backend pokrenut na http://localhost:${PORT}`);
 });
 
-installGracefulShutdown(server, prisma);
+const shutdown = installGracefulShutdown(server, prisma, { onShutdown: () => {
+  stopStorageMonitor();
+  return Promise.resolve(stopPushWorker()).finally(flushSentry);
+} });
+server.once("close", stopStorageMonitor);
 
 export default app;
 

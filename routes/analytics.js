@@ -1,3 +1,6 @@
+import { loadFuelEfficiency } from "../lib/fuelEfficiency.js";
+import { loadAnalyticsBatch } from "../lib/analyticsBatch.js";
+import { addMoney, multiplyMoney } from "../lib/money.js";
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
@@ -7,6 +10,16 @@ const router = Router();
 // Samo DIREKTOR može pristupiti analitici
 router.use(requireAuth);
 router.use(requireRole(["DIREKTOR"]));
+
+router.get("/fuel-efficiency", async (req, res) => {
+  try {
+    res.json(await loadFuelEfficiency(prisma, req.query));
+  } catch (error) {
+    if (error.message === "INVALID_FUEL_QUERY") return res.status(400).json({ error: "Neispravni filteri ili stranica izvestaja." });
+    console.error("Fuel efficiency report failed:", error);
+    res.status(500).json({ error: "Analitika goriva nije dostupna." });
+  }
+});
 
 // ============================
 // HELPER: Parse date range
@@ -157,46 +170,46 @@ router.get("/top-machines", async (req, res) => {
     });
     const machineMap = Object.fromEntries(machines.map((m) => [m.id, m]));
 
-    const topMachines = await Promise.all(
-      pagedAggs.map(async (agg) => {
-        const machine = machineMap[agg.machineId] || { id: agg.machineId, name: "Nepoznata", type: "TRAKTOR" };
-        const mDateWhere = { ...dateWhere, machineId: agg.machineId };
-        const mReportedWhere = {
-          ...parseDateRangeField(req.query, "dateReported"),
-          machineId: agg.machineId,
-        };
-
-        const [fuel, maintenance] = await Promise.all([
-          prisma.fuelEntry.aggregate({
-            where: mDateWhere,
+    // Batch: 2 groupBy upita za celu stranicu umesto 2 upita po mašini (N+1).
+    const [fuelAggs, maintenanceAggs] = machineIds.length
+      ? await Promise.all([
+          prisma.fuelEntry.groupBy({
+            by: ["machineId"],
+            where: { ...dateWhere, machineId: { in: machineIds } },
             _sum: { liters: true, totalCost: true },
           }),
-          prisma.maintenanceIssue.aggregate({
-            where: mReportedWhere,
+          prisma.maintenanceIssue.groupBy({
+            by: ["machineId"],
+            where: { ...parseDateRangeField(req.query, "dateReported"), machineId: { in: machineIds } },
             _sum: { totalCost: true },
           }),
-        ]);
+        ])
+      : [[], []];
+    const fuelMap = new Map(fuelAggs.map((r) => [r.machineId, r]));
+    const maintMap = new Map(maintenanceAggs.map((r) => [r.machineId, r]));
 
-        const fuelTotal = fuel._sum.totalCost || 0;
-        const maintTotal = maintenance._sum.totalCost || 0;
+    const topMachines = pagedAggs.map((agg) => {
+      const machine = machineMap[agg.machineId] || { id: agg.machineId, name: "Nepoznata", type: "TRAKTOR" };
+      const fuel = fuelMap.get(agg.machineId);
+      const fuelTotal = fuel?._sum.totalCost || 0;
+      const maintTotal = maintMap.get(agg.machineId)?._sum.totalCost || 0;
 
-        return {
-          machine,
-          fieldWork: {
-            totalHa: agg._sum.areaDoneHa || 0,
-            totalWorkHours: agg._sum.workHours || 0,
-          },
-          fuel: {
-            totalLiters: fuel._sum.liters || 0,
-            totalCost: fuelTotal,
-          },
-          maintenance: {
-            totalCost: maintTotal,
-          },
-          totalCostMachine: fuelTotal + maintTotal,
-        };
-      })
-    );
+      return {
+        machine,
+        fieldWork: {
+          totalHa: agg._sum.areaDoneHa || 0,
+          totalWorkHours: agg._sum.workHours || 0,
+        },
+        fuel: {
+          totalLiters: fuel?._sum.liters || 0,
+          totalCost: fuelTotal,
+        },
+        maintenance: {
+          totalCost: maintTotal,
+        },
+        totalCostMachine: addMoney(fuelTotal, maintTotal),
+      };
+    });
 
     res.json({
       topMachines,
@@ -218,7 +231,7 @@ router.get("/top-machines", async (req, res) => {
 // ============================
 router.get("/machines", async (req, res) => {
   try {
-    const { dateFrom, dateTo, machineId, search, all } = req.query;
+    const { machineId, search, all } = req.query;
     const dateWhere = parseDateRange(req.query);
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -254,135 +267,57 @@ router.get("/machines", async (req, res) => {
       take: limit,
     });
 
-    const machineStats = await Promise.all(
-      machines.map(async (machine) => {
-        const mDateWhere = { ...dateWhere, machineId: machine.id };
-        const mReportedWhere = {
-          ...parseDateRangeField(req.query, "dateReported"),
-          machineId: machine.id,
-        };
-
-        const [fieldWork, fuel, maintenance, tolls] = await Promise.all([
-          prisma.fieldWork.aggregate({
-            where: { ...mDateWhere, status: "ZAVRSENO" },
-            _sum: { areaDoneHa: true, workHours: true },
-            _count: true,
-          }),
-          prisma.fuelEntry.aggregate({
-            where: mDateWhere,
-            _sum: { liters: true, totalCost: true },
-            _count: true,
-          }),
-          prisma.maintenanceIssue.aggregate({
-            where: mReportedWhere,
-            _sum: { totalCost: true, partsCost: true, laborCost: true, downtimeHours: true },
-            _count: true,
-          }),
-          prisma.tollEntry.aggregate({
-            where: mDateWhere,
-            _sum: { amount: true },
-            _count: true,
-          }),
-        ]);
-
-        const topWorkers = await prisma.fieldWork.groupBy({
-          by: ["workerId"],
-          where: { ...mDateWhere, status: "ZAVRSENO" },
-          _sum: { areaDoneHa: true, workHours: true },
-          _count: true,
-          orderBy: { _sum: { areaDoneHa: "desc" } },
-          take: 5,
-        });
-
-        const workerIds = topWorkers.map((w) => w.workerId);
-        const workers = await prisma.worker.findMany({
-          where: { id: { in: workerIds } },
-          select: { id: true, name: true },
-        });
-        const workerMap = Object.fromEntries(workers.map((w) => [w.id, w.name]));
-
-        const workTypeBreakdown = await prisma.fieldWork.groupBy({
-          by: ["workTypeId"],
-          where: { ...mDateWhere, status: "ZAVRSENO" },
-          _sum: { areaDoneHa: true },
-          _count: true,
-        });
-        const workTypeIds = workTypeBreakdown.map((wt) => wt.workTypeId);
-        const workTypes = await prisma.workType.findMany({
-          where: { id: { in: workTypeIds } },
-          select: { id: true, name: true },
-        });
-        const workTypeMap = Object.fromEntries(workTypes.map((wt) => [wt.id, wt.name]));
-
-        const recentRepairs = await prisma.maintenanceIssue.findMany({
-          where: { machineId: machine.id },
-          orderBy: { dateReported: "desc" },
-          take: 10,
-          select: {
-            id: true,
-            title: true,
-            serviceType: true,
-            priority: true,
-            status: true,
-            totalCost: true,
-            partsReplaced: true,
-            repairNotes: true,
-            dateReported: true,
-            repairedAt: true,
-            downtimeHours: true,
-            lubricantType: true,
-            lubricantLiters: true,
-          },
-        });
-
-        return {
-          machine,
-          fieldWork: {
-            totalHa: fieldWork._sum.areaDoneHa || 0,
-            totalWorkHours: fieldWork._sum.workHours || 0,
-            count: fieldWork._count,
-          },
-          fuel: {
-            totalLiters: fuel._sum.liters || 0,
-            totalCost: fuel._sum.totalCost || 0,
-            count: fuel._count,
-            avgLPerHa:
-              fieldWork._sum.areaDoneHa && fuel._sum.liters
-                ? +(fuel._sum.liters / fieldWork._sum.areaDoneHa).toFixed(2)
-                : 0,
-          },
-          maintenance: {
-            totalCost: maintenance._sum.totalCost || 0,
-            partsCost: maintenance._sum.partsCost || 0,
-            laborCost: maintenance._sum.laborCost || 0,
-            downtimeHours: maintenance._sum.downtimeHours || 0,
-            count: maintenance._count,
-            recentRepairs,
-          },
-          tolls: {
-            totalCost: tolls._sum.amount || 0,
-            count: tolls._count,
-          },
-          totalCostMachine:
-            (fuel._sum.totalCost || 0) +
-            (maintenance._sum.totalCost || 0) +
-            (tolls._sum.amount || 0),
-          topWorkers: topWorkers.map((tw) => ({
-            workerName: workerMap[tw.workerId] || "Nepoznat",
-            workerId: tw.workerId,
-            totalHa: tw._sum.areaDoneHa || 0,
-            totalHours: tw._sum.workHours || 0,
-            count: tw._count,
-          })),
-          workTypeBreakdown: workTypeBreakdown.map((wt) => ({
-            workTypeName: workTypeMap[wt.workTypeId] || "Nepoznat",
-            workTypeId: wt.workTypeId,
-            totalHa: wt._sum.areaDoneHa || 0,
-            count: wt._count,
-          })),
-        };
-      })
+    const stats = await loadAnalyticsBatch(
+      prisma, "machine", machines.map((item) => item.id), dateWhere,
+      parseDateRangeField(req.query, "dateReported")
     );
+    const machineStats = machines.map((machine) => {
+      const { fieldWork, fuel, maintenance, tolls, related: topWorkers,
+        workTypeBreakdown, workTypeMap, relatedMap: workerMap, recentRepairs } = stats.get(machine.id);
+
+      return {
+        machine,
+        fieldWork: {
+          totalHa: fieldWork._sum.areaDoneHa || 0,
+          totalWorkHours: fieldWork._sum.workHours || 0,
+          count: fieldWork._count,
+        },
+        fuel: {
+          totalLiters: fuel._sum.liters || 0,
+          totalCost: fuel._sum.totalCost || 0,
+          count: fuel._count,
+          // Dispensed liters do not measure consumption. Use /fuel-efficiency.
+          avgLPerHa: null,
+        },
+        maintenance: {
+          totalCost: maintenance._sum.totalCost || 0,
+          partsCost: maintenance._sum.partsCost || 0,
+          laborCost: maintenance._sum.laborCost || 0,
+          downtimeHours: maintenance._sum.downtimeHours || 0,
+          count: maintenance._count,
+          recentRepairs,
+        },
+        tolls: {
+          totalCost: tolls._sum.amount || 0,
+          count: tolls._count,
+        },
+        totalCostMachine:
+          addMoney(fuel._sum.totalCost || 0, maintenance._sum.totalCost || 0, tolls._sum.amount || 0),
+        topWorkers: topWorkers.map((tw) => ({
+          workerName: workerMap[tw.workerId] || "Nepoznat",
+          workerId: tw.workerId,
+          totalHa: tw._sum.areaDoneHa || 0,
+          totalHours: tw._sum.workHours || 0,
+          count: tw._count,
+        })),
+        workTypeBreakdown: workTypeBreakdown.map((wt) => ({
+          workTypeName: workTypeMap[wt.workTypeId] || "Nepoznat",
+          workTypeId: wt.workTypeId,
+          totalHa: wt._sum.areaDoneHa || 0,
+          count: wt._count,
+        })),
+      };
+    });
 
     res.json({
       machines: machineStats,
@@ -404,7 +339,7 @@ router.get("/machines", async (req, res) => {
 // ============================
 router.get("/workers", async (req, res) => {
   try {
-    const { dateFrom, dateTo, workerId, search, all } = req.query;
+    const { workerId, search, all } = req.query;
     const dateWhere = parseDateRange(req.query);
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -436,136 +371,62 @@ router.get("/workers", async (req, res) => {
       take: limit,
     });
 
-    const workerStats = await Promise.all(
-      workers.map(async (worker) => {
-        const wDateWhere = { ...dateWhere, workerId: worker.id };
-
-        const [fieldWork, fuel, maintenance, tolls] = await Promise.all([
-          prisma.fieldWork.aggregate({
-            where: { ...wDateWhere, status: "ZAVRSENO" },
-            _sum: { areaDoneHa: true, workHours: true },
-            _count: true,
-          }),
-          prisma.fuelEntry.aggregate({
-            where: wDateWhere,
-            _sum: { liters: true, totalCost: true },
-            _count: true,
-          }),
-          prisma.maintenanceIssue.count({
-            where: {
-              ...parseDateRangeField(req.query, "dateReported"),
-              reportedById: worker.id,
-            },
-          }),
-          prisma.tollEntry.aggregate({
-            where: wDateWhere,
-            _sum: { amount: true },
-            _count: true,
-          }),
-        ]);
-
-        const machineBreakdown = await prisma.fieldWork.groupBy({
-          by: ["machineId"],
-          where: { ...wDateWhere, status: "ZAVRSENO" },
-          _sum: { areaDoneHa: true, workHours: true },
-          _count: true,
-          orderBy: { _sum: { areaDoneHa: "desc" } },
-          take: 10,
-        });
-        const machineIds = machineBreakdown.map((m) => m.machineId);
-        const machines = await prisma.machine.findMany({
-          where: { id: { in: machineIds } },
-          select: { id: true, name: true, type: true },
-        });
-        const machineMap = Object.fromEntries(machines.map((m) => [m.id, m.name]));
-
-        const workTypeBreakdown = await prisma.fieldWork.groupBy({
-          by: ["workTypeId"],
-          where: { ...wDateWhere, status: "ZAVRSENO" },
-          _sum: { areaDoneHa: true },
-          _count: true,
-        });
-        const workTypeIds = workTypeBreakdown.map((wt) => wt.workTypeId);
-        const workTypes = await prisma.workType.findMany({
-          where: { id: { in: workTypeIds } },
-          select: { id: true, name: true },
-        });
-        const workTypeMap = Object.fromEntries(workTypes.map((wt) => [wt.id, wt.name]));
-
-        const parcelBreakdown = await prisma.fieldWork.groupBy({
-          by: ["parcelId"],
-          where: { ...wDateWhere, status: "ZAVRSENO" },
-          _sum: { areaDoneHa: true },
-          _count: true,
-          orderBy: { _sum: { areaDoneHa: "desc" } },
-          take: 10,
-        });
-        const parcelIds = parcelBreakdown.map((p) => p.parcelId);
-        const parcels = await prisma.parcel.findMany({
-          where: { id: { in: parcelIds } },
-          select: { id: true, name: true, code: true },
-        });
-        const parcelMap = Object.fromEntries(parcels.map((p) => [p.id, `[${p.code}] ${p.name}`]));
-
-        const orderStats = await prisma.workOrder.groupBy({
-          by: ["status"],
-          where: {
-            ...parseDateRangeField(req.query, "orderDate"),
-            workerId: worker.id,
-          },
-          _count: true,
-        });
-
-        return {
-          worker,
-          fieldWork: {
-            totalHa: fieldWork._sum.areaDoneHa || 0,
-            totalWorkHours: fieldWork._sum.workHours || 0,
-            count: fieldWork._count,
-            estimatedLabourCost: worker.hourlyRate
-              ? +((fieldWork._sum.workHours || 0) * worker.hourlyRate).toFixed(0)
-              : null,
-          },
-          fuel: {
-            totalLiters: fuel._sum.liters || 0,
-            totalCost: fuel._sum.totalCost || 0,
-            avgLPerHa:
-              fieldWork._sum.areaDoneHa && fuel._sum.liters
-                ? +(fuel._sum.liters / fieldWork._sum.areaDoneHa).toFixed(2)
-                : 0,
-          },
-          maintenanceReported: maintenance,
-          tolls: {
-            totalCost: tolls._sum.amount || 0,
-            count: tolls._count,
-          },
-          machineBreakdown: machineBreakdown.map((m) => ({
-            machineName: machineMap[m.machineId] || "Nepoznata",
-            machineId: m.machineId,
-            totalHa: m._sum.areaDoneHa || 0,
-            totalHours: m._sum.workHours || 0,
-            count: m._count,
-          })),
-          workTypeBreakdown: workTypeBreakdown.map((wt) => ({
-            workTypeName: workTypeMap[wt.workTypeId] || "Nepoznat",
-            totalHa: wt._sum.areaDoneHa || 0,
-            count: wt._count,
-          })),
-          parcelBreakdown: parcelBreakdown.map((p) => ({
-            parcelName: parcelMap[p.parcelId] || "Nepoznata",
-            totalHa: p._sum.areaDoneHa || 0,
-            count: p._count,
-          })),
-          orderStats: orderStats.reduce(
-            (acc, os) => {
-              acc[os.status] = os._count;
-              return acc;
-            },
-            {}
-          ),
-        };
-      })
+    const stats = await loadAnalyticsBatch(
+      prisma, "worker", workers.map((item) => item.id), dateWhere,
+      parseDateRangeField(req.query, "dateReported"),
+      parseDateRangeField(req.query, "orderDate")
     );
+    const workerStats = workers.map((worker) => {
+      const { fieldWork, fuel, maintenance, tolls, related: machineBreakdown,
+        workTypeBreakdown, workTypeMap, relatedMap: machineMap, parcelBreakdown, parcelMap, orderStats } = stats.get(worker.id);
+
+      return {
+        worker,
+        fieldWork: {
+          totalHa: fieldWork._sum.areaDoneHa || 0,
+          totalWorkHours: fieldWork._sum.workHours || 0,
+          count: fieldWork._count,
+          estimatedLabourCost: worker.hourlyRate
+            ? multiplyMoney(fieldWork._sum.workHours || 0, worker.hourlyRate)
+            : null,
+        },
+        fuel: {
+          totalLiters: fuel._sum.liters || 0,
+          totalCost: fuel._sum.totalCost || 0,
+          // Dispensed liters do not measure consumption. Use /fuel-efficiency.
+          avgLPerHa: null,
+        },
+        maintenanceReported: maintenance,
+        tolls: {
+          totalCost: tolls._sum.amount || 0,
+          count: tolls._count,
+        },
+        machineBreakdown: machineBreakdown.map((m) => ({
+          machineName: machineMap[m.machineId] || "Nepoznata",
+          machineId: m.machineId,
+          totalHa: m._sum.areaDoneHa || 0,
+          totalHours: m._sum.workHours || 0,
+          count: m._count,
+        })),
+        workTypeBreakdown: workTypeBreakdown.map((wt) => ({
+          workTypeName: workTypeMap[wt.workTypeId] || "Nepoznat",
+          totalHa: wt._sum.areaDoneHa || 0,
+          count: wt._count,
+        })),
+        parcelBreakdown: parcelBreakdown.map((p) => ({
+          parcelName: parcelMap[p.parcelId] || "Nepoznata",
+          totalHa: p._sum.areaDoneHa || 0,
+          count: p._count,
+        })),
+        orderStats: orderStats.reduce(
+          (acc, os) => {
+            acc[os.status] = os._count;
+            return acc;
+          },
+          {}
+        ),
+      };
+    });
 
     res.json({
       workers: workerStats,
@@ -621,51 +482,59 @@ router.get("/parcels", async (req, res) => {
       take: limit,
     });
 
-    const parcelStats = await Promise.all(
-      parcels.map(async (parcel) => {
-        const pDateWhere = { ...dateWhere, parcelId: parcel.id };
-
-        const [fieldWork, fertilizer, seasonal] = await Promise.all([
-          prisma.fieldWork.aggregate({
-            where: { ...pDateWhere, status: "ZAVRSENO" },
+    // Batch: 3 groupBy upita za celu stranicu umesto 3 upita po parceli (N+1).
+    const parcelIds = parcels.map((p) => p.id);
+    const pageWhere = { ...dateWhere, parcelId: { in: parcelIds } };
+    const [fieldWorkAggs, fertilizerAggs, seasonalAggs] = parcelIds.length
+      ? await Promise.all([
+          prisma.fieldWork.groupBy({
+            by: ["parcelId"],
+            where: { ...pageWhere, status: "ZAVRSENO" },
             _sum: { areaDoneHa: true, workHours: true },
-            _count: true,
+            _count: { _all: true },
           }),
-          prisma.fertilizerMovement.aggregate({
-            where: {
-              ...pDateWhere,
-              movementType: "IZDAVANJE_NJIVA",
-            },
+          prisma.fertilizerMovement.groupBy({
+            by: ["parcelId"],
+            where: { ...pageWhere, movementType: "IZDAVANJE_NJIVA" },
             _sum: { quantity: true, totalCost: true },
-            _count: true,
+            _count: { _all: true },
           }),
-          prisma.seasonalWorkLog.aggregate({
-            where: pDateWhere,
+          prisma.seasonalWorkLog.groupBy({
+            by: ["parcelId"],
+            where: pageWhere,
             _sum: { hoursWorked: true, dailyWageApplied: true },
-            _count: true,
+            _count: { _all: true },
           }),
-        ]);
+        ])
+      : [[], [], []];
+    const byParcel = (rows) => new Map(rows.map((r) => [r.parcelId, r]));
+    const fwMap = byParcel(fieldWorkAggs);
+    const fertMap = byParcel(fertilizerAggs);
+    const seasMap = byParcel(seasonalAggs);
 
-        return {
-          parcel,
-          fieldWork: {
-            totalHa: fieldWork._sum.areaDoneHa || 0,
-            totalWorkHours: fieldWork._sum.workHours || 0,
-            count: fieldWork._count,
-          },
-          fertilizer: {
-            totalQuantity: fertilizer._sum.quantity || 0,
-            totalCost: fertilizer._sum.totalCost || 0,
-            count: fertilizer._count,
-          },
-          seasonal: {
-            totalHours: seasonal._sum.hoursWorked || 0,
-            totalWages: seasonal._sum.dailyWageApplied || 0,
-            count: seasonal._count,
-          },
-        };
-      })
-    );
+    const parcelStats = parcels.map((parcel) => {
+      const fieldWork = fwMap.get(parcel.id);
+      const fertilizer = fertMap.get(parcel.id);
+      const seasonal = seasMap.get(parcel.id);
+      return {
+        parcel,
+        fieldWork: {
+          totalHa: fieldWork?._sum.areaDoneHa || 0,
+          totalWorkHours: fieldWork?._sum.workHours || 0,
+          count: fieldWork?._count._all || 0,
+        },
+        fertilizer: {
+          totalQuantity: fertilizer?._sum.quantity || 0,
+          totalCost: fertilizer?._sum.totalCost || 0,
+          count: fertilizer?._count._all || 0,
+        },
+        seasonal: {
+          totalHours: seasonal?._sum.hoursWorked || 0,
+          totalWages: seasonal?._sum.dailyWageApplied || 0,
+          count: seasonal?._count._all || 0,
+        },
+      };
+    });
 
     res.json({
       parcels: parcelStats,
@@ -731,7 +600,7 @@ router.get("/financial", async (req, res) => {
       const m = toMonthKey(fe.date);
       if (!fuelMap[m]) fuelMap[m] = { month: m, total_liters: 0, total_cost: 0, entry_count: 0 };
       fuelMap[m].total_liters += fe.liters || 0;
-      fuelMap[m].total_cost += fe.totalCost || 0;
+      fuelMap[m].total_cost = addMoney(fuelMap[m].total_cost, fe.totalCost || 0);
       fuelMap[m].entry_count += 1;
     }
 
@@ -739,9 +608,9 @@ router.get("/financial", async (req, res) => {
     for (const mi of maintenanceIssues) {
       const m = toMonthKey(mi.dateReported);
       if (!maintMap[m]) maintMap[m] = { month: m, total_cost: 0, parts_cost: 0, labor_cost: 0, issue_count: 0 };
-      maintMap[m].total_cost += mi.totalCost || 0;
-      maintMap[m].parts_cost += mi.partsCost || 0;
-      maintMap[m].labor_cost += mi.laborCost || 0;
+      maintMap[m].total_cost = addMoney(maintMap[m].total_cost, mi.totalCost || 0);
+      maintMap[m].parts_cost = addMoney(maintMap[m].parts_cost, mi.partsCost || 0);
+      maintMap[m].labor_cost = addMoney(maintMap[m].labor_cost, mi.laborCost || 0);
       maintMap[m].issue_count += 1;
     }
 
@@ -750,14 +619,14 @@ router.get("/financial", async (req, res) => {
       const m = toMonthKey(fs.date);
       if (!supplyMap[m]) supplyMap[m] = { month: m, total_liters: 0, total_cost: 0 };
       supplyMap[m].total_liters += fs.liters || 0;
-      supplyMap[m].total_cost += fs.totalCost || 0;
+      supplyMap[m].total_cost = addMoney(supplyMap[m].total_cost, fs.totalCost || 0);
     }
 
     const tollMap = {};
     for (const te of tollEntries) {
       const m = toMonthKey(te.date);
       if (!tollMap[m]) tollMap[m] = { month: m, total_amount: 0, entry_count: 0 };
-      tollMap[m].total_amount += te.amount || 0;
+      tollMap[m].total_amount = addMoney(tollMap[m].total_amount, te.amount || 0);
       tollMap[m].entry_count += 1;
     }
 
@@ -766,7 +635,7 @@ router.get("/financial", async (req, res) => {
       const m = toMonthKey(sw.date);
       if (!seasonalMap[m]) seasonalMap[m] = { month: m, total_hours: 0, total_wages: 0, log_count: 0 };
       seasonalMap[m].total_hours += sw.hoursWorked || 0;
-      seasonalMap[m].total_wages += sw.dailyWageApplied || 0;
+      seasonalMap[m].total_wages = addMoney(seasonalMap[m].total_wages, sw.dailyWageApplied || 0);
       seasonalMap[m].log_count += 1;
     }
 

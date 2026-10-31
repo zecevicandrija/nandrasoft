@@ -6,6 +6,14 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Transactional high-water marks shared by every document creation route.
+model DocumentCounter {
+  prefix    String @id
+  lastValue BigInt
+
+  @@map("document_counter")
+}
+
 // Committed responses for safe replay of a user's POST request.
 // Receipts must be committed in the same transaction as the business writes.
 model MutationReceipt {
@@ -19,6 +27,27 @@ model MutationReceipt {
 
   @@id([userId, key])
   @@map("mutation_receipt")
+}
+
+model PushOutbox {
+  id             String @id
+  workOrderId    String
+  workerId       String
+  userId         String
+  subscriptionId String
+  status         String @default("PENDING")
+  attempts       Int @default(0)
+  nextAttemptAt  DateTime @default(now()) @db.Timestamptz(3)
+  lockedUntil    DateTime? @db.Timestamptz(3)
+  leaseToken     String?
+  lastError      String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  completedAt    DateTime? @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
+  @@index([workOrderId, status])
+  @@index([completedAt])
+  @@map("push_outbox")
 }
 
 enum Role {
@@ -47,7 +76,6 @@ model User {
   worker             Worker?
   fieldWorks         FieldWork[]
   machineAssignments MachineAssignment[]
-  auditLogs          AuditLog[]
 
   // Faza 3 relacije
   issuedWorkOrders    WorkOrder[]          @relation("IssuedWorkOrders")
@@ -86,10 +114,10 @@ model Worker {
   type       WorkerType @default(STALNI)
   role       Role?      // RUKOVODILAC, MAGACIN, MEHANICAR, OPERATER
   city       String?    // Grad / Mesto stanovanja
-  dailyWage  Float?     // Dnevnica u RSD (za sezonce)
+  dailyWage  Decimal? @db.Decimal(15, 2)     // Dnevnica u RSD (za sezonce)
   jmbg       String?
   phone      String?
-  hourlyRate Float?     @default(0)
+  hourlyRate Decimal?     @default(0) @db.Decimal(15, 4)
   isActive   Boolean    @default(true)
   userId     String?    @unique
   user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -181,7 +209,7 @@ model Machine {
 
   // ENP Tag za putarine (kamioni i prevozna sredstva)
   enpTagNumber       String?
-  enpTagBalance      Float?  @default(0)
+  enpTagBalance      Decimal?  @default(0) @db.Decimal(15, 2)
 
   fieldWorksAsMachine    FieldWork[]        @relation("FieldWorkMachine")
   fieldWorksAsAttachment FieldWork[]        @relation("FieldWorkAttachment")
@@ -221,9 +249,9 @@ model WorkType {
 
   // Faza 3: Normativi i cene iz Cenovnika (Rukovodilac i Direktor)
   fuelNormLitersPerHa Float?      // Normativ goriva u lit/ha (npr. 21 za oranje)
-  laborPricePerHa     Float?      // Fiksni dinarski deo rada/amortizacije
-  totalPricePerHa     Float?      // Ukupna kalkulativna cena bez PDV-a
-  referenceFuelPrice  Float?      @default(171.66) // Referentna cena goriva
+  laborPricePerHa     Decimal? @db.Decimal(15, 4)      // Fiksni dinarski deo rada/amortizacije
+  totalPricePerHa     Decimal? @db.Decimal(15, 4)      // Ukupna kalkulativna cena bez PDV-a
+  referenceFuelPrice  Decimal?      @default(171.66) @db.Decimal(15, 4) // Referentna cena goriva
 
   fieldWorks FieldWork[]
   workOrders WorkOrder[]
@@ -439,12 +467,13 @@ model MachineAssignment {
 
 model AuditLog {
   id          String   @id @default(cuid())
+  formatVersion Int    @default(1)
+  context     Json?
   entityType  String   // npr. "FieldWork", "WorkOrder"
   entityId    String   // ID unosa koji je menjan
   action      String   // "IZMENA", "STORNO", "KREIRANJE"
   
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String   // Historical actor ID, intentionally not a user foreign key
   userName    String   // Denormalizovano ime korisnika
   userRole    String   // DIREKTOR, RUKOVODILAC, OPERATER...
   
@@ -556,8 +585,8 @@ model FuelEntry {
   liters          Float       // Količina u litrima (obavezno)
 
   // Finansijska polja (vidljiva samo direktoru i rukovodiocu)
-  pricePerLiter   Float?      // Nabavna cena po litru
-  totalCost       Float?      // litara * cenaPoLitru
+  pricePerLiter   Decimal? @db.Decimal(15, 4)      // Nabavna cena po litru
+  totalCost       Decimal? @db.Decimal(15, 2)      // litara * cenaPoLitru
   receiptImageUrl String?     // Link ka slici računa na Bunny.net CDN-u
 
   // Detekcija prekomerne potrošnje u odnosu na normativ iz cenovnika
@@ -576,6 +605,7 @@ model FuelEntry {
   @@index([machineId, date])
   @@index([date])
   @@index([gasStation])
+  @@index([workerId, date])
   @@map("fuel_entry")
 }
 
@@ -584,8 +614,8 @@ model FuelSupply {
   date            DateTime    @default(now())
   fuelType        String      @default("EURODIZEL") // EURODIZEL, EURODIZEL ADITIVNI
   liters          Float       // Količina u litrima (npr. 5000)
-  pricePerLiter   Float       // Nabavna cena po litru (npr. 185 RSD)
-  totalCost       Float       // liters * pricePerLiter
+  pricePerLiter   Decimal @db.Decimal(15, 4)       // Nabavna cena po litru (npr. 185 RSD)
+  totalCost       Decimal @db.Decimal(15, 2)       // liters * pricePerLiter
   supplierId      String?
   supplier        Partner?    @relation(fields: [supplierId], references: [id])
   supplierName    String?     // Ime dobavljača ako nije u partnerima
@@ -660,9 +690,9 @@ model MaintenanceIssue {
   lubricantType    String?         // npr. "TOTAL DYNATRANS MPV"
   lubricantLiters  Float?          // Utrošeno litara maziva
 
-  partsCost        Float?          @default(0) // Trošak delova (RSD)
-  laborCost        Float?          @default(0) // Rad eksternog servisa (RSD)
-  totalCost        Float?          @default(0) // Ukupno ulaganje (delovi + rad)
+  partsCost        Decimal?          @default(0) @db.Decimal(15, 2) // Trošak delova (RSD)
+  laborCost        Decimal?          @default(0) @db.Decimal(15, 2) // Rad eksternog servisa (RSD)
+  totalCost        Decimal?          @default(0) @db.Decimal(15, 2) // Ukupno ulaganje (delovi + rad)
   invoicePhotoUrl  String?         // Slika računa / fakture za delove
 
   workOrder        WorkOrder?
@@ -675,6 +705,7 @@ model MaintenanceIssue {
 
   @@index([machineId, status])
   @@index([parcelId, status])
+  @@index([machineId, dateReported])
   @@index([status])
   @@map("maintenance_issue")
 }
@@ -693,7 +724,7 @@ model TollEntry {
   workerId        String
   worker          Worker   @relation(fields: [workerId], references: [id])
 
-  amount          Float    // Iznos putarine u RSD
+  amount          Decimal @db.Decimal(15, 2)    // Iznos putarine u RSD
   paymentMethod   String   @default("ENP_TAG") // ENP_TAG, GOTOVINA, KARTICA
   tagNumber       String?  // Broj ENP taga (npr. sa kamiona)
 
@@ -723,7 +754,7 @@ model TollTopUp {
   machine          Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
 
   tagNumber        String?  // Broj ENP taga
-  amount           Float    // Uplaćeni iznos dopune u RSD
+  amount           Decimal @db.Decimal(15, 2)    // Uplaćeni iznos dopune u RSD
   paymentReference String?  // Broj fakture / predračuna / uplatnice
   notes            String?
 
@@ -792,7 +823,7 @@ model FertilizerProduct {
   minStockWarning     Float                @default(500) // Prag za crveni alarm (npr. 500 kg)
 
   // Finansije
-  defaultPricePerUnit Float?               @default(0)   // Prosečna nabavna cena po kg/L (RSD)
+  defaultPricePerUnit Decimal?               @default(0) @db.Decimal(15, 4)   // Prosečna nabavna cena po kg/L (RSD)
 
   // Skladište
   defaultLocation     String?              // npr. "Sektor A - Boks 3"
@@ -816,8 +847,8 @@ model FertilizerMovement {
   product           FertilizerProduct @relation(fields: [productId], references: [id])
 
   quantity          Float             // Količina (uvek pozitivna vrednost)
-  unitPrice         Float?            // Nabavna cena po jedinici u momentu transakcije
-  totalCost         Float?            // quantity * unitPrice
+  unitPrice         Decimal? @db.Decimal(15, 4)            // Nabavna cena po jedinici u momentu transakcije
+  totalCost         Decimal? @db.Decimal(15, 2)            // quantity * unitPrice
 
   // Podaci za prijem (Nabavka)
   supplierId        String?
@@ -869,7 +900,7 @@ model SeasonalWorker {
   city            String?           // Mesto / grad
   
   groupName       String?           // Naziv posade/grupe (opciono, npr. "Grupa Agim")
-  dailyWage       Float?            // Dnevnica u RSD (opciono)
+  dailyWage       Decimal? @db.Decimal(15, 2)            // Dnevnica u RSD (opciono)
   
   isActive        Boolean           @default(true)
   notes           String?
@@ -903,7 +934,7 @@ model SeasonalWorkLog {
   hoursWorked       Float           // Efektivni sati rada (npr. 8.0)
   
   // Finansije (opciono)
-  dailyWageApplied  Float?          // Dnevnica za taj dan (opciono)
+  dailyWageApplied  Decimal? @db.Decimal(15, 2)          // Dnevnica za taj dan (opciono)
   
   // Nadzor
   supervisorId      String          // Poslovođa / rukovodilac sa terena
@@ -948,6 +979,7 @@ model OnionChamber {
   maxBoxes      Int      @default(720) @map("max_boxes")
   maxCapacityKg Float    @default(792000) @map("max_capacity_kg")
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  storageEntries OnionStorageEntry[]
 
   @@map("onion_chambers")
 }
@@ -1050,6 +1082,8 @@ model OnionStorageEntry {
   
   storageType         OnionStorageType  @default(HLADNJACA)
   locationOrChamber   String            // npr. "Komora 1", "Komora 2", "Komora 4"
+  chamberId           String?
+  chamber             OnionChamber?     @relation(fields: [chamberId], references: [id], onDelete: Restrict)
   hasEquipment        Boolean           @default(true) // Komore 1-3 sa opremom, Komore 4-6 bez opreme
   boxCount            Int?              // Broj boks paleta (dim 160x120x120, ~1100kg po boksu, max 720 po komori)
   
@@ -1066,6 +1100,7 @@ model OnionStorageEntry {
   createdAt           DateTime          @default(now())
 
   @@index([lotId, storageType])
+  @@index([chamberId])
   @@map("onion_storage_entry")
 }
 
@@ -1145,8 +1180,8 @@ model OnionShipment {
   
   totalWeightKg       Float               // Ukupna neto masa isporuke
   totalPackagesCount  Int                 // Ukupan broj džakova/vreća
-  pricePerKg          Float?              // Ugovorena prodajna cena po kg (RSD ili EUR)
-  totalValue          Float?              // totalWeightKg * pricePerKg
+  pricePerKg          Decimal? @db.Decimal(15, 4)              // Ugovorena prodajna cena po kg (RSD ili EUR)
+  totalValue          Decimal? @db.Decimal(15, 2)              // totalWeightKg * pricePerKg
   
   // Transport i vozač
   vehicleReg          String?             // Kamion / kombi kupca ili naš

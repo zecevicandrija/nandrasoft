@@ -1,10 +1,11 @@
+import { generateOrderNumber } from "../lib/documentNumbers.js";
 import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
-import { requireWorkerIdentity, resolveWorkerForUser, canAccessWorkerRecord } from "../lib/workerIdentity.js";
+import { requireWorkerIdentity, getRequestWorker, canAccessWorkerRecord } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireManager } from "../middlewares/auth.js";
-import { sendWorkOrderPushNotification } from "../lib/pushNotification.js";
+import { enqueueWorkOrderPush } from "../lib/pushOutbox.js";
 import { isActiveAssignmentConflict } from "../lib/assignmentConflict.js";
 
 const router = Router();
@@ -31,33 +32,6 @@ const createWorkOrderSchema = z.object({
   instructions: z.string().max(500).optional().nullable(),
 });
 
-/**
- * Pomoćna funkcija za generisanje sledećeg broja radnog naloga (npr. RN-2026-0001)
- */
-async function generateOrderNumber(prisma) {
-  const currentYear = new Date().getFullYear();
-  const prefix = `RN-${currentYear}-`;
-  
-  const lastOrder = await prisma.workOrder.findFirst({
-    where: {
-      orderNumber: { startsWith: prefix },
-    },
-    orderBy: { orderNumber: "desc" },
-    select: { orderNumber: true },
-  });
-
-  let nextSeq = 1;
-  if (lastOrder && lastOrder.orderNumber) {
-    const parts = lastOrder.orderNumber.split("-");
-    const lastNum = parseInt(parts[2], 10);
-    if (!isNaN(lastNum)) {
-      nextSeq = lastNum + 1;
-    }
-  }
-
-  return `${prefix}${String(nextSeq).padStart(4, "0")}`;
-}
-
 // ==========================================
 // 1. DANAŠNJI NALOG ZA ULOGOVANOG RADNIKA
 // ==========================================
@@ -65,7 +39,7 @@ async function generateOrderNumber(prisma) {
 router.get("/my-today", async (req, res) => {
   try {
     // Identity comes exclusively from the unique userId foreign key.
-    const linkedWorker = req.worker || await resolveWorkerForUser(req.user);
+    const linkedWorker = await getRequestWorker(req, prisma);
     if (!linkedWorker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
 
     const todayStart = new Date();
@@ -142,7 +116,7 @@ router.get("/", async (req, res) => {
 
     // Ako je korisnik OPERATER ili MEHANICAR, vidi samo svoje radne naloge!
     if (!["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
-      const linkedWorker = await resolveWorkerForUser(req.user);
+      const linkedWorker = await getRequestWorker(req, prisma);
       if (linkedWorker) {
         where.workerId = linkedWorker.id;
       } else {
@@ -556,7 +530,7 @@ router.post("/", requireManager, machineMutation(async (req, res, prisma) => {
     });
 
     // Pošalji Web Push notifikaciju radniku na telefon/uređaj
-    prisma.$afterCommit(() => sendWorkOrderPushNotification(workOrder.workerId, workOrder));
+    await enqueueWorkOrderPush(prisma, workOrder);
 
     res.status(201).json({ workOrder });
   } catch (error) {
@@ -693,7 +667,7 @@ router.patch("/:id/status", machineMutation(async (req, res, prisma) => {
     });
 
     if (order.status === "OTKAZAN" && status !== "OTKAZAN") {
-      prisma.$afterCommit(() => sendWorkOrderPushNotification(updated.workerId, updated));
+      await enqueueWorkOrderPush(prisma, updated);
     }
 
     if (machineStateChanged) await syncMachineStatus(prisma, order.machineId);
@@ -795,7 +769,7 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
       updated.workerId !== existing.workerId ||
       (existing.status === "OTKAZAN" && updated.status !== "OTKAZAN")
     ) {
-      prisma.$afterCommit(() => sendWorkOrderPushNotification(updated.workerId, updated));
+      await enqueueWorkOrderPush(prisma, updated);
     }
 
     res.json({ workOrder: updated });

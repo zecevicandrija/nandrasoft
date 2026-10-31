@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { hashPassword } from "better-auth/crypto";
 import { prisma } from "../lib/prisma.js";
@@ -122,43 +123,45 @@ router.post("/", async (req, res) => {
     const { name, email, password, role, phone, pin } = parsed.data;
     const hashedPin = pin ? await hashPassword(pin) : undefined;
 
-    // Koristi Better Auth signUp da ispravno hashuje lozinku
-    const result = await auth.api.signUpEmail({
-      body: {
-        name,
-        email,
-        password,
-        phone: phone || undefined,
-      },
-    });
+    // Javni signup je isključen (disableSignUp), pa se nalog kreira direktno:
+    // User + credential Account (Better Auth hash lozinke) + Worker u jednoj
+    // atomskoj transakciji — nema polu-kreiranih naloga ako neki korak padne.
+    const ctx = await auth.$context;
+    const hashedPassword = await ctx.password.hash(password);
 
-    // signUpEmail always creates an OPERATER. Assign the requested role only
-    // here, after the router's DIREKTOR authorization checks. Discard the
-    // automatic sign-up session before granting privileges.
     const user = await prisma.$transaction(async (tx) => {
-      await tx.session.deleteMany({ where: { userId: result.user.id } });
-      const createdUser = await tx.user.update({
-        where: { id: result.user.id },
-        data: { role, ...(hashedPin ? { pin: hashedPin } : {}) },
+      const createdUser = await tx.user.create({
+        data: {
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          role,
+          phone: phone || null,
+          isActive: true,
+          ...(hashedPin ? { pin: hashedPin } : {}),
+        },
+      });
+      await tx.account.create({
+        data: {
+          id: randomUUID(),
+          accountId: createdUser.id,
+          providerId: "credential",
+          userId: createdUser.id,
+          password: hashedPassword,
+        },
       });
       await tx.worker.create({
-        data: { name: name.trim(), type: "STALNI", phone: phone || null, isActive: true, userId: result.user.id },
+        data: { name: name.trim(), type: "STALNI", phone: phone || null, isActive: true, userId: createdUser.id },
       });
       return createdUser;
     });
 
     res.status(201).json({
-      user: {
-        id: result.user.id,
-        name: result.user.name,
-        email: result.user.email,
-        role: user.role,
-      },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
     });
   } catch (error) {
     console.error("Greška pri kreiranju korisnika:", error);
 
-    if (error?.message?.includes("already") || error?.status === 422) {
+    if (error?.code === "P2002" || error?.message?.includes("already") || error?.status === 422) {
       return res
         .status(409)
         .json({ error: "Korisnik sa ovim email-om već postoji." });
@@ -239,6 +242,10 @@ router.put("/:id", async (req, res) => {
           updatedAt: true,
         },
       });
+      if (role !== undefined && role !== existing.role) {
+        // Worker.role je samo prikazna kopija; drži je usklađenom sa User.role.
+        await tx.worker.updateMany({ where: { userId: req.params.id }, data: { role } });
+      }
       if (isActive === false || (role !== undefined && role !== existing.role)) {
         await tx.session.deleteMany({ where: { userId: req.params.id } });
       }

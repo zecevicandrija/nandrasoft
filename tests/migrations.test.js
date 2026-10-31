@@ -27,6 +27,30 @@ test("migrate deploy builds the complete schema from empty and preserves existin
     const tables = (await client.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name <> '_prisma_migrations'", [schema])).rows.map((row) => row.table_name).sort();
     assert.deepEqual(tables, expected);
     await client.query(`SET search_path TO "${schema}"`);
+    const analyticsIndexes = (await client.query(`SELECT i.relname, x.indisvalid, x.indisready,
+      pg_get_indexdef(i.oid) AS definition FROM pg_index x
+      JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_namespace n ON n.oid=i.relnamespace
+      WHERE n.nspname=$1 AND i.relname IN ('fuel_entry_workerId_date_idx','maintenance_issue_machineId_dateReported_idx')`, [schema])).rows;
+    assert.equal(analyticsIndexes.length, 2);
+    assert.ok(analyticsIndexes.every((index) => index.indisvalid && index.indisready));
+    assert.match(analyticsIndexes.find((index) => index.relname.startsWith("fuel_entry")).definition, /\("workerId", date\)/);
+    assert.match(analyticsIndexes.find((index) => index.relname.startsWith("maintenance_issue")).definition, /\("machineId", "dateReported"\)/);
+    // Monetary schema and retention must be enforced by PostgreSQL itself.
+    const monetaryColumns = (await client.query("SELECT table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE table_schema = $1 AND data_type = 'numeric'", [schema])).rows;
+    assert.equal(monetaryColumns.length, 22);
+    assert.ok(monetaryColumns.every((column) => column.numeric_precision === 15 && [2, 4].includes(column.numeric_scale)));
+    await client.query(`INSERT INTO worker (id, name, "dailyWage", "hourlyRate", "updatedAt") VALUES ('decimal-worker', 'Decimal test', 1.005, 12.12345, NOW())`);
+    const monetary = (await client.query(`SELECT "dailyWage"::text AS wage, "hourlyRate"::text AS rate FROM worker WHERE id = 'decimal-worker'`)).rows[0];
+    assert.deepEqual(monetary, { wage: "1.01", rate: "12.1235" });
+    await client.query(`UPDATE worker SET "dailyWage" = "dailyWage" + 0.01 WHERE id = 'decimal-worker'`);
+    assert.equal((await client.query(`SELECT "dailyWage"::text AS wage FROM worker WHERE id = 'decimal-worker'`)).rows[0].wage, "1.02");
+    await assert.rejects(client.query(`UPDATE worker SET "dailyWage" = 'NaN'::numeric WHERE id = 'decimal-worker'`), { code: "23514" });
+    await client.query(`INSERT INTO "user" (id, name, email, "updatedAt") VALUES ('audit-actor', 'Historical actor', 'audit-test@example.test', NOW())`);
+    await client.query(`INSERT INTO audit_log (id, "entityType", "entityId", action, "userId", "userName", "userRole", description)
+      VALUES ('retained-audit', 'FuelEntry', 'real-fuel-id', 'KREIRANJE', 'audit-actor', 'Historical actor', 'OPERATER', 'Recorded action')`);
+    await client.query(`DELETE FROM "user" WHERE id = 'audit-actor'`);
+    const retained = (await client.query(`SELECT "userId", "userName", "userRole", "entityId" FROM audit_log WHERE id = 'retained-audit'`)).rows[0];
+    assert.deepEqual(retained, { userId: "audit-actor", userName: "Historical actor", userRole: "OPERATER", entityId: "real-fuel-id" });
     const index = (await client.query("SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND indexname = 'machine_assignment_one_active_per_machine'", [schema])).rows[0];
     assert.match(index.indexdef, /UNIQUE.*WHERE.*ZADUZENA/);
     const chambers = (await client.query("SELECT * FROM onion_chambers ORDER BY name")).rows;

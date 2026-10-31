@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { auth } from "./routes/auth.js";
 import { prisma } from "./lib/prisma.js";
+import { DEFAULT_FERTILIZER_CATALOG } from "./lib/fertilizerCatalog.js";
 
 /**
  * Seed skripta - kreira korisnike i kompletne šifarnike za firmu NANDRA
@@ -693,6 +694,33 @@ async function seed() {
       await prisma.partner.create({ data: pt });
     }
     console.log(`  🤝 Partner: ${pt.name} [${pt.type}]`);
+  }
+
+  // 7b. ŠIFARNIK ĐUBRIVA (FERTILIZER PRODUCTS)
+  console.log("\n7b. Kreiranje šifarnika đubriva...");
+  for (const fp of DEFAULT_FERTILIZER_CATALOG) {
+    const existing = await prisma.fertilizerProduct.findFirst({ where: { name: fp.name } });
+    if (existing) {
+      await prisma.fertilizerProduct.update({
+        where: { id: existing.id },
+        data: {
+          type: fp.type,
+          unit: fp.unit,
+          minStockWarning: fp.minStockWarning,
+          defaultPricePerUnit: fp.defaultPricePerUnit,
+          defaultLocation: fp.defaultLocation,
+          description: fp.description,
+        },
+      });
+    } else {
+      await prisma.fertilizerProduct.create({
+        data: {
+          ...fp,
+          currentStock: 0,
+        },
+      });
+    }
+    console.log(`  🌱 Đubrivo: ${fp.name} [${fp.type}]`);
   }
 
   // 8. FAZA 2: ZADUŽIVANJE MAŠINA & RADOVI NA NJIVI

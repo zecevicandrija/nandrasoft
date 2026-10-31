@@ -1,10 +1,15 @@
 import { auth } from "../routes/auth.js";
 
+const verifiedRequest = Symbol("verified-session");
+
 /**
  * Middleware koji proverava da li je korisnik ulogovan.
  * Postavlja req.user i req.session na request objekat.
  */
 export async function requireAuth(req, res, next) {
+  // Reuse only verification performed by this middleware on this HTTP request.
+  // App-level rate limiting and route-level guards must not query sessions twice.
+  if (req[verifiedRequest]) return next();
   try {
     const session = await auth.api.getSession({
       headers: req.headers,
@@ -22,6 +27,7 @@ export async function requireAuth(req, res, next) {
 
     req.user = session.user;
     req.session = session.session;
+    req[verifiedRequest] = true;
     next();
   } catch (error) {
     return res.status(401).json({ error: "Neuspešna autentifikacija." });

@@ -7,11 +7,22 @@ import { prisma } from "../lib/prisma.js";
 export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000",
   secret: process.env.BETTER_AUTH_SECRET,
+  rateLimit: {
+    customRules: {
+      // Express has a NAT burst guard and a strict per-account failure limit. Better Auth's
+      // default 3 attempts/10s would also block successful logins behind NAT.
+      "/sign-in/*": false,
+      "/sign-up/*": false,
+      "/get-session": false,
+    },
+  },
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
   emailAndPassword: {
     enabled: true,
+    // Nema javne registracije: naloge kreira isključivo DIREKTOR preko /api/users.
+    disableSignUp: true,
   },
   databaseHooks: {
     session: {

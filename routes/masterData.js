@@ -1,3 +1,5 @@
+import { writeAudit } from "../lib/audit.js";
+import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
 import { machineMutation, hasOpenMaintenance } from "../lib/machineAvailability.js";
 import { z } from "zod";
@@ -214,25 +216,37 @@ const workerSchema = z.object({
   phone: z.string().max(30).optional().nullable(),
   hourlyRate: z.number().nonnegative().optional().nullable(),
   isActive: z.boolean().optional(),
-  userId: z.string().optional().nullable(),
+  // userId se namerno ne prima: povezivanje radnika sa nalogom ide isključivo
+  // kroz PUT /api/users/:id/worker (samo DIREKTOR).
 });
 
 router.get("/workers", async (req, res) => {
   try {
+    const canViewPrivateDetails = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
     const workers = await prisma.worker.findMany({
       orderBy: [{ type: "asc" }, { name: "asc" }],
-      include: {
-        user: {
-          select: { id: true, email: true, role: true },
+      ...(canViewPrivateDetails ? {
+        include: {
+          user: { select: { id: true, email: true, role: true } },
         },
-      },
+      } : {
+        // Fetch only lookup fields; the linked role is used internally as a fallback.
+        select: {
+          id: true, name: true, role: true, type: true, isActive: true,
+          user: { select: { role: true } },
+        },
+      }),
     });
 
     // Osiguraj effectiveRole za svakog radnika
     const mapped = workers.map((w) => {
-      let effectiveRole = w.role || w.user?.role;
+      // User.role je jedini izvor autorizacije; Worker.role je samo fallback za nepovezane radnike.
+      let effectiveRole = w.user?.role || w.role;
       if (!effectiveRole) {
         effectiveRole = w.type === "SEZONAC" ? "SEZONAC" : "OPERATER";
+      }
+      if (!canViewPrivateDetails) {
+        return { id: w.id, name: w.name, role: effectiveRole, type: w.type, isActive: w.isActive };
       }
       return {
         ...w,
@@ -247,7 +261,7 @@ router.get("/workers", async (req, res) => {
   }
 });
 
-router.post("/workers", requireManager, async (req, res) => {
+router.post("/workers", requireManager, inventoryMutation("workers", async (req, res, prisma) => {
   try {
     const parsed = workerSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -297,7 +311,7 @@ router.post("/workers", requireManager, async (req, res) => {
         phone: data.phone?.trim() || null,
         jmbg: data.jmbg?.trim() || null,
         isActive: data.isActive ?? true,
-        userId: data.userId || null,
+        userId: null,
       },
       include: {
         user: { select: { id: true, email: true, role: true } },
@@ -315,18 +329,18 @@ router.post("/workers", requireManager, async (req, res) => {
             dailyWage: data.dailyWage !== undefined && data.dailyWage !== null ? Number(data.dailyWage) : null,
             isActive: data.isActive ?? true,
           },
-        })
-        .catch((err) => console.error("Greška pri sinhronizaciji SeasonalWorker-a:", err));
+        });
     }
 
+    await writeAudit(prisma, req, { entityType: "Worker", entityId: worker.id, action: "KREIRANJE", description: "KREIRANJE: radnik", oldValues: null, newValues: worker });
     res.status(201).json({ worker: { ...worker, role: targetRole } });
   } catch (error) {
     console.error("Greška pri kreiranju radnika:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
-router.put("/workers/:id", requireManager, async (req, res) => {
+router.put("/workers/:id", requireManager, inventoryMutation("workers", async (req, res, prisma) => {
   try {
     const parsed = workerSchema.partial().safeParse(req.body);
     if (!parsed.success) {
@@ -345,7 +359,9 @@ router.put("/workers/:id", requireManager, async (req, res) => {
       return res.status(404).json({ error: "Radnik nije pronađen." });
     }
 
-    const currentWorkerRole = existing.role || existing.user?.role || (existing.type === "SEZONAC" ? "SEZONAC" : "OPERATER");
+    // Za povezane radnike autoritativna je uloga sa User naloga.
+    const currentWorkerRole = existing.user?.role || existing.role || (existing.type === "SEZONAC" ? "SEZONAC" : "OPERATER");
+    const isLinked = Boolean(existing.userId);
 
     // Provere zaštite postojećeg radnika
     if (currentWorkerRole === "DIREKTOR") {
@@ -360,6 +376,13 @@ router.put("/workers/:id", requireManager, async (req, res) => {
     let newRole = data.role !== undefined ? data.role : currentWorkerRole;
     if (data.type === "SEZONAC" && !data.role) newRole = "SEZONAC";
     if (data.type === "STALNI" && data.role === "SEZONAC") newRole = "OPERATER";
+
+    // Uloga korisničkog naloga se menja samo kroz upravljanje korisnicima (users.js).
+    if (isLinked && newRole !== currentWorkerRole) {
+      return res.status(403).json({
+        error: "Radnik je povezan sa korisničkim nalogom. Uloga se menja isključivo u modulu Korisnici (direktor).",
+      });
+    }
 
     if (newRole === "DIREKTOR") {
       return res.status(403).json({ error: "Niko ne može dodeliti ulogu direktora." });
@@ -398,6 +421,19 @@ router.put("/workers/:id", requireManager, async (req, res) => {
       updatePayload.dailyWage = null;
     }
 
+    // Ako radnik ima povezan korisnički nalog (User), ažuriraj i ulogu korisnika
+    // Povezan nalog: sinhronizuj samo ime/telefon, NIKAD ulogu (User.role je izvor istine).
+    if (existing.userId && (data.name || data.phone !== undefined)) {
+      await prisma.user
+        .update({
+          where: { id: existing.userId },
+          data: {
+            ...(data.name ? { name: data.name.trim() } : {}),
+            ...(data.phone !== undefined ? { phone: data.phone?.trim() || null } : {}),
+          },
+        });
+    }
+
     const worker = await prisma.worker.update({
       where: { id: req.params.id },
       data: updatePayload,
@@ -405,20 +441,6 @@ router.put("/workers/:id", requireManager, async (req, res) => {
         user: { select: { id: true, email: true, role: true } },
       },
     });
-
-    // Ako radnik ima povezan korisnički nalog (User), ažuriraj i ulogu korisnika
-    if (existing.userId && !isSezonac) {
-      await prisma.user
-        .update({
-          where: { id: existing.userId },
-          data: {
-            role: newRole,
-            ...(data.name ? { name: data.name.trim() } : {}),
-            ...(data.phone !== undefined ? { phone: data.phone?.trim() || null } : {}),
-          },
-        })
-        .catch((err) => console.error("Greška pri ažuriranju User role:", err));
-    }
 
     // Sinhronizacija sa SeasonalWorker ako je Sezonac
     if (isSezonac) {
@@ -440,24 +462,25 @@ router.put("/workers/:id", requireManager, async (req, res) => {
       } else {
         await prisma.seasonalWorker.create({
           data: {
-            name: updatePayload.name || existing.name,
-            phone: updatePayload.phone || existing.phone,
-            city: updatePayload.city || null,
-            dailyWage: updatePayload.dailyWage || null,
-            isActive: updatePayload.isActive ?? true,
+            name: worker.name,
+            phone: worker.phone,
+            city: worker.city,
+            dailyWage: worker.dailyWage,
+            isActive: worker.isActive,
           },
         });
       }
     }
 
+    await writeAudit(prisma, req, { entityType: "Worker", entityId: existing.id, action: "IZMENA", description: "IZMENA: radnik", oldValues: existing, newValues: worker });
     res.json({ worker: { ...worker, role: newRole } });
   } catch (error) {
     console.error("Greška pri izmeni radnika:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
-router.delete("/workers/:id", requireManager, async (req, res) => {
+router.delete("/workers/:id", requireManager, inventoryMutation("workers", async (req, res, prisma) => {
   try {
     const existing = await prisma.worker.findUnique({
       where: { id: req.params.id },
@@ -468,7 +491,8 @@ router.delete("/workers/:id", requireManager, async (req, res) => {
       return res.status(404).json({ error: "Radnik nije pronađen." });
     }
 
-    const currentWorkerRole = existing.role || existing.user?.role || (existing.type === "SEZONAC" ? "SEZONAC" : "OPERATER");
+    // Za povezane radnike autoritativna je uloga sa User naloga.
+    const currentWorkerRole = existing.user?.role || existing.role || (existing.type === "SEZONAC" ? "SEZONAC" : "OPERATER");
 
     if (currentWorkerRole === "DIREKTOR") {
       return res.status(403).json({ error: "Direktora nije moguće obrisati." });
@@ -479,12 +503,13 @@ router.delete("/workers/:id", requireManager, async (req, res) => {
     }
 
     await prisma.worker.delete({ where: { id: req.params.id } });
+    await writeAudit(prisma, req, { entityType: "Worker", entityId: existing.id, action: "BRISANJE", description: "BRISANJE: radnik", oldValues: existing, newValues: null });
     res.json({ message: "Radnik uspešno obrisan." });
   } catch (error) {
     console.error("Greška pri brisanju radnika:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 5. RADNE OPERACIJE (WORK TYPES)

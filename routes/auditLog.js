@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middlewares/auth.js";
+import { readStorageUsage } from "../lib/storageUsage.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -18,6 +19,19 @@ router.use((req, res, next) => {
 // ==========================================
 // LISTA AUDIT LOGOVA (REVIZORSKI TRAG)
 // ==========================================
+router.get("/storage", async (req, res) => {
+  try { res.json(await readStorageUsage(prisma)); }
+  catch { res.status(503).json({ error: "Provera zauzeća baze trenutno nije dostupna." }); }
+});
+
+router.get("/:id", async (req, res) => {
+  try {
+    const log = await prisma.auditLog.findUnique({ where: { id: req.params.id } });
+    if (!log) return res.status(404).json({ error: "Događaj nije pronađen." });
+    res.json({ log });
+  } catch { res.status(500).json({ error: "Detalji događaja nisu dostupni." }); }
+});
+
 router.get("/", async (req, res) => {
   try {
     const {
@@ -61,22 +75,27 @@ router.get("/", async (req, res) => {
       prisma.auditLog.count({ where }),
       prisma.auditLog.findMany({
         where,
+        select: { id: true, entityType: true, entityId: true, action: true, userId: true,
+          userName: true, userRole: true, description: true, createdAt: true, formatVersion: true },
         orderBy: { createdAt: "desc" },
-        include: {
-          user: {
-            select: { id: true, name: true, email: true, role: true },
-          },
-        },
         skip,
         take,
       }),
     ]);
 
+    // Actor identity is historical data, not a cascading user relation. Enrich
+    // with the current account only when it still exists (one batched query).
+    const users = logs.length ? await prisma.user.findMany({
+      where: { id: { in: [...new Set(logs.map((log) => log.userId))] } },
+      select: { id: true, name: true, email: true, role: true },
+    }) : [];
+    const userMap = new Map(users.map((user) => [user.id, user]));
+
     res.json({
       total,
       page: Number(page) || 1,
       totalPages: Math.ceil(total / take),
-      logs,
+      logs: logs.map((log) => ({ ...log, user: userMap.get(log.userId) || null })),
     });
   } catch (error) {
     console.error("Greška pri dohvatanju audit logova:", error);

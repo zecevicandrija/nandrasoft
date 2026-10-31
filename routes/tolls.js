@@ -1,5 +1,6 @@
+import { addMoney } from "../lib/money.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
-import { requireWorkerIdentity, resolveWorkerForUser } from "../lib/workerIdentity.js";
+import { requireWorkerIdentity, getRequestWorker } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -105,7 +106,7 @@ router.get("/", async (req, res) => {
     // Izolacija podataka: Radnik vidi isključivo sopstvene unose putarina (ne vidi tuđe)
     let linkedWorker = null;
     if (!isManager) {
-      linkedWorker = await resolveWorkerForUser(req.user);
+      linkedWorker = await getRequestWorker(req, prisma);
       if (linkedWorker) {
         where.AND = [
           ...(where.AND || []),
@@ -117,7 +118,7 @@ router.get("/", async (req, res) => {
         where.createdById = req.user.id;
       }
     } else {
-      linkedWorker = await resolveWorkerForUser(req.user);
+      linkedWorker = await getRequestWorker(req, prisma);
     }
 
     const dateFilter = {};
@@ -258,11 +259,11 @@ router.get("/", async (req, res) => {
 
     for (const grp of entriesByMethod) {
       const amt = Number(grp._sum?.amount || 0);
-      totalCostPeriod += amt;
+      totalCostPeriod = addMoney(totalCostPeriod, amt);
       if (grp.paymentMethod === "ENP_TAG") {
-        enpCostPeriod += amt;
+        enpCostPeriod = addMoney(enpCostPeriod, amt);
       } else {
-        cashCardCostPeriod += amt;
+        cashCardCostPeriod = addMoney(cashCardCostPeriod, amt);
       }
     }
 
@@ -272,7 +273,7 @@ router.get("/", async (req, res) => {
     const taggedVehicles = vehicles.filter(
       (v) => v.type === "KAMION" || Boolean(v.enpTagNumber) || Number(v.enpTagBalance || 0) !== 0
     );
-    const totalTagBalance = taggedVehicles.reduce((acc, v) => acc + Number(v.enpTagBalance || 0), 0);
+    const totalTagBalance = taggedVehicles.reduce((acc, v) => addMoney(acc, v.enpTagBalance || 0), 0);
 
     res.json({
       entries,
@@ -335,13 +336,13 @@ router.post("/", inventoryMutation("tolls", async (req, res, prisma) => {
     // Za radnika (ne-menadžera) uvek vezujemo unos za njegov sopstveni profil radnika
     let finalWorkerId = data.workerId;
     if (!isManager) {
-      const linkedWorker = await resolveWorkerForUser(req.user);
+      const linkedWorker = await getRequestWorker(req, prisma);
       if (!linkedWorker) {
         return res.status(400).json({ error: "Nije moguće povezati profil radnika za vaš nalog." });
       }
       finalWorkerId = linkedWorker.id;
     } else if (!finalWorkerId) {
-      const linkedWorker = await resolveWorkerForUser(req.user);
+      const linkedWorker = await getRequestWorker(req, prisma);
       if (linkedWorker) {
         finalWorkerId = linkedWorker.id;
       }
@@ -426,7 +427,7 @@ router.post("/", inventoryMutation("tolls", async (req, res, prisma) => {
     console.error("Greška pri unosu putarine:", error);
     res.status(500).json({ error: "Greška na serveru pri čuvanju putarine." });
   }
-}));
+}, { idempotent: true }));
 
 // ==========================================
 // 3. IZMENA PUTARINE (MENADŽERI UVEK, RADNIK SAMO SVOJ UNOS DO KRAJA DANA)
@@ -445,7 +446,7 @@ router.put("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
 
     if (!isManager) {
-      const linkedWorker = await resolveWorkerForUser(req.user);
+      const linkedWorker = await getRequestWorker(req, prisma);
       const isOwner =
         existing.createdById === req.user.id ||
         (linkedWorker && existing.workerId === linkedWorker.id);
@@ -575,7 +576,7 @@ router.delete("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
 
     if (!isManager) {
-      const linkedWorker = await resolveWorkerForUser(req.user);
+      const linkedWorker = await getRequestWorker(req, prisma);
       const isOwner =
         existing.createdById === req.user.id ||
         (linkedWorker && existing.workerId === linkedWorker.id);
@@ -704,7 +705,7 @@ router.post("/top-up", requireManager, inventoryMutation("tolls", async (req, re
     console.error("Greška pri dopuni ENP taga:", error);
     res.status(500).json({ error: "Greška na serveru pri dopuni ENP taga." });
   }
-}));
+}, { idempotent: true }));
 
 // ==========================================
 // 6. BRISANJE DOPUNE ENP TAGA

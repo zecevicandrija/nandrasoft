@@ -1,8 +1,10 @@
+import { money, rate, addMoney, subtractMoney, multiplyMoney, divideRate } from "../lib/money.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
+import { DEFAULT_FERTILIZER_CATALOG } from "../lib/fertilizerCatalog.js";
 
 const router = Router();
 
@@ -34,76 +36,14 @@ function toBaseKgOrL(quantity, unit) {
   return quantity;
 }
 
-const DEFAULT_FERTILIZER_CATALOG = [
-  {
-    name: "NPK 16:16:16",
-    type: "MINERALNO_GRANULISANO",
-    unit: "KG",
-    currentStock: 4500,
-    minStockWarning: 1000,
-    defaultPricePerUnit: 68,
-    defaultLocation: "Glavni magacin B1",
-    description: "Osnovno kompleksno mineralno đubrivo za jesenju i predsetvenu obradu",
-  },
-  {
-    name: "UREA 46% N",
-    type: "MINERALNO_GRANULISANO",
-    unit: "KG",
-    currentStock: 3200,
-    minStockWarning: 1000,
-    defaultPricePerUnit: 74,
-    defaultLocation: "Glavni magacin B1",
-    description: "Visokokoncentrovano azotno đubrivo za prihranu ratarskih i povrtarskih kultura",
-  },
-  {
-    name: "KAN 27% N",
-    type: "MINERALNO_GRANULISANO",
-    unit: "KG",
-    currentStock: 650,
-    minStockWarning: 1000,
-    defaultPricePerUnit: 52,
-    defaultLocation: "Magacin pod nadstrešnicom",
-    description: "Krečni amonijum nitrat za prihranu u vegetaciji",
-  },
-  {
-    name: "YaraMila Complex 12-11-18",
-    type: "MINERALNO_GRANULISANO",
-    unit: "KG",
-    currentStock: 2500,
-    minStockWarning: 800,
-    defaultPricePerUnit: 115,
-    defaultLocation: "Sektor A - Boks 2",
-    description: "Specijalizovano bezhlorno NPK đubrivo sa mikroelementima za luk i povrće",
-  },
-  {
-    name: "YaraTera Kristalon 18-18-18",
-    type: "VODOTOPIVO_FERTIRIGACIJA",
-    unit: "KG",
-    currentStock: 180,
-    minStockWarning: 250,
-    defaultPricePerUnit: 310,
-    defaultLocation: "Magacin fertirigacije",
-    description: "Vodotopivo kristalno đubrivo za prihranu kroz sistem kap-po-kap",
-  },
-];
-
 // ==========================================
 // 1. PREGLED SVIH PROIZVODA I KPI STATISTIKA MAGACINA
 // ==========================================
-// This legacy read endpoint also initializes the catalog; protect that write.
-router.get("/products", inventoryMutation("fertilizer", async (req, res, prisma) => {
+router.get("/products", async (req, res) => {
   try {
     const { includeInactive } = req.query;
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
 
-    // Ako je šifarnik đubriva potpuno prazan, inicijalizuj osnovne artikle
-    const existingTotal = await prisma.fertilizerProduct.count();
-    if (existingTotal === 0) {
-      await prisma.fertilizerProduct.createMany({
-        data: DEFAULT_FERTILIZER_CATALOG,
-        skipDuplicates: true,
-      });
-    }
 
     const where = {};
     if (includeInactive !== "true") {
@@ -157,7 +97,7 @@ router.get("/products", inventoryMutation("fertilizer", async (req, res, prisma)
         ...p,
         isBelowMin,
         fillPercentage,
-        stockValueRSD: isManager ? Math.round(p.currentStock * (p.defaultPricePerUnit || 0)) : undefined,
+        stockValueRSD: isManager ? Math.round(multiplyMoney(p.currentStock, p.defaultPricePerUnit || 0)) : undefined,
       };
     });
 
@@ -170,13 +110,13 @@ router.get("/products", inventoryMutation("fertilizer", async (req, res, prisma)
       const qtyKg = toBaseKgOrL(m.quantity, m.product?.unit || "KG");
       if (m.movementType === "PRIJEM_NABAVKA") {
         monthReceivedKg += qtyKg;
-        monthReceivedCostRSD += m.totalCost || 0;
+        monthReceivedCostRSD = addMoney(monthReceivedCostRSD, m.totalCost || 0);
       } else if (m.movementType === "IZDAVANJE_NJIVA") {
         monthIssuedKg += qtyKg;
-        monthIssuedCostRSD += m.totalCost || 0;
+        monthIssuedCostRSD = addMoney(monthIssuedCostRSD, m.totalCost || 0);
       } else if (m.movementType === "POVRAT_SA_NJIVE") {
         monthIssuedKg = Math.max(0, monthIssuedKg - qtyKg);
-        monthIssuedCostRSD = Math.max(0, monthIssuedCostRSD - (m.totalCost || 0));
+        monthIssuedCostRSD = Math.max(0, subtractMoney(monthIssuedCostRSD, m.totalCost || 0));
       }
     }
 
@@ -201,6 +141,26 @@ router.get("/products", inventoryMutation("fertilizer", async (req, res, prisma)
   } catch (error) {
     console.error("Greška pri dohvatanju proizvoda đubriva:", error);
     res.status(500).json({ error: "Greška na serveru pri učitavanju magacina đubriva." });
+  }
+});
+
+// ==========================================
+// 1b. INICIJALIZACIJA ŠIFARNIKA (SAMO DIREKTOR)
+// ==========================================
+router.post("/seed-catalog", requireRole(["DIREKTOR"]), inventoryMutation("fertilizer", async (req, res, prisma) => {
+  try {
+    const existingTotal = await prisma.fertilizerProduct.count();
+    if (existingTotal > 0) {
+      return res.status(400).json({ error: "Šifarnik đubriva nije prazan." });
+    }
+    const created = await prisma.fertilizerProduct.createMany({
+      data: DEFAULT_FERTILIZER_CATALOG,
+      skipDuplicates: true,
+    });
+    res.json({ message: "Uspešno inicijalizovan šifarnik đubriva sa 0 početnih zaliha.", count: created.count });
+  } catch (error) {
+    console.error("Greška pri inicijalizaciji kataloga đubriva:", error);
+    res.status(500).json({ error: "Greška na serveru pri inicijalizaciji šifarnika." });
   }
 }));
 
@@ -264,7 +224,7 @@ router.post("/products", requireWarehouseAccess, inventoryMutation("fertilizer",
             productId: created.id,
             quantity: created.currentStock,
             unitPrice: unitPrice > 0 ? unitPrice : null,
-            totalCost: unitPrice > 0 ? Number((created.currentStock * unitPrice).toFixed(2)) : null,
+            totalCost: unitPrice > 0 ? multiplyMoney(created.currentStock, unitPrice) : null,
             warehouseLocation: created.defaultLocation,
             receiptNumber: "POČETNO-STANJE",
             issuedById: req.user.id,
@@ -563,13 +523,13 @@ router.put("/movements/:id", inventoryMutation("fertilizer", async (req, res, pr
     const newQty = data.quantity !== undefined ? data.quantity : existing.quantity;
 
     if (data.totalCost !== undefined && data.totalCost !== null && data.totalCost > 0) {
-      effectiveTotalCost = Number(data.totalCost.toFixed(2));
-      effectiveUnitPrice = Number((data.totalCost / newQty).toFixed(2));
+      effectiveTotalCost = money(data.totalCost);
+      effectiveUnitPrice = divideRate(effectiveTotalCost, newQty);
     } else if (data.unitPrice !== undefined && data.unitPrice !== null && data.unitPrice > 0) {
-      effectiveUnitPrice = Number(data.unitPrice.toFixed(2));
-      effectiveTotalCost = Number((newQty * effectiveUnitPrice).toFixed(2));
+      effectiveUnitPrice = rate(data.unitPrice);
+      effectiveTotalCost = multiplyMoney(newQty, effectiveUnitPrice);
     } else if (data.quantity !== undefined && effectiveUnitPrice) {
-      effectiveTotalCost = Number((newQty * effectiveUnitPrice).toFixed(2));
+      effectiveTotalCost = multiplyMoney(newQty, effectiveUnitPrice);
     }
 
     const diffQty = newQty - existing.quantity;
@@ -816,9 +776,9 @@ router.post("/receive", requireWarehouseAccess, inventoryMutation("fertilizer", 
     let effectiveTotalCost = data.totalCost ?? null;
 
     if (effectiveUnitPrice !== null && effectiveUnitPrice > 0 && !effectiveTotalCost) {
-      effectiveTotalCost = Number((data.quantity * effectiveUnitPrice).toFixed(2));
+      effectiveTotalCost = multiplyMoney(data.quantity, effectiveUnitPrice);
     } else if (effectiveTotalCost !== null && effectiveTotalCost > 0 && (!effectiveUnitPrice || effectiveUnitPrice === 0)) {
-      effectiveUnitPrice = Number((effectiveTotalCost / data.quantity).toFixed(2));
+      effectiveUnitPrice = divideRate(effectiveTotalCost, data.quantity);
     }
 
     const newStock = Number((product.currentStock + data.quantity).toFixed(3));
@@ -974,7 +934,7 @@ router.post("/issue", requireWarehouseAccess, inventoryMutation("fertilizer", as
 
     // 5. Finansije transakcije
     const unitPrice = product.defaultPricePerUnit || 0;
-    const totalCost = unitPrice > 0 ? Number((data.quantity * unitPrice).toFixed(2)) : null;
+    const totalCost = unitPrice > 0 ? multiplyMoney(data.quantity, unitPrice) : null;
 
     let movementDate = new Date();
     if (data.date) {
@@ -1090,7 +1050,7 @@ router.post("/issue", requireWarehouseAccess, inventoryMutation("fertilizer", as
     }
     res.status(500).json({ error: "Greška na serveru prilikom izdavanja đubriva." });
   }
-}));
+}, { idempotent: true }));
 
 // ==========================================
 // 7. AGREGIRANI IZVEŠTAJ UTROŠKA PO PARCELAMA I SEZONI
@@ -1161,7 +1121,7 @@ router.get("/parcel-summary", async (req, res) => {
       }
 
       entry.totalKgApplied = Math.max(0, Number((entry.totalKgApplied + qtyKg).toFixed(2)));
-      entry.totalCostRSD = Math.max(0, Math.round(entry.totalCostRSD + cost));
+      entry.totalCostRSD = Math.max(0, addMoney(entry.totalCostRSD, cost));
 
       const prodName = m.product.name;
       if (!entry.productsBreakdown[prodName]) {
@@ -1184,7 +1144,7 @@ router.get("/parcel-summary", async (req, res) => {
 
     const summary = Array.from(parcelMap.values()).map((item) => {
       const avgKgPerHa = item.areaHa > 0 ? Number((item.totalKgApplied / item.areaHa).toFixed(1)) : 0;
-      const costPerHaRSD = item.areaHa > 0 ? Math.round(item.totalCostRSD / item.areaHa) : 0;
+      const costPerHaRSD = item.areaHa > 0 ? Math.round(divideRate(item.totalCostRSD, item.areaHa)) : 0;
 
       return {
         parcelId: item.parcelId,

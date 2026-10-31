@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { prisma } from "../lib/prisma.js";
 import { machineMutation } from "../lib/machineAvailability.js";
+import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { mutationIdentity, findReceipt, saveReceipt } from "../lib/mutationReceipt.js";
 
 const req = (body = { hours: 12 }, key = "request-1234", userId = "worker") => ({ method: "POST", url: "/checkout", baseUrl: "/api/assignments", user: { id: userId }, headers: { "idempotency-key": key }, body });
@@ -103,4 +105,68 @@ test("PostgreSQL stores receipts in the same transaction as business writes", { 
     assert.equal((await findReceipt(db, { ...identity, fingerprint: "different" })).status, 409);
     await assert.rejects(saveReceipt(db, identity, { status: 201, body: { id: 2 } }), { code: "23505" });
   } finally { await client.end(); }
+});
+
+test("PostgreSQL serializes financial request replays and cross-domain key reuse", {
+  skip: process.env.TEST_ASSIGNMENT_DB !== "1", timeout: 30000,
+}, async () => {
+  const schema = `nandra_financial_test_${randomUUID().replaceAll("-", "")}`;
+  assert.match(schema, /^nandra_financial_test_[a-f0-9]{32}$/);
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4, connectionTimeoutMillis: 5000 });
+  const admin = await pool.connect();
+  const original = prisma.$transaction;
+  try {
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    await admin.query(`SET search_path TO "${schema}"`);
+    await admin.query(await readFile(new URL("../prisma/migrations/20261030230000_mutation_receipts/migration.sql", import.meta.url), "utf8"));
+    await admin.query('CREATE TABLE financial_business (id TEXT PRIMARY KEY, amount INTEGER NOT NULL)');
+    prisma.$transaction = async (callback) => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL search_path TO "${schema}"`);
+        const query = (strings, values) => client.query(
+          strings.reduce((sql, part, index) => sql + (index ? `$${index}` : "") + part, ""), values,
+        );
+        const tx = {
+          $executeRaw: async (strings, ...values) => (await query(strings, values)).rowCount,
+          $queryRaw: async (strings, ...values) => (await query(strings, values)).rows,
+        };
+        const value = await callback(tx);
+        await client.query("COMMIT");
+        return value;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally { client.release(); }
+    };
+    const handler = (domain) => inventoryMutation(domain, async (request, response, tx) => {
+      const id = randomUUID();
+      await tx.$executeRaw`INSERT INTO financial_business (id, amount) VALUES (${id}, ${request.body.amount})`;
+      response.status(201).json({ id, amount: request.body.amount });
+    }, { idempotent: true });
+    const fuel = handler("fuel"), seasonal = handler("seasonal");
+    const financialRequest = (key, path = "/fuel") => ({
+      ...req({ amount: 3000 }, key), baseUrl: "/api/financial-test", url: path,
+    });
+    const repeats = await Promise.all(Array.from({ length: 6 }, () => invoke(fuel, financialRequest("same-key-123"))));
+    assert.ok(repeats.every((result) => result.status === 201));
+    assert.ok(repeats.every((result) => JSON.stringify(result) === JSON.stringify(repeats[0])));
+    assert.equal((await admin.query("SELECT count(*)::int AS n FROM financial_business")).rows[0].n, 1);
+    const race = await Promise.all([
+      invoke(fuel, financialRequest("cross-domain-123")),
+      invoke(seasonal, financialRequest("cross-domain-123", "/seasonal")),
+    ]);
+    assert.deepEqual(race.map((result) => result.status).sort(), [201, 409]);
+    assert.equal(race.find((result) => result.status === 409).body.code, "IDEMPOTENCY_MISMATCH");
+    assert.equal((await admin.query("SELECT count(*)::int AS n FROM financial_business")).rows[0].n, 2);
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM "mutation_receipt"')).rows[0].n, 2);
+  } finally {
+    prisma.$transaction = original;
+    await admin.query("ROLLBACK");
+    await admin.query('SET search_path TO "public"');
+    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    admin.release();
+    await pool.end();
+  }
 });

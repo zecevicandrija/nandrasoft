@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test, mock } from "node:test";
 import express from "express";
+import sharp from "sharp";
+import { readFile } from "node:fs/promises";
 
 // Test credentials only. Every storage request is intercepted locally.
 process.env.BUNNY_STORAGE_API_KEY = "test-storage-secret-never-return-to-browser";
@@ -12,7 +14,7 @@ const { auth } = await import("../routes/auth.js");
 const { prisma } = await import("../lib/prisma.js");
 const { MAX_RECEIPT_BYTES } = await import("../lib/bunnyStorage.js");
 
-const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZWUAAAAASUVORK5CYII=", "base64");
+const png = await sharp({ create: { width: 80, height: 120, channels: 3, background: "white" } }).png().toBuffer();
 
 test("receipt upload keeps storage credentials and paths under server control", async (t) => {
   let session = null;
@@ -67,26 +69,88 @@ test("receipt upload keeps storage credentials and paths under server control", 
         assert.equal(response.status, 200);
         const result = await response.json();
         assert.deepEqual(Object.keys(result).sort(), ["filePath", "fileUrl"]);
-        assert.match(result.filePath, /^racuni\/\d{4}\/\d{2}\/racun_[a-f0-9]+_\d+\.png$/);
+        assert.match(result.filePath, /^racuni\/\d{4}\/\d{2}\/racun_[a-f0-9-]{36}\.jpg$/);
         assert.equal(result.fileUrl, `https://receipts.example.test/${result.filePath}`);
         assert.doesNotMatch(JSON.stringify(result), /AccessKey|test-storage-secret/);
         const request = uploads.at(-1);
         assert.equal(request.options.headers.AccessKey, process.env.BUNNY_STORAGE_API_KEY);
         assert.equal(request.options.redirect, "error");
-        assert.equal(request.options.headers["Content-Type"], "image/png");
-        assert.deepEqual(request.options.body, png);
+        assert.equal(request.options.headers["Content-Type"], "image/jpeg");
+        const image = await sharp(request.options.body).metadata();
+        assert.equal(image.format, "jpeg");
+        assert.equal(image.width, 80);
+        assert.equal(image.height, 120);
       }
       assert.notEqual(uploads[0].url, uploads[1].url);
     });
 
-    await t.test("rejects client-selected paths, missing files, spoofed MIME and oversized uploads", async () => {
+    await t.test("rejects client-selected paths, missing files, fake images and oversized uploads", async () => {
       const before = uploads.length;
       assert.equal((await upload({ extraPath: "racuni/../../overwrite.png" })).status, 400);
       assert.equal((await upload({ missing: true })).status, 400);
-      assert.equal((await upload({ mime: "image/svg+xml" })).status, 400);
+      assert.equal((await upload({ data: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), mime: "image/png" })).status, 400);
       assert.equal((await upload({ data: Buffer.from("<script>bad</script>") })).status, 400);
+      assert.equal((await upload({ data: png.subarray(0, 25) })).status, 422);
       assert.equal((await upload({ data: Buffer.alloc(MAX_RECEIPT_BYTES + 1) })).status, 413);
       assert.equal(uploads.length, before);
+    });
+
+    await t.test("real photo bytes determine the format, not the supplied MIME", async () => {
+      assert.equal((await upload({ mime: "application/octet-stream" })).status, 200);
+      assert.equal((await sharp(uploads.at(-1).options.body).metadata()).format, "jpeg");
+    });
+
+    await t.test("JPEG, WebP and AVIF phone images are decoded and saved as real JPEG", async () => {
+      for (const format of ["jpeg", "webp", "avif"]) {
+        const photo = await sharp(png).toFormat(format).toBuffer();
+        assert.equal((await upload({ data: photo, mime: "application/octet-stream" })).status, 200);
+        const image = await sharp(uploads.at(-1).options.body).metadata();
+        assert.equal(image.format, "jpeg");
+        assert.equal(image.width, 80);
+        assert.equal(image.height, 120);
+      }
+    });
+
+    await t.test("large phone photos are resized automatically and metadata is stripped", async () => {
+      const photo = await sharp({ create: { width: 4000, height: 3000, channels: 3, background: "white" } })
+        .jpeg().withMetadata({ orientation: 6 }).toBuffer();
+      assert.equal((await upload({ data: photo, mime: "image/jpeg" })).status, 200);
+      const image = await sharp(uploads.at(-1).options.body).metadata();
+      assert.equal(image.width, 1920);
+      assert.equal(image.height, 2560);
+      assert.equal(image.orientation, undefined);
+      assert.equal(image.exif, undefined);
+    });
+
+    await t.test("excessive declared dimensions are rejected before storage", async () => {
+      const before = uploads.length;
+      const forged = Buffer.from(png);
+      forged.writeUInt32BE(100_000, 16);
+      forged.writeUInt32BE(100_000, 20);
+      assert.equal((await upload({ data: forged })).status, 422);
+      assert.equal(uploads.length, before);
+    });
+
+    await t.test("HEIC originals are automatically converted when the browser cannot decode them", async () => {
+      const photo = await readFile(new URL("./fixtures/receipt-sample.heic", import.meta.url));
+      assert.equal((await upload({ data: photo, mime: "application/octet-stream" })).status, 200);
+      const image = await sharp(uploads.at(-1).options.body).metadata();
+      assert.equal(image.format, "jpeg");
+      assert.ok(image.width > 0 && image.width <= 2560);
+      assert.ok(image.height > 0 && image.height <= 2560);
+    });
+
+    await t.test("concurrent uploads have a bounded admission queue before buffering files", async () => {
+      const requests = Array.from({ length: 8 }, () => upload());
+      const responses = await Promise.all(requests);
+      const statuses = responses.map((response) => response.status);
+      assert.equal(statuses.filter((status) => status === 200).length, 3);
+      assert.equal(statuses.filter((status) => status === 503).length, 5);
+      for (const response of responses.filter((response) => response.status === 503)) {
+        assert.equal(response.headers.get("retry-after"), "3");
+      }
+      // Capacity is released after responses finish, including rejected uploads.
+      assert.equal((await upload()).status, 200);
     });
 
     await t.test("storage errors cannot echo credentials into API responses", async () => {

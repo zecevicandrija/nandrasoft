@@ -17,20 +17,21 @@ function request(router, method, url, body) {
 }
 
 test("workshop and checkout lifecycle preserve machine availability", async (t) => {
-  const keys = ["machine", "machineAssignment", "maintenanceIssue", "workOrder", "worker", "auditLog", "parcel", "$transaction", "$executeRaw"];
+  const keys = ["machine", "machineAssignment", "maintenanceIssue", "workOrder", "worker", "auditLog", "parcel", "$transaction", "$executeRaw", "$queryRaw"];
   const originals = Object.fromEntries(keys.map((key) => [key, prisma[key]]));
   const session = mock.method(auth.api, "getSession", async () => ({ user: { id: "manager", name: "Manager", role: "DIREKTOR", isActive: true }, session: {} }));
   const logging = mock.method(console, "error", () => {});
   let state, tail, locked, failAudit, failOrder;
   const reset = () => {
     state = { machine: { id: "m", name: "Tractor", status: "SLOBODNA", isActive: true, currentHours: 10, currentFuelLiters: 50, tankCapacityLiters: 200 },
-      issues: [], orders: [], assignments: [], audit: [] };
+      issues: [], orders: [], assignments: [], audit: [], counters: {} };
     tail = Promise.resolve(); locked = false; failAudit = false; failOrder = false;
   };
   const matches = (row, where) => Object.entries(where).every(([key, value]) =>
     value && typeof value === "object" ? (value.in ? value.in.includes(row[key]) : value.startsWith ? row[key]?.startsWith(value.startsWith) : false) : row[key] === value);
   const related = (row, model) => row ? structuredClone({ ...row, machine: state.machine,
-    ...(model === "issues" ? { workOrder: state.orders.find((order) => order.maintenanceId === row.id) || null } : {}) }) : null;
+    ...(model === "issues" ? { workOrder: state.orders.find((order) => order.maintenanceId === row.id) || null }
+      : model === "orders" ? { worker: { id: "w", name: "Worker" } } : {}) }) : null;
   const delegate = (model) => ({
     async findUnique({ where }) { assert.equal(locked, true); return related(state[model].find((row) => matches(row, where)), model); },
     async findFirst({ where }) { assert.equal(locked, true); return related(state[model].find((row) => matches(row, where)), model); },
@@ -57,6 +58,11 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
   prisma.machineAssignment = delegate("assignments");
   prisma.maintenanceIssue = delegate("issues");
   prisma.workOrder = delegate("orders");
+  prisma.$queryRaw = async (strings, prefix) => {
+    assert.equal(locked, true);
+    state.counters[prefix] = (state.counters[prefix] || 0n) + 1n;
+    return [{ lastValue: state.counters[prefix] }];
+  };
   prisma.auditLog = { async create({ data }) { if (failAudit) throw new Error("Audit failed"); state.audit.push(data); return data; } };
   prisma.$executeRaw = async () => { locked = true; return 1; };
   prisma.$transaction = async (callback, options) => {
@@ -77,6 +83,18 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
   const resolve = (id) => request(maintenance, "POST", `/issues/${id}/resolve`, { repairNotes: "Repaired" });
   const cancel = (id) => request(maintenance, "PUT", `/issues/${id}/status`, { status: "OTKAZAN" });
   try {
+    await t.test("ordinary and workshop creation share one transactional RN counter past 9999", async () => {
+      reset();
+      const prefix = `RN-${new Date().getFullYear()}-`;
+      state.counters[prefix] = 9999n;
+      const results = await Promise.all([
+        request(orders, "POST", "/", { workerId: "w", orderType: "OSTALO", orderDate: "2026-10-31" }),
+        request(maintenance, "POST", "/remont-order", { machineId: "m", workerId: "w", orderDate: "2026-10-31", instructions: "General repair" }),
+      ]);
+      assert.deepEqual(results.map((result) => result.status), [201, 201]);
+      assert.deepEqual(state.orders.map((order) => order.orderNumber).sort(), [`${prefix}10000`, `${prefix}10001`]);
+      assert.equal(state.counters[prefix], 10001n);
+    });
     await t.test("broken/service machines and stale free status with an open issue or remont cannot be checked out", async () => {
       for (const blocker of ["U_KVARU", "SERVIS", "issue", "order"]) {
         reset(); addOrder("o");
@@ -208,6 +226,56 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
         assert.equal(state.machine.status, "SERVIS");
         assert.equal((await checkout()).status, 409);
       }
+    });
+    await t.test("resolve rejects already resolved (POPRAVLJENO) and canceled (OTKAZAN) issues with 409", async () => {
+      reset();
+      addIssue("i");
+      state.machine.status = "SERVIS";
+      const pastRepairedAt = new Date("2026-05-15T10:00:00Z");
+
+      // 1. First resolution succeeds
+      const firstResolve = await request(maintenance, "POST", "/issues/i/resolve", {
+        repairNotes: "Prva popravka",
+        partsCost: 15000,
+        laborCost: 5000,
+      });
+      assert.equal(firstResolve.status, 200);
+      assert.equal(state.issues[0].status, "POPRAVLJENO");
+      assert.equal(state.issues[0].partsCost, 15000);
+      assert.equal(state.issues[0].totalCost, 20000);
+
+      // Postavimo istorijski datum kako bismo proverili da li ostaje nepromenjen
+      state.issues[0].repairedAt = pastRepairedAt;
+
+      // 2. Second resolve on already resolved issue must return 409 Conflict
+      const secondResolve = await request(maintenance, "POST", "/issues/i/resolve", {
+        repairNotes: "Slučajan dupli klik bez troškova",
+      });
+      assert.equal(secondResolve.status, 409);
+      assert.match(secondResolve.body.error, /već završen/);
+      assert.deepEqual(state.issues[0].repairedAt, pastRepairedAt, "repairedAt must not be overwritten");
+      assert.equal(state.issues[0].partsCost, 15000, "partsCost must not be reset to 0");
+      assert.equal(state.issues[0].totalCost, 20000, "totalCost must not be reset to 0");
+
+      // 3. Resolve on canceled issue must return 409 Conflict
+      addIssue("canceled-issue");
+      state.issues.find((x) => x.id === "canceled-issue").status = "OTKAZAN";
+      const canceledResolve = await request(maintenance, "POST", "/issues/canceled-issue/resolve", {
+        repairNotes: "Pokušaj rešavanja otkazanog",
+      });
+      assert.equal(canceledResolve.status, 409);
+      assert.match(canceledResolve.body.error, /otkazan/);
+
+      // 4. PUT /issues/:id/resolve on non-resolved issue returns 400
+      addIssue("open-issue");
+      const invalidPut = await request(maintenance, "PUT", "/issues/open-issue/resolve", {
+        repairNotes: "Izmena pre završetka",
+      });
+      assert.equal(invalidPut.status, 400);
+
+      // 5. POST /issues/:id/reopen on non-resolved issue returns 400
+      const invalidReopen = await request(maintenance, "POST", "/issues/open-issue/reopen", {});
+      assert.equal(invalidReopen.status, 400);
     });
   } finally {
     session.mock.restore(); logging.mock.restore();

@@ -1,17 +1,39 @@
+import { validateFuelFieldWork } from "../lib/fuelFieldWork.js";
+import { money, rate, multiplyMoney, divideRate } from "../lib/money.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
-import { requireWorkerIdentity, resolveWorkerForUser } from "../lib/workerIdentity.js";
+import { requireWorkerIdentity, getRequestWorker } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireManager } from "../middlewares/auth.js";
 import { isReceiptImage, MAX_RECEIPT_BYTES, uploadBufferToBunny } from "../lib/bunnyStorage.js";
+import { MAX_RECEIPT_JOBS, ReceiptImageError } from "../lib/receiptImage.js";
 
 const router = Router();
 const uploadMemory = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_RECEIPT_BYTES, files: 1, fields: 0, parts: 1 },
 });
+
+let receiptUploads = 0;
+function limitReceiptUploads(req, res, next) {
+  // Admit before multer allocates buffers, including requests waiting for decoding.
+  if (receiptUploads >= MAX_RECEIPT_JOBS) {
+    res.set("Retry-After", "3");
+    return res.status(503).json({ error: "Slanje fotografija je zauzeto. Pokušajte ponovo za nekoliko sekundi." });
+  }
+  receiptUploads++;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    receiptUploads--;
+  };
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+}
 
 // Svi endpointi zahtevaju prijavljenog korisnika
 router.use(requireAuth);
@@ -29,24 +51,28 @@ function parseReceiptUpload(req, res, next) {
   uploadMemory.single("file")(req, res, (error) => {
     if (error) {
       return res.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
-        error: "Pošaljite jednu sliku računa do 8 MB, bez dodatnih polja.",
+        error: "Pošaljite jednu sliku računa do 32 MB, bez dodatnih polja.",
       });
     }
     next();
   });
 }
 
-router.post(["/upload", "/upload-fallback"], parseReceiptUpload, async (req, res) => {
+router.post(["/upload", "/upload-fallback"], limitReceiptUploads, parseReceiptUpload, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "Slika računa nije prosleđena." });
     }
-    if (!isReceiptImage(req.file.buffer, req.file.mimetype)) {
-      return res.status(400).json({ error: "Dozvoljene su samo WebP, JPEG i PNG slike do 8 MB." });
+    if (!isReceiptImage(req.file.buffer)) {
+      return res.status(400).json({ error: "Pošaljite fotografiju računa (JPEG, PNG, WebP, HEIC ili AVIF) do 32 MB." });
     }
-    const result = await uploadBufferToBunny(req.file.buffer, req.file.mimetype);
+    const result = await uploadBufferToBunny(req.file.buffer);
     res.json(result);
-  } catch {
+  } catch (error) {
+    if (error instanceof ReceiptImageError) {
+      if (error.status === 503) res.set("Retry-After", "3");
+      return res.status(error.status).json({ error: error.message });
+    }
     res.status(502).json({ error: "Otpremanje slike računa nije uspelo. Pokušajte ponovo." });
   }
 });
@@ -89,14 +115,14 @@ router.get("/stats", async (req, res) => {
 
     // Ponderisana prosečna nabavna cena po litru u cisterni
     const avgCostPerLiter = totalSuppliedLiters > 0 
-      ? Number((totalSuppliedCost / totalSuppliedLiters).toFixed(2)) 
+      ? divideRate(totalSuppliedCost, totalSuppliedLiters)
       : 171.66; // Fallback referentna cena iz cenovnika
 
     // 3. Ukupno točeno ovog meseca (svi izvori)
     const now = new Date();
     const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const [monthDispensed, monthBySource, activeAnomaliesCount] = await Promise.all([
+    const [monthDispensed, monthBySource] = await Promise.all([
       prisma.fuelEntry.aggregate({
         where: { date: { gte: firstDayOfMonth } },
         _sum: { liters: true, totalCost: true },
@@ -105,9 +131,6 @@ router.get("/stats", async (req, res) => {
         by: ["fuelSource"],
         where: { date: { gte: firstDayOfMonth } },
         _sum: { liters: true },
-      }),
-      prisma.fuelEntry.count({
-        where: { hasAnomaly: true },
       }),
     ]);
 
@@ -131,7 +154,7 @@ router.get("/stats", async (req, res) => {
         // Finansijski podaci vidljivi SAMO direktoru i rukovodiocu
         ...(isManager && {
           avgCostPerLiter,
-          currentTankValueRSD: Math.round(currentTankLiters * avgCostPerLiter),
+          currentTankValueRSD: Math.round(multiplyMoney(currentTankLiters, avgCostPerLiter)),
           totalSuppliedCost: Math.round(totalSuppliedCost),
         }),
       },
@@ -142,7 +165,6 @@ router.get("/stats", async (req, res) => {
           totalCostRSD: Math.round(monthDispensed._sum.totalCost || 0),
         }),
       },
-      anomaliesCount: activeAnomaliesCount,
     };
 
     res.json(responseData);
@@ -269,23 +291,16 @@ router.get("/entries", async (req, res) => {
 
     // Poverljivost cena i provera prava na izmenu
     const sanitizedEntries = entries.map((entry) => {
-      let lPerHa = null;
-      let norm = null;
-      if (entry.fieldWork && entry.fieldWork.areaDoneHa > 0) {
-        lPerHa = Number((entry.liters / entry.fieldWork.areaDoneHa).toFixed(1));
-        norm = entry.fieldWork.workType?.fuelNormLitersPerHa || null;
-      }
-
       const entryDayStr = new Date(entry.date).toDateString();
       const isToday = entryDayStr === todayStr;
       const canEdit = isManager || isToday;
 
       if (isManager || entry.fuelSource === "PUMPA") {
-        return { ...entry, calculatedLPerHa: lPerHa, fuelNorm: norm, isToday, canEdit };
+        return { ...entry, isToday, canEdit };
       }
 
       const { pricePerLiter, totalCost, ...safeEntry } = entry;
-      return { ...safeEntry, calculatedLPerHa: lPerHa, fuelNorm: norm, isToday, canEdit };
+      return { ...safeEntry, isToday, canEdit };
     });
 
     res.json({
@@ -315,7 +330,7 @@ const createFuelEntrySchema = z.object({
   gasStation: z.string().max(100).optional().nullable(),
   fuelType: z.string().default("EURODIZEL"),
   liters: z.number().positive("Količina mora biti veća od 0 litara"),
-  fieldWorkId: z.string().optional().nullable(),
+  fieldWorkId: z.string().min(1).optional().nullable(),
   pricePerLiter: z.number().nonnegative().optional().nullable(),
   totalCost: z.number().positive("Iznos računa mora biti veći od 0 RSD").optional().nullable(),
   receiptImageUrl: z.string().url("Neispravan link slike računa").max(1000).optional().nullable(),
@@ -356,7 +371,7 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
     // 2. Proveri radnika - za radnika je hardkodovan njegov profil
     let targetWorkerId = data.workerId;
     if (!isManager || !targetWorkerId) {
-      const worker = req.worker || await resolveWorkerForUser(req.user);
+      const worker = await getRequestWorker(req, prisma);
       if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
       if (!isManager && data.workerId && data.workerId !== worker.id) {
         return res.status(403).json({ error: "Možete unositi gorivo samo za svoj profil radnika." });
@@ -443,13 +458,13 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
       // Ako nije uneta cena, preuzmi prosečnu ponderisanu cenu cisterne
       if (!effectivePricePerLiter && !data.totalCost) {
         effectivePricePerLiter = (suppliesAgg._sum.liters || 0) > 0
-          ? Number(((suppliesAgg._sum.totalCost || 0) / suppliesAgg._sum.liters).toFixed(2))
+          ? divideRate(suppliesAgg._sum.totalCost || 0, suppliesAgg._sum.liters)
           : 171.66;
       }
     }
 
     // 4. POSLOVNA LOGIKA: DETEKCIJA ANOMALIJA
-    let hasAnomaly = false;
+    const hasAnomaly = false;
     const anomalyReasons = [];
 
     // Pravilo A: Fizički kapacitet rezervoara mašine - STRIKTNA ZABRANA!
@@ -463,87 +478,21 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
       });
     }
 
-    // Pravilo B: Automatsko povezivanje sa radom i provera normativa L/ha iz Cenovnika
-    let linkedFieldWork = null;
-    if (data.fieldWorkId) {
-      linkedFieldWork = await prisma.fieldWork.findUnique({
-        where: { id: data.fieldWorkId },
-        include: { workType: true, parcel: true },
-      });
-    } else {
-      // Automatski potraži rad za tu mašinu tog kalendarskog dana
-      linkedFieldWork = await prisma.fieldWork.findFirst({
-        where: {
-          machineId: machine.id,
-          date: {
-            gte: new Date(new Date(entryDate).setHours(0, 0, 0, 0)),
-            lte: new Date(new Date(entryDate).setHours(23, 59, 59, 999)),
-          },
-        },
-        include: { workType: true, parcel: true },
-      });
-    }
+    const linkError = await validateFuelFieldWork(prisma, data.fieldWorkId, {
+      machineId: machine.id, workerId: targetWorkerId, date: entryDate, isManager,
+    });
+    if (linkError) return res.status(400).json({ error: linkError });
 
-    if (linkedFieldWork) {
-      const area = linkedFieldWork.areaDoneHa;
-      const workType = linkedFieldWork.workType;
-      if (area > 0 && workType && workType.fuelNormLitersPerHa) {
-        const actualLPerHa = data.liters / area;
-        const norm = workType.fuelNormLitersPerHa;
-        const maxAllowed = norm * 1.25; // +25% tolerancija
-
-        if (actualLPerHa > maxAllowed) {
-          hasAnomaly = true;
-          const diffPct = Math.round(((actualLPerHa - norm) / norm) * 100);
-          anomalyReasons.push(
-            `Potrošnja ${actualLPerHa.toFixed(1)} L/ha na poslu "${workType.name}" prelazi normativ od ${norm} L/ha (+${diffPct}%)`
-          );
-        }
-      }
-    } else {
-      // Pravilo D: Sipano > 30 L u poljoprivrednu mašinu (Traktor, Kombajn) a nema rada na njivi u 24h
-      const isFieldHeavyMachine = ["TRAKTOR", "KOMBAJN"].includes(machine.type);
-      if (isFieldHeavyMachine && data.liters >= 35) {
-        const oneDayAgo = new Date(entryDate.getTime() - 24 * 60 * 60 * 1000);
-        const oneDayAfter = new Date(entryDate.getTime() + 24 * 60 * 60 * 1000);
-
-        const recentWork = await prisma.fieldWork.findFirst({
-          where: {
-            machineId: machine.id,
-            date: { gte: oneDayAgo, lte: oneDayAfter },
-          },
-        });
-
-        const recentOrder = await prisma.workOrder.findFirst({
-          where: {
-            machineId: machine.id,
-            orderDate: { gte: oneDayAgo, lte: oneDayAfter },
-          },
-        });
-
-        if (!recentWork && !recentOrder) {
-          hasAnomaly = true;
-          anomalyReasons.push(
-            `Sipano ${data.liters} L goriva u mašinu "${machine.name}", a u proteklih 24h nema evidentiranog rada na parceli niti radnog naloga`
-          );
-        }
-      }
-    }
-
-    // Izračunaj finansije:
-    // - Ako je prosleđen totalCost, pricePerLiter se računa kao totalCost / liters
-    // - Ako je prosleđen pricePerLiter, totalCost se računa kao liters * pricePerLiter
-    // - Za PUMPA sa slikom računa bez unete cene: ostavlja se null da rukovodilac/direktor unese cenu sa slike računa!
     let calculatedTotalCost = null;
     if (data.totalCost !== undefined && data.totalCost !== null && data.totalCost > 0) {
-      calculatedTotalCost = Number(data.totalCost.toFixed(2));
-      effectivePricePerLiter = Number((data.totalCost / data.liters).toFixed(2));
+      calculatedTotalCost = money(data.totalCost);
+      effectivePricePerLiter = divideRate(calculatedTotalCost, data.liters);
     } else if (effectivePricePerLiter !== undefined && effectivePricePerLiter !== null && effectivePricePerLiter > 0) {
-      effectivePricePerLiter = Number(effectivePricePerLiter.toFixed(2));
-      calculatedTotalCost = Number((data.liters * effectivePricePerLiter).toFixed(2));
+      effectivePricePerLiter = rate(effectivePricePerLiter);
+      calculatedTotalCost = multiplyMoney(data.liters, effectivePricePerLiter);
     } else if (data.fuelSource === "CISTERNA") {
       effectivePricePerLiter = 171.66;
-      calculatedTotalCost = Number((data.liters * effectivePricePerLiter).toFixed(2));
+      calculatedTotalCost = multiplyMoney(data.liters, effectivePricePerLiter);
     } else {
       effectivePricePerLiter = null;
       calculatedTotalCost = null;
@@ -554,13 +503,13 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
     const createAuditDesc = `Natočeno ${data.liters} L goriva (${data.fuelType}) u mašinu "${machine.name}" [Izvor: ${data.fuelSource}${createStationTag}]${anomalyTag}`;
 
     // 5. TRANSAKCIJA: Upis točenja + ažuriranje nivoa goriva u mašini + revizorski trag
-    const [entry] = await prisma.$transaction([
-      prisma.fuelEntry.create({
+    const entry = await prisma.$transaction(async (tx) => {
+      const entry = await tx.fuelEntry.create({
         data: {
           date: entryDate,
           machineId: data.machineId,
           workerId: targetWorkerId,
-          fieldWorkId: data.fieldWorkId || (linkedFieldWork ? linkedFieldWork.id : null),
+          fieldWorkId: data.fieldWorkId || null,
           fuelSource: data.fuelSource,
           gasStation: effectiveGasStation,
           fuelType: data.fuelType,
@@ -581,19 +530,17 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
             include: { workType: true, parcel: true },
           },
         },
-      }),
-      // Ažuriraj trenutno stanje goriva u rezervoaru mašine
-      prisma.machine.update({
+      });
+      await tx.machine.update({
         where: { id: data.machineId },
         data: {
           currentFuelLiters: Math.min(tankCapacity, (machine.currentFuelLiters || 0) + data.liters),
         },
-      }),
-      // Revizorski trag
-      prisma.auditLog.create({
+      });
+      await tx.auditLog.create({
         data: {
           entityType: "FuelEntry",
-          entityId: "new-entry", // zameniće se
+          entityId: entry.id,
           action: "KREIRANJE",
           userId: req.user.id,
           userName: req.user.name,
@@ -612,8 +559,9 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
             anomalyReason: anomalyReasons.join(". "),
           },
         },
-      }),
-    ]);
+      });
+      return entry;
+    });
 
     // Formatiraj odgovor u zavisnosti od uloge
     if (!isManager && entry.fuelSource !== "PUMPA") {
@@ -631,7 +579,7 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
     console.error("Greška pri unosu točenja goriva:", error);
     res.status(500).json({ error: "Greška na serveru pri unosu točenja." });
   }
-}));
+}, { idempotent: true }));
 
 // ==========================================
 // 4. IZMENA TOČENJA (DOZVOLJENO RADNIKU SAMO DO KRAJA DANA)
@@ -641,7 +589,7 @@ const updateFuelEntrySchema = z.object({
   fuelSource: fuelSourceEnum.optional(),
   gasStation: z.string().max(100).optional().nullable(),
   fuelType: z.string().optional(),
-  fieldWorkId: z.string().optional().nullable(),
+  fieldWorkId: z.string().min(1).optional().nullable(),
   notes: z.string().max(500).optional().nullable(),
   receiptNumber: z.string().max(100).optional().nullable(),
   pricePerLiter: z.number().nonnegative().optional().nullable(),
@@ -689,6 +637,10 @@ router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) =>
     }
 
     const data = parsed.data;
+    const linkError = await validateFuelFieldWork(prisma, data.fieldWorkId, {
+      machineId: existing.machineId, workerId: existing.workerId, date: existing.date, isManager,
+    });
+    if (linkError) return res.status(400).json({ error: linkError });
     const newLiters = data.liters !== undefined ? data.liters : existing.liters;
     const diffLiters = newLiters - existing.liters;
     const newSource = data.fuelSource || existing.fuelSource;
@@ -739,7 +691,7 @@ router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) =>
     }
 
     // Detekcija anomalija za novu vrednost
-    let hasAnomaly = false;
+    const hasAnomaly = false;
     const anomalyReasons = [];
 
     const tankCapacity = existing.machine.tankCapacityLiters || 250;
@@ -760,16 +712,16 @@ router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) =>
 
     if (data.totalCost !== undefined) {
       if (data.totalCost !== null && data.totalCost > 0) {
-        newTotalCost = Number(data.totalCost.toFixed(2));
-        effectivePrice = Number((newTotalCost / newLiters).toFixed(2));
+        newTotalCost = money(data.totalCost);
+        effectivePrice = divideRate(newTotalCost, newLiters);
       } else {
         newTotalCost = null;
         effectivePrice = null;
       }
     } else if (data.pricePerLiter !== undefined) {
       if (data.pricePerLiter !== null && data.pricePerLiter > 0) {
-        effectivePrice = Number(data.pricePerLiter.toFixed(2));
-        newTotalCost = Number((newLiters * effectivePrice).toFixed(2));
+        effectivePrice = rate(data.pricePerLiter);
+        newTotalCost = multiplyMoney(newLiters, effectivePrice);
       } else {
         effectivePrice = null;
         newTotalCost = null;
@@ -777,10 +729,10 @@ router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) =>
     } else if (data.liters !== undefined) {
       if (newSource === "PUMPA" && existing.totalCost && existing.totalCost > 0) {
         newTotalCost = existing.totalCost;
-        effectivePrice = Number((existing.totalCost / newLiters).toFixed(2));
+        effectivePrice = divideRate(existing.totalCost, newLiters);
       } else if (existing.pricePerLiter && existing.pricePerLiter > 0) {
         effectivePrice = existing.pricePerLiter;
-        newTotalCost = Number((newLiters * effectivePrice).toFixed(2));
+        newTotalCost = multiplyMoney(newLiters, effectivePrice);
       }
     }
 
@@ -983,7 +935,7 @@ router.post("/supplies", inventoryMutation("fuel", async (req, res, prisma) => {
 
     const data = parsed.data;
     const supplyDate = data.date ? new Date(data.date) : new Date();
-    const totalCost = Number((data.liters * data.pricePerLiter).toFixed(2));
+    const totalCost = multiplyMoney(data.liters, data.pricePerLiter);
 
     const supply = await prisma.fuelSupply.create({
       data: {
@@ -1075,156 +1027,8 @@ router.delete("/supplies/:id", requireManager, inventoryMutation("fuel", async (
 // ==========================================
 // 6. ANALITIKA POTROŠNJE L/ha PO OPERACIJAMA
 // ==========================================
-router.get("/analytics/l-per-ha", async (req, res) => {
-  try {
-    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
-    if (!isManager) {
-      return res.status(403).json({ error: "Nemate pristup analitici goriva." });
-    }
-
-    const { dateFrom, dateTo } = req.query;
-
-    // 1. Dohvati sve radne operacije
-    const workTypes = await prisma.workType.findMany({
-      where: { isActive: true },
-      orderBy: { name: "asc" },
-    });
-
-    // 2. Dohvati sva točenja koja su povezana sa radom na njivi
-    const whereFuel = {
-      fieldWorkId: { not: null },
-    };
-    if (dateFrom || dateTo) {
-      whereFuel.date = {};
-      if (dateFrom) whereFuel.date.gte = new Date(String(dateFrom));
-      if (dateTo) {
-        const dTo = new Date(String(dateTo));
-        dTo.setHours(23, 59, 59, 999);
-        whereFuel.date.lte = dTo;
-      }
-    }
-
-    const fuelWithWork = await prisma.fuelEntry.findMany({
-      where: whereFuel,
-      include: {
-        fieldWork: {
-          include: { workType: true },
-        },
-        machine: {
-          select: { id: true, name: true, type: true },
-        },
-      },
-    });
-
-    // Grupisanje po workTypeId
-    const statsMap = {};
-
-    workTypes.forEach((wt) => {
-      statsMap[wt.id] = {
-        workTypeId: wt.id,
-        workTypeName: wt.name,
-        category: wt.category,
-        normLPerHa: wt.fuelNormLitersPerHa,
-        totalLiters: 0,
-        totalHa: 0,
-        actualLPerHa: null,
-        variancePercent: null,
-        status: "NEMA_PODATAKA", // "OPTIMALNO", "UPOZORENJE", "ANOMALIJA"
-        entriesCount: 0,
-      };
-    });
-
-    fuelWithWork.forEach((fe) => {
-      const wtId = fe.fieldWork?.workTypeId;
-      if (wtId && statsMap[wtId]) {
-        statsMap[wtId].totalLiters += fe.liters;
-        statsMap[wtId].totalHa += fe.fieldWork.areaDoneHa;
-        statsMap[wtId].entriesCount += 1;
-      }
-    });
-
-    const results = Object.values(statsMap)
-      .map((item) => {
-        if (item.totalHa > 0) {
-          item.actualLPerHa = Number((item.totalLiters / item.totalHa).toFixed(1));
-          if (item.normLPerHa) {
-            const diff = item.actualLPerHa - item.normLPerHa;
-            item.variancePercent = Number(((diff / item.normLPerHa) * 100).toFixed(1));
-
-            if (item.variancePercent > 25) {
-              item.status = "ANOMALIJA"; // Crveno
-            } else if (item.variancePercent > 10) {
-              item.status = "UPOZORENJE"; // Narandžasto
-            } else {
-              item.status = "OPTIMALNO"; // Zeleno
-            }
-          }
-        }
-        item.totalLiters = Number(item.totalLiters.toFixed(1));
-        item.totalHa = Number(item.totalHa.toFixed(2));
-        return item;
-      })
-      .filter((item) => item.normLPerHa !== null || item.totalLiters > 0);
-
-    res.json({ analytics: results });
-  } catch (error) {
-    console.error("Greška pri proračunu L/ha analitike:", error);
-    res.status(500).json({ error: "Greška na serveru pri proračunu analitike goriva." });
-  }
-});
-
-// ==========================================
-// 7. CENTAR ZA DETEKTOVANE UPITNE POTROŠNJE
-// ==========================================
-router.get("/anomalies", async (req, res) => {
-  try {
-    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
-    if (!isManager) {
-      return res.status(403).json({ error: "Nemate pristup evidenciji upitnih potrošnji." });
-    }
-
-    const { dateFrom, dateTo } = req.query;
-    const where = { hasAnomaly: true };
-    if (dateFrom || dateTo) {
-      where.date = {};
-      if (dateFrom) where.date.gte = new Date(String(dateFrom));
-      if (dateTo) {
-        const dTo = new Date(String(dateTo));
-        dTo.setHours(23, 59, 59, 999);
-        where.date.lte = dTo;
-      }
-    }
-
-    const anomalies = await prisma.fuelEntry.findMany({
-      where,
-      orderBy: { date: "desc" },
-      include: {
-        machine: {
-          select: { id: true, name: true, type: true, tankCapacityLiters: true },
-        },
-        worker: {
-          select: { id: true, name: true, phone: true },
-        },
-        fieldWork: {
-          include: { workType: true, parcel: true },
-        },
-        createdBy: {
-          select: { id: true, name: true, role: true },
-        },
-      },
-    });
-
-    const sanitized = anomalies.map((a) => {
-      if (isManager) return a;
-      const { pricePerLiter, totalCost, ...rest } = a;
-      return rest;
-    });
-
-    res.json({ anomalies: sanitized });
-  } catch (error) {
-    console.error("Greška pri dohvatanju anomalija goriva:", error);
-    res.status(500).json({ error: "Greška na serveru pri dohvatanju anomalija." });
-  }
+router.get(["/analytics/l-per-ha", "/anomalies"], (req, res) => {
+  res.status(410).json({ error: "Potrosnja i normativi su premesteni u direktorsku analitiku.", analyticsUrl: "/api/analytics/fuel-efficiency" });
 });
 
 export default router;

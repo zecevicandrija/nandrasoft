@@ -1,5 +1,5 @@
 import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
-import { requireWorkerIdentity, resolveWorkerForUser, isManager as isManagerUser } from "../lib/workerIdentity.js";
+import { requireWorkerIdentity, getRequestWorker, isManager as isManagerUser } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -189,7 +189,7 @@ router.post("/checkout", machineMutation(async (req, res, prisma) => {
     // Resolve identity only through the unique User -> Worker relation.
     let finalWorkerId = workerId;
     if (!isManagerUser(req.user) || !finalWorkerId) {
-      const worker = req.worker || await resolveWorkerForUser(req.user);
+      const worker = await getRequestWorker(req, prisma);
       if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
       if (!isManagerUser(req.user) && workerId && workerId !== worker.id) {
         return res.status(403).json({ error: "Možete unositi podatke samo za svoj profil radnika." });
