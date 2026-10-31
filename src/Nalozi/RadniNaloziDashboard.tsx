@@ -1,3 +1,6 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { operationalQueryOptions, operationalKey } from '../lib/operationalQueries';
+import QueryErrorNotice from '../components/QueryErrorNotice';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useMemo } from 'react';
@@ -133,35 +136,14 @@ const RadniNaloziDashboard: React.FC = () => {
   const userRole = currentUser?.role || 'OPERATER';
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(userRole);
 
-  const [orders, setOrders] = useState<WorkOrder[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Paginacija & Statistika (25 naloga po stranici)
   const [page, setPage] = useState(1);
-  const [pagination, setPagination] = useState<PaginationData>({
-    total: 0,
-    page: 1,
-    limit: 25,
-    totalPages: 1,
-  });
-  const [stats, setStats] = useState<StatsData>({
-    totalOrders: 0,
-    pendingOrders: 0,
-    inProgressOrders: 0,
-    completedOrders: 0,
-  });
-
   // Filteri - podrazumevano prikazujemo 'SVE' tako da se odmah vide svi nalozi
   const [datePreset, setDatePreset] = useState<'DANAS' | 'SUTRA' | 'SVE' | 'CUSTOM'>('SVE');
   const [customDate, setCustomDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
-
-  // Šifarnici za modal
-  const [workers, setWorkers] = useState<Worker[]>([]);
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [parcels, setParcels] = useState<Parcel[]>([]);
-  const [workTypes, setWorkTypes] = useState<WorkType[]>([]);
 
   // Modal za novi nalog stanje
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -198,7 +180,7 @@ const RadniNaloziDashboard: React.FC = () => {
   });
 
   const orderDraft = useDurableSubmission('create-work-order', currentUser?.id, formData,
-    (draft) => { setFormData(draft); setIsModalOpen(true); });
+    (draft) => { setFormData(draft); });
 
   // Modal za izmenu radnog naloga
   const [editingOrder, setEditingOrder] = useState<WorkOrder | null>(null);
@@ -234,102 +216,43 @@ const RadniNaloziDashboard: React.FC = () => {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState('');
 
-  // Učitavanje šifarnika
-  useEffect(() => {
-    const fetchMaster = async () => {
-      try {
-        const [wRes, mRes, pRes, wtRes] = await Promise.all([
-          fetch(`${API}/master/workers`, { credentials: 'include' }),
-          fetch(`${API}/master/machines`, { credentials: 'include' }),
-          fetch(`${API}/master/parcels`, { credentials: 'include' }),
-          fetch(`${API}/master/work-types`, { credentials: 'include' }),
-        ]);
-
-        if (wRes.ok) {
-          const data = await wRes.json();
-          setWorkers(data.workers || []);
-        }
-        if (mRes.ok) {
-          const data = await mRes.json();
-          setMachines(data.machines || []);
-        }
-        if (pRes.ok) {
-          const data = await pRes.json();
-          setParcels(data.parcels || []);
-        }
-        if (wtRes.ok) {
-          const data = await wtRes.json();
-          setWorkTypes(data.workTypes || []);
-        }
-      } catch (err) {
-        console.error('Greška pri učitavanju šifarnika:', err);
-      }
-    };
-
-    fetchMaster();
-  }, []);
-
-  // Učitavanje naloga sa paginacijom
-  const fetchOrders = async (targetPage = page) => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set('page', String(targetPage));
-      params.set('limit', '25');
-
-      if (datePreset === 'DANAS') {
-        params.set('date', new Date().toISOString().split('T')[0]);
-      } else if (datePreset === 'SUTRA') {
-        params.set('date', tomorrowStr);
-      } else if (datePreset === 'CUSTOM' && customDate) {
-        params.set('date', customDate);
-      }
-
-      if (statusFilter) {
-        params.set('status', statusFilter);
-      } else if (!isManager) {
-        params.set('status', 'AKTIVNI');
-      }
-      if (typeFilter) params.set('type', typeFilter);
-
-      const res = await fetch(`${API}/work-orders?${params.toString()}`, {
-        credentials: 'include',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setOrders(data.workOrders || []);
-        if (data.pagination) {
-          setPagination(data.pagination);
-        }
-        if (data.stats) {
-          setStats(data.stats);
-        }
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju radnih naloga:', err);
-    } finally {
-      setLoading(false);
-    }
+  const userId = currentUser?.id as string | undefined;
+  const queryClient = useQueryClient();
+  const workersQuery = useQuery(operationalQueryOptions<{ workers: Worker[] }>(userId, userRole, 'workers'));
+  const machinesQuery = useQuery(operationalQueryOptions<{ machines: Machine[] }>(userId, userRole, 'machines'));
+  const parcelsQuery = useQuery(operationalQueryOptions<{ parcels: Parcel[] }>(userId, userRole, 'parcels'));
+  const workTypesQuery = useQuery(operationalQueryOptions<{ workTypes: WorkType[] }>(userId, userRole, 'workTypes'));
+  const workers = workersQuery.data?.workers || [];
+  const machines = machinesQuery.data?.machines || [];
+  const parcels = parcelsQuery.data?.parcels || [];
+  const workTypes = workTypesQuery.data?.workTypes || [];
+  const masterQueries = [workersQuery, machinesQuery, parcelsQuery, workTypesQuery];
+  const masterFeedback = <>{masterQueries.map((query, index) => query.isError ? <QueryErrorNotice key={index}
+    title={['Radnici nisu učitani.', 'Mašine nisu učitane.', 'Parcele nisu učitane.', 'Radne operacije nisu učitane.'][index]}
+    error={query.error} pending={query.isFetching} onRetry={() => { void query.refetch(); }} /> : null)}
+    {masterQueries.some(query => query.isPending) && <p role="status">Učitavanje šifarnika...</p>}</>;
+  const ordersQuery = useQuery(operationalQueryOptions<{ workOrders: WorkOrder[]; pagination: PaginationData; stats: StatsData }>(userId, userRole, 'orders', {
+    page, limit: 25,
+    date: datePreset === 'DANAS' ? new Date().toISOString().split('T')[0] : datePreset === 'SUTRA' ? tomorrowStr : datePreset === 'CUSTOM' ? customDate : undefined,
+    status: statusFilter || (!isManager ? 'AKTIVNI' : undefined), type: typeFilter,
+  }));
+  const orders = ordersQuery.data?.workOrders || [];
+  const loading = ordersQuery.isPending;
+  const pagination = ordersQuery.data?.pagination || { total: 0, page, limit: 25, totalPages: 1 };
+  const stats = ordersQuery.data?.stats || { totalOrders: 0, pendingOrders: 0, inProgressOrders: 0, completedOrders: 0 };
+  const refreshOrders = (targetPage = page) => {
+    if (targetPage !== page) setPage(targetPage);
+    void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'orders'), refetchType: targetPage === page ? 'active' : 'none' });
   };
-
-  useEffect(() => {
-    fetchOrders(page);
-  }, [page, datePreset, customDate, statusFilter, typeFilter]);
-
   useEffect(() => {
     const handleSwMessage = (event: MessageEvent) => {
-      if (
-        event.data?.type === 'WORK_ORDER_PUSH_RECEIVED' ||
-        event.data?.type === 'WORK_ORDER_PUSH_CLICKED'
-      ) {
-        fetchOrders(page);
+      if (event.data?.type === 'WORK_ORDER_PUSH_RECEIVED' || event.data?.type === 'WORK_ORDER_PUSH_CLICKED') {
+        void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'orders') });
       }
     };
     navigator.serviceWorker?.addEventListener('message', handleSwMessage);
-    return () => {
-      navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
-    };
-  }, [page, datePreset, customDate, statusFilter, typeFilter]);
+    return () => navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
+  }, [queryClient, userId, userRole]);
 
   // Kreiranje naloga
   const handleCreateOrder = async (e?: React.FormEvent, replay = false) => {
@@ -373,7 +296,7 @@ const RadniNaloziDashboard: React.FC = () => {
       });
 
       setPage(1);
-      fetchOrders(1);
+      refreshOrders(1);
     } catch (err: any) {
       setModalError(err.message);
     } finally {
@@ -435,7 +358,7 @@ const RadniNaloziDashboard: React.FC = () => {
       }
 
       setSelectedOrderToAccept(null);
-      fetchOrders(page);
+      refreshOrders(page);
     } catch (err: any) {
       setAcceptError(err.message);
     } finally {
@@ -460,7 +383,7 @@ const RadniNaloziDashboard: React.FC = () => {
         throw new Error(data.error || 'Greška pri otkazivanju radnog naloga.');
       }
       setOrderToCancel(null);
-      fetchOrders(page);
+      refreshOrders(page);
     } catch (err: any) {
       setCancelError(err.message || 'Greška pri otkazivanju radnog naloga.');
     } finally {
@@ -487,7 +410,7 @@ const RadniNaloziDashboard: React.FC = () => {
         throw new Error(data.error || 'Greška pri ponovnom aktiviranju radnog naloga.');
       }
       setOrderToReactivate(null);
-      fetchOrders(page);
+      refreshOrders(page);
     } catch (err: any) {
       setReactivateError(err.message || 'Greška pri ponovnom aktiviranju radnog naloga.');
     } finally {
@@ -511,9 +434,9 @@ const RadniNaloziDashboard: React.FC = () => {
       }
       setOrderToDelete(null);
       if (orders.length === 1 && page > 1) {
-        setPage(page - 1);
+        refreshOrders(page - 1);
       } else {
-        fetchOrders(page);
+        refreshOrders(page);
       }
     } catch (err: any) {
       setDeleteError(err.message || 'Greška pri brisanju radnog naloga.');
@@ -822,7 +745,7 @@ const RadniNaloziDashboard: React.FC = () => {
       }
 
       setEditingOrder(null);
-      fetchOrders(page);
+      refreshOrders(page);
     } catch (err: any) {
       setEditModalError(err.message);
     } finally {
@@ -976,8 +899,10 @@ const RadniNaloziDashboard: React.FC = () => {
           )}
         </div>
 
+        {!isModalOpen && !editingOrder && masterFeedback}
+
         {/* KPI Grid */}
-        <div className={styles.kpiGrid}>
+        {ordersQuery.isSuccess && <div className={styles.kpiGrid}>
           <div className={styles.kpiCard}>
             <div className={styles.kpiIconTotal}>
               <ClipboardList size={22} />
@@ -1019,7 +944,7 @@ const RadniNaloziDashboard: React.FC = () => {
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Filter Bar */}
         <div className={styles.filterCard}>
@@ -1104,7 +1029,8 @@ const RadniNaloziDashboard: React.FC = () => {
         </div>
 
         {/* Orders Grid */}
-        {loading ? (
+        {ordersQuery.isError ? <QueryErrorNotice title="Radni nalozi nisu učitani." error={ordersQuery.error}
+          pending={ordersQuery.isFetching} onRetry={() => { void ordersQuery.refetch(); }} /> : loading ? (
           <div className={styles.emptyState}>
             <Loader2 size={32} className={styles.spinnerIcon} />
             <p>Učitavam radne naloge...</p>
@@ -1394,6 +1320,7 @@ const RadniNaloziDashboard: React.FC = () => {
               )}
 
               <form onSubmit={handleCreateOrder} className={styles.modalForm}>
+              {masterFeedback}
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
                     <div className={styles.formLabelRow}>
@@ -1641,6 +1568,7 @@ const RadniNaloziDashboard: React.FC = () => {
               )}
 
               <form onSubmit={handleUpdateOrder} className={styles.modalForm}>
+              {masterFeedback}
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
                     <div className={styles.formLabelRow}>
@@ -1935,6 +1863,7 @@ const RadniNaloziDashboard: React.FC = () => {
               )}
 
               <form onSubmit={handleConfirmAcceptOrder} className={styles.modalForm}>
+              {masterFeedback}
                 {selectedOrderToAccept.machine && (
                   <div className={styles.machineSummaryCard}>
                     <div className={styles.machineSummaryTitle}>
@@ -2456,11 +2385,10 @@ const RadniNaloziDashboard: React.FC = () => {
           onClose={() => setParcelQuickModalOpen(false)}
           parcelToEdit={parcelToEdit}
           onSaved={(savedParcel, mode) => {
-            setParcels((prev) => {
-              if (mode === 'edit') {
-                return prev.map((p) => (p.id === savedParcel.id ? savedParcel : p));
-              }
-              return [...prev, savedParcel].sort((a, b) => a.code.localeCompare(b.code));
+            queryClient.setQueryData(operationalQueryOptions(userId, userRole, 'parcels').queryKey, (previous: { parcels: Parcel[] } | undefined) => {
+              const prev = previous?.parcels || [];
+              return { parcels: mode === 'edit' ? prev.map(p => p.id === savedParcel.id ? savedParcel : p)
+                : [...prev, savedParcel].sort((a, b) => a.code.localeCompare(b.code)) };
             });
             if (parcelQuickTarget === 'create-order') {
               setFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
@@ -2468,7 +2396,7 @@ const RadniNaloziDashboard: React.FC = () => {
               setEditFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
             }
             if (mode === 'edit') {
-              fetchOrders(page);
+              refreshOrders(page);
             }
           }}
         />

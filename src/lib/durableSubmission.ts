@@ -23,7 +23,7 @@ export async function sendDurably(
   try {
     response = await fetcher(url, {
       method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': pending.key },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': pending.key, 'X-Idempotency-Key': pending.key },
       body: JSON.stringify(pending.payload),
     });
   } catch {
@@ -33,10 +33,13 @@ export async function sendDurably(
   let data;
   try { data = await response.json(); }
   catch { throw new Error('Odgovor servera nije potvrđen. Ponovite prethodno slanje.'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Odgovor servera nije potvrđen. Ponovite prethodno slanje.');
+  }
   if (!response.ok) {
     // These application errors have no committed business writes. Keep the draft,
     // but permit a corrected payload to receive a new key.
-    if ([400, 404, 409, 422].includes(response.status) && data.code !== 'IDEMPOTENCY_MISMATCH') storage.removeItem(key);
+    if ([400, 404, 409, 422].includes(response.status) && !['IDEMPOTENCY_MISMATCH', 'INVENTORY_BUSY'].includes(data.code)) storage.removeItem(key);
     throw new Error(data.error || 'Slanje nije potvrđeno. Ponovite prethodno slanje.');
   }
   return data;

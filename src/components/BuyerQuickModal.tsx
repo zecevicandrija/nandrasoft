@@ -101,12 +101,7 @@ export const BuyerQuickModal: React.FC<BuyerQuickModalProps> = ({
         throw new Error(data.error || 'Greška pri čuvanju kupca.');
       }
 
-      // Osveži sve relevantne keševe u aplikaciji
-      queryClient.invalidateQueries({ queryKey: ['onion-lookup'] });
-      queryClient.invalidateQueries({ queryKey: ['onion-dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['onion-shipment'] });
-      queryClient.invalidateQueries({ queryKey: ['onion-traceability'] });
-      queryClient.invalidateQueries({ queryKey: ['partners'] });
+      // The parent refreshes onion data once, according to create/edit dependencies.
       queryClient.invalidateQueries({ queryKey: ['master-stats'] });
 
       const savedObj = data.buyer || data.partner;

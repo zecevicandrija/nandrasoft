@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Fuel,
@@ -12,6 +12,8 @@ import {
   ArrowUpToLine,
 } from 'lucide-react';
 import { useSession } from '../lib/auth-client';
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
 import CustomSelect from '../components/CustomSelect/CustomSelect';
 import { SlikaRacunaUpload } from './SlikaRacunaUpload';
 import styles from './GorivoDashboard.module.css';
@@ -81,6 +83,8 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const submitting = useRef(false);
+  const durable = useDurableSubmission('fuel-entry', currentUserId, {}, () => {});
 
   // Reset pri otvaranju modala
   useEffect(() => {
@@ -111,7 +115,8 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
 
   const selectedMachine = machines.find((m) => m.id === machineId);
 
-  if (!isOpen) return null;
+  if (!isOpen) return <SubmissionRecovery pending={!!durable.pending} busy={loading} error={durable.storageError}
+    onRetry={() => durable.pending && submitPayload(durable.pending.payload)} />;
 
   // Brzi tasteri za dodavanje litara
   const addLiters = (amount: number) => {
@@ -157,6 +162,7 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting.current || durable.pending) return;
     setError('');
 
     if (uploadingReceipt) {
@@ -171,11 +177,9 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
 
     let effectiveWorkerId = workerId;
     if (!isManager) {
-      effectiveWorkerId = workers.find((w) => w.userId === currentUserId)?.id || '';
-      if (!effectiveWorkerId) {
-        setError('Nalog nije povezan sa profilom radnika. Obratite se administratoru.');
-        return;
-      }
+      // The backend resolves the authenticated worker by userId. Public lookup
+      // lists deliberately do not expose account links to ordinary workers.
+      effectiveWorkerId = '';
     }
 
     if (isManager && !effectiveWorkerId) {
@@ -216,49 +220,45 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
       return;
     }
 
+    const now = new Date();
+    let entryDateTime = now;
+    if (date) {
+      const [year, month, day] = date.split('-').map(Number);
+      entryDateTime = new Date(year, month - 1, day, now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+    }
+
+    const payload: any = {
+      machineId,
+      workerId: isManager ? effectiveWorkerId : undefined,
+      fuelSource,
+      gasStation: fuelSource === 'PUMPA' ? gasStation : null,
+      fuelType,
+      liters: parsedLiters,
+      totalCost: parsedTotalCost > 0 ? parsedTotalCost : null,
+      receiptImageUrl: receiptImageUrl || null,
+      receiptNumber: null,
+      notes: notes || null,
+      date: entryDateTime.toISOString(),
+    };
+
+    await submitPayload(payload);
+  };
+
+  async function submitPayload(payload: unknown) {
+    if (submitting.current) return;
+    submitting.current = true;
     setLoading(true);
-
+    setError('');
     try {
-      const now = new Date();
-      let entryDateTime = now;
-      if (date) {
-        const [year, month, day] = date.split('-').map(Number);
-        entryDateTime = new Date(year, month - 1, day, now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
-      }
-
-      const payload: any = {
-        machineId,
-        workerId: effectiveWorkerId || workerId || null,
-        fuelSource,
-        gasStation: fuelSource === 'PUMPA' ? gasStation : null,
-        fuelType,
-        liters: parsedLiters,
-        totalCost: parsedTotalCost > 0 ? parsedTotalCost : null,
-        receiptImageUrl: receiptImageUrl || null,
-        receiptNumber: null,
-        notes: notes || null,
-        date: entryDateTime.toISOString(),
-      };
-
-      const res = await fetch(`${API}/fuel/entries`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Neuspešan unos točenja.');
-      }
-
+      await durable.request(`${API}/fuel/entries`, payload);
+      durable.clear();
       onSuccess();
       onClose();
     } catch (err: any) {
       console.error('Greška pri unosu točenja:', err);
       setError(err.message || 'Greška na serveru pri evidentiranju točenja.');
     } finally {
+      submitting.current = false;
       setLoading(false);
     }
   };
@@ -282,6 +282,8 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className={styles.modalForm}>
+          <SubmissionRecovery pending={!!durable.pending} busy={loading} error={durable.storageError}
+            onRetry={() => durable.pending && submitPayload(durable.pending.payload)} />
           {error && (
             <div className={styles.errorBanner}>
               <AlertTriangle size={18} />
@@ -600,7 +602,7 @@ export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({
             <button
               type="submit"
               className={styles.submitBtn}
-              disabled={loading || uploadingReceipt}
+              disabled={loading || uploadingReceipt || !!durable.pending}
             >
               {loading ? (
                 <>

@@ -4,7 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "test:submissions": "node --test tests/durable-submission.test.ts",
+    "test:sentry": "node --test tests/sentry.test.ts",
+    "test:fuel": "node --test tests/fuel-queries.test.ts tests/fuel-efficiency-queries.test.ts",
+    "test:bundle": "npm run build && node --test tests/bundle-splitting.test.ts",
+    "test:operational": "node --test tests/operational-queries.test.ts",
+    "test:onion": "node --test tests/onion-queries.test.ts",
+    "test:submissions": "node --test tests/durable-submission.test.ts tests/critical-submissions.test.ts",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
@@ -12,6 +17,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
+    "@sentry/react": "^10.74.0",
     "@tanstack/react-query": "^5.102.8",
     "@tanstack/react-table": "^9.2.4",
     "better-auth": "^1.7.4",

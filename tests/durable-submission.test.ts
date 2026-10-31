@@ -56,3 +56,33 @@ test("storage failure stops submission before any network request; drafts are is
   assert.notEqual(submissionKey("a", "checkin"), submissionKey("b", "checkin"));
   assert.notEqual(submissionKey("a", "checkin"), submissionKey("a", "field-work"));
 });
+
+test("fuel and seasonal forms preserve the exact key and original data across concurrent sends and reload", async () => {
+  for (const [scope, url, payload] of [
+    ["fuel-entry", "/api/fuel/entries", { liters: 15, totalCost: 3000, date: "2026-10-31T10:12:13.456Z" }],
+    ["seasonal-group-log", "/api/seasonal/logs/group", { workerIds: ["a", "b"], dailyWage: 3000, date: "2026-10-31" }],
+    ["seasonal-single-log", "/api/seasonal/logs", { seasonalWorkerId: "a", dailyWageApplied: 3000 }],
+  ] as const) {
+    const storage = memory(), key = submissionKey("manager", scope);
+    const sent: RequestInit[] = [];
+    const offline = async (_url, options) => { sent.push(options); throw new Error("lost response"); };
+    await Promise.allSettled([
+      sendDurably(storage, key, url, payload, offline),
+      sendDurably(storage, key, url, payload, offline),
+    ]);
+    assert.equal(sent.length, 2);
+    assert.deepEqual(sent[0], sent[1]);
+    const pending = JSON.parse(storage.getItem(key));
+    assert.deepEqual(pending.payload, payload);
+    await sendDurably(storage, key, pending.url, pending.payload, async (_url, options) => {
+      assert.equal(options.body, sent[0].body);
+      assert.deepEqual(options.headers, sent[0].headers);
+      return json({ success: true }, 201);
+    });
+    storage.removeItem(key); // The form acknowledges success.
+    await sendDurably(storage, key, url, payload, async (_url, options) => {
+      assert.notDeepEqual(options.headers, sent[0].headers, "an intentional new entry gets a new key");
+      return json({ success: true }, 201);
+    });
+  }
+});

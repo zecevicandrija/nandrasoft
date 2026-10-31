@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Camera,
   Image as ImageIcon,
@@ -34,6 +34,9 @@ export const SlikaRacunaUpload: React.FC<SlikaRacunaUploadProps> = ({
   const [status, setStatus] = useState<'IDLE' | 'COMPRESSING' | 'UPLOADING' | 'DONE' | 'ERROR'>('IDLE');
   const [errorMsg, setErrorMsg] = useState('');
   const [localPreview, setLocalPreview] = useState<string | null>(null);
+  useEffect(() => () => {
+    if (localPreview) URL.revokeObjectURL(localPreview);
+  }, [localPreview]);
 
   const setUploadingState = (uploading: boolean) => {
     if (onUploadStateChange) {
@@ -50,26 +53,42 @@ export const SlikaRacunaUpload: React.FC<SlikaRacunaUploadProps> = ({
     setUploadingState(true);
 
     try {
-      // 1. Klijentska kompresija slike na telefonu/računaru (10MB -> ~180KB WebP)
-      const compressed = await compressImage(file, 1600, 0.82);
-      setLocalPreview(compressed.previewUrl);
+      // Automatically prepare a readable receipt on the device when supported.
+      let uploadFile: Blob = file;
+      let uploadName = file.name;
+      try {
+        const compressed = await compressImage(file, 2560, 0.88);
+        uploadFile = compressed.blob;
+        uploadName = compressed.fileName;
+        setLocalPreview(compressed.previewUrl);
+      } catch {
+        // Some browsers cannot decode HEIC. Let the server convert the original.
+        setLocalPreview(null);
+      }
 
       setStatus('UPLOADING');
 
       // Upload through the authenticated backend; storage credentials stay on the server.
       const formData = new FormData();
-      formData.append('file', compressed.blob, compressed.fileName);
-      const response = await fetch(`${API}/fuel/upload`, {
-        method: 'POST',
-        credentials: 'include',
-        body: formData,
-      });
+      formData.append('file', uploadFile, uploadName);
+      let response: Response;
+      for (let attempt = 0; ; attempt++) {
+        response = await fetch(`${API}/fuel/upload`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData,
+        });
+        if (response.status !== 503 || attempt >= 3) break;
+        await response.body?.cancel();
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || 'Otpremanje slike računa nije uspelo.');
       }
       const data = await response.json();
       onChange(data.fileUrl);
+      setLocalPreview(null);
       setStatus('DONE');
     } catch (err: any) {
       console.error('Greška pri otpremanju slike računa:', err);

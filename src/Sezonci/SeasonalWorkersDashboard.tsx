@@ -24,9 +24,10 @@ import {
   ChevronRight,
   LayoutGrid,
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { applyUnicodeFont } from '../lib/pdfFont';
+import { useSession } from '../lib/auth-client';
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
 import AppLayout from '../components/Layout/AppLayout';
 import { TablePagination } from '../components/TablePagination/TablePagination';
 import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
@@ -89,6 +90,9 @@ interface SeasonalWorkLog {
 
 const SeasonalWorkersDashboard: React.FC = () => {
   const queryClient = useQueryClient();
+  const { data: session } = useSession();
+  const singleSubmission = useDurableSubmission('seasonal-single-log', session?.user?.id, {}, () => {});
+  const groupSubmission = useDurableSubmission('seasonal-group-log', session?.user?.id, {}, () => {});
 
   // Tab state
   const [activeTab, setActiveTab] = useState<'dnevnik' | 'analitika' | 'sifarnik'>('dnevnik');
@@ -547,17 +551,10 @@ const SeasonalWorkersDashboard: React.FC = () => {
   // Pojedinačni unos rada
   const createSingleLogMutation = useMutation({
     mutationFn: async (payload: any) => {
-      const res = await fetch(`${API}/seasonal/logs`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri unosu rada.');
-      return data;
+      return singleSubmission.request(`${API}/seasonal/logs`, payload);
     },
     onSuccess: (data) => {
+      singleSubmission.clear();
       showToast(data.message || 'Rad uspešno unet.');
       setSingleLogModalOpen(false);
       queryClient.invalidateQueries({ queryKey: ['seasonal-logs'] });
@@ -596,17 +593,10 @@ const SeasonalWorkersDashboard: React.FC = () => {
   // Grupni unos rada po grupama
   const createGroupLogMutation = useMutation({
     mutationFn: async (payload: any) => {
-      const res = await fetch(`${API}/seasonal/logs/group`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri grupnom unosu.');
-      return data;
+      return groupSubmission.request(`${API}/seasonal/logs/group`, payload);
     },
     onSuccess: (data) => {
+      groupSubmission.clear();
       showToast(data.message || 'Rad grupe uspešno evidentiran.');
       setGroupLogModalOpen(false);
       queryClient.invalidateQueries({ queryKey: ['seasonal-logs'] });
@@ -821,6 +811,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
 
   const handleSingleLogSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (createSingleLogMutation.isPending || updateSingleLogMutation.isPending || (!editingLog && singleSubmission.pending)) return;
     if (!sLogWorkerId) {
       showToast('Morate izabrati radnika.', 'error');
       return;
@@ -884,6 +875,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
 
   const handleGroupLogSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (createGroupLogMutation.isPending || groupSubmission.pending) return;
     if (gSelectedWorkerIds.length === 0) {
       showToast('Morate označiti barem jednog radnika za grupni unos.', 'error');
       return;
@@ -976,6 +968,9 @@ const SeasonalWorkersDashboard: React.FC = () => {
         return;
       }
 
+      const [{ jsPDF }, { autoTable }] = await Promise.all([
+        import('jspdf'), import('jspdf-autotable'),
+      ]);
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const hasUnicodeFont = await applyUnicodeFont(doc);
       const fontName = hasUnicodeFont ? 'Roboto' : 'helvetica';
@@ -1106,6 +1101,18 @@ const SeasonalWorkersDashboard: React.FC = () => {
   return (
     <AppLayout pageTitle="Sezonski Radnici">
       <div className={styles.container}>
+        {!singleLogModalOpen && (singleSubmission.pending || singleSubmission.storageError) && <div>
+          <strong>Pojedinačni unos rada</strong>
+          <SubmissionRecovery pending={!!singleSubmission.pending} busy={createSingleLogMutation.isPending}
+            error={singleSubmission.storageError}
+            onRetry={() => singleSubmission.pending && createSingleLogMutation.mutate(singleSubmission.pending.payload)} />
+        </div>}
+        {!groupLogModalOpen && (groupSubmission.pending || groupSubmission.storageError) && <div>
+          <strong>Grupni unos rada</strong>
+          <SubmissionRecovery pending={!!groupSubmission.pending} busy={createGroupLogMutation.isPending}
+            error={groupSubmission.storageError}
+            onRetry={() => groupSubmission.pending && createGroupLogMutation.mutate(groupSubmission.pending.payload)} />
+        </div>}
         {/* Toast Notifikacija */}
         {toastMessage && (
           <div
@@ -2763,6 +2770,9 @@ const SeasonalWorkersDashboard: React.FC = () => {
               </div>
 
               <form onSubmit={handleSingleLogSubmit}>
+                {!editingLog && <SubmissionRecovery pending={!!singleSubmission.pending} busy={createSingleLogMutation.isPending}
+                  error={singleSubmission.storageError}
+                  onRetry={() => singleSubmission.pending && createSingleLogMutation.mutate(singleSubmission.pending.payload)} />}
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel}>Datum rada *</label>
@@ -2890,7 +2900,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                     <button
                       type="submit"
                       className={styles.btnSubmit}
-                      disabled={createSingleLogMutation.isPending || updateSingleLogMutation.isPending}
+                      disabled={createSingleLogMutation.isPending || updateSingleLogMutation.isPending || (!editingLog && !!singleSubmission.pending)}
                     >
                       {editingLog
                         ? updateSingleLogMutation.isPending
@@ -2928,6 +2938,9 @@ const SeasonalWorkersDashboard: React.FC = () => {
               </div>
 
               <form onSubmit={handleGroupLogSubmit}>
+                <SubmissionRecovery pending={!!groupSubmission.pending} busy={createGroupLogMutation.isPending}
+                  error={groupSubmission.storageError}
+                  onRetry={() => groupSubmission.pending && createGroupLogMutation.mutate(groupSubmission.pending.payload)} />
                 <div className={styles.modalBody}>
                   {/* Izbor Radnika / Grupe */}
                   <div className={styles.groupSelectionBox}>
@@ -3118,7 +3131,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                     <button
                       type="submit"
                       className={styles.btnGroupAction}
-                      disabled={createGroupLogMutation.isPending || gSelectedWorkerIds.length === 0}
+                      disabled={createGroupLogMutation.isPending || !!groupSubmission.pending || gSelectedWorkerIds.length === 0}
                     >
                       {createGroupLogMutation.isPending
                         ? 'Unos rada u toku...'

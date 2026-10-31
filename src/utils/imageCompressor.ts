@@ -9,12 +9,12 @@ export interface CompressedImageResult {
 
 /**
  * Klijentska kompresija slike fiskalnog računa na mobilnom telefonu / računaru pomoću HTML5 Canvasa.
- * Smanjuje fotografije od 5-15 MB na ~150-250 KB (WebP / JPEG) uz očuvanje oštrine teksta računa.
+ * Automatski smanjuje fotografiju u WebP / JPEG uz očuvanje čitljivosti računa.
  */
 export async function compressImage(
   file: File,
-  maxDimension = 1600,
-  quality = 0.82
+  maxDimension = 2560,
+  quality = 0.88
 ): Promise<CompressedImageResult> {
   const originalSizeKB = Math.max(1, Math.round(file.size / 1024));
 

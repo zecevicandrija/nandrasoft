@@ -1,5 +1,27 @@
 /* ===== AUDIT LOG STYLES ===== */
 
+.detailsButton {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(217, 119, 6, 0.25);
+  border-radius: 9px;
+  background: rgba(217, 119, 6, 0.08);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.detailsButton svg { color: #d97706; }
+.detailsButton:hover { background: rgba(217, 119, 6, 0.16); border-color: #d97706; }
+.detailsButton:focus-visible { outline: 2px solid #d97706; outline-offset: 3px; }
+
 .container {
   display: flex;
   flex-direction: column;

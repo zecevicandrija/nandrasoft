@@ -21,8 +21,6 @@ import {
   ChevronsLeft,
   ChevronsRight,
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
@@ -445,6 +443,9 @@ const RadoviDashboard: React.FC = () => {
         return;
       }
 
+      const [{ jsPDF }, { autoTable }] = await Promise.all([
+        import('jspdf'), import('jspdf-autotable'),
+      ]);
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const hasUnicodeFont = await applyUnicodeFont(doc);
       const fontName = hasUnicodeFont ? 'Roboto' : 'helvetica';

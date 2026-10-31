@@ -1,4 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Sprout,
@@ -31,8 +33,6 @@ import {
   Settings2,
   Trash2,
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
 import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
@@ -41,17 +41,9 @@ import { useSession } from '../lib/auth-client';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
 import { BuyerQuickModal, BuyerQuickActions, type BuyerItem } from '../components/BuyerQuickModal';
 import styles from './OnionDashboard.module.css';
+import { onionQueryEnabled, invalidateOnionMutation, refreshOnionTab, type TabKey } from './onionQueries';
 
 const API = '/api/onion';
-
-type TabKey =
-  | 'dovoz'
-  | 'skladiste'
-  | 'sortiranje'
-  | 'pakovanje'
-  | 'isporuka'
-  | 'otpis'
-  | 'sledljivost';
 
 const PACKAGE_LABELS: Record<string, string> = {
   DZAK_10KG: 'Mrežasti džak 10 kg (100 kom / paleta)',
@@ -252,6 +244,7 @@ const OnionDashboard: React.FC = () => {
     autoStore: true,
     storageType: 'HLADNJACA' as 'HLADNJACA' | 'MAGACIN',
     locationOrChamber: 'Komora 1',
+    chamberId: '',
     hasEquipment: true,
     notes: '',
   });
@@ -261,6 +254,7 @@ const OnionDashboard: React.FC = () => {
     lotId: '',
     storageType: 'HLADNJACA' as 'HLADNJACA' | 'MAGACIN',
     locationOrChamber: 'Komora 1',
+    chamberId: '',
     hasEquipment: true,
     boxCount: '',
     quantityKg: '',
@@ -315,12 +309,16 @@ const OnionDashboard: React.FC = () => {
   });
 
   const [submitting, setSubmitting] = useState(false);
+  const shipmentDraft = useDurableSubmission('onion-shipment', currentUser?.id, shipmentForm, setShipmentForm);
+  const shipmentSubmitting = useRef(false);
+  const [shipmentError, setShipmentError] = useState('');
 
   // ==========================================
   // DATA QUERIES
   // ==========================================
   const { data: lookupData } = useQuery({
     queryKey: ['onion-lookup'],
+    staleTime: 30_000,
     queryFn: async () => {
       const res = await fetch(`${API}/lookup`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri učitavanju šifarnika.');
@@ -330,6 +328,7 @@ const OnionDashboard: React.FC = () => {
 
   const { data: dashboardData, isFetching: loadingDashboard } = useQuery({
     queryKey: ['onion-dashboard'],
+    staleTime: 30_000,
     queryFn: async () => {
       const res = await fetch(`${API}/dashboard`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri učitavanju KPI stanja.');
@@ -339,6 +338,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: lotsData } = useQuery({
     queryKey: ['onion-lots', lotsPage],
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-lots', activeTab),
     queryFn: async () => {
       const res = await fetch(`${API}/lots?page=${lotsPage}&limit=${PAGE_SIZE}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri učitavanju LOT-ova.');
@@ -348,6 +349,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: harvestData } = useQuery({
     queryKey: ['onion-harvest', harvestParcelFilter, harvestSearch, harvestPage],
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-harvest', activeTab),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (harvestParcelFilter !== 'ALL') params.set('parcelId', harvestParcelFilter);
@@ -362,6 +365,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: storageData } = useQuery({
     queryKey: ['onion-storage', storageTypeFilter, storagePage],
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-storage', activeTab),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (storageTypeFilter !== 'ALL') params.set('storageType', storageTypeFilter);
@@ -375,6 +380,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: sortingData } = useQuery({
     queryKey: ['onion-sorting', sortingPage],
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-sorting', activeTab),
     queryFn: async () => {
       const res = await fetch(`${API}/sorting?page=${sortingPage}&limit=${PAGE_SIZE}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri učitavanju sortiranja.');
@@ -384,6 +391,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: packagingData } = useQuery({
     queryKey: ['onion-packaging', packagingTypeFilter, packagingParcelFilter, packagingPage],
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-packaging', activeTab),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (packagingTypeFilter !== 'ALL') params.set('packageType', packagingTypeFilter);
@@ -398,6 +407,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: shipmentData } = useQuery({
     queryKey: ['onion-shipment', shipmentBuyerFilter, shipmentSearch, shipmentPage],
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-shipment', activeTab),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (shipmentBuyerFilter !== 'ALL') params.set('buyerId', shipmentBuyerFilter);
@@ -412,6 +423,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: wasteData } = useQuery({
     queryKey: ['onion-waste', wastePage],
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-waste', activeTab),
     queryFn: async () => {
       const res = await fetch(`${API}/waste?page=${wastePage}&limit=${PAGE_SIZE}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri učitavanju otpisa.');
@@ -429,7 +442,8 @@ const OnionDashboard: React.FC = () => {
 
   const { data: traceData, isFetching: loadingTrace } = useQuery({
     queryKey: ['onion-traceability', activeLotNumberForTrace],
-    enabled: Boolean(activeLotNumberForTrace),
+    staleTime: 30_000,
+    enabled: onionQueryEnabled('onion-traceability', activeTab) && Boolean(activeLotNumberForTrace),
     queryFn: async () => {
       const res = await fetch(
         `${API}/traceability/${encodeURIComponent(activeLotNumberForTrace)}`,
@@ -443,18 +457,7 @@ const OnionDashboard: React.FC = () => {
     },
   });
 
-  const refreshAll = () => {
-    queryClient.invalidateQueries({ queryKey: ['onion-lookup'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-dashboard'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-lots'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-harvest'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-storage'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-sorting'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-packaging'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-shipment'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-waste'] });
-    queryClient.invalidateQueries({ queryKey: ['onion-traceability'] });
-  };
+  const refreshCurrentTab = () => { void refreshOnionTab(queryClient, activeTab); };
 
   const kpi = dashboardData?.kpi || {
     totalHarvestedKg: 0,
@@ -675,6 +678,11 @@ const OnionDashboard: React.FC = () => {
     }));
   }, [dashboardData?.chambersSummary, lookupData?.chambers]);
 
+  const chamberIdForName = (name: string): string | undefined => {
+    const chamber = availableChambers.find((item: any) => item.name === name);
+    return chamber && chamber.id !== chamber.name && !chamber.id.startsWith('ch_unknown_') ? chamber.id : undefined;
+  };
+
   const chamberOptions: CustomSelectOption[] = useMemo(
     () =>
       availableChambers.map((c: any) => {
@@ -805,32 +813,14 @@ const OnionDashboard: React.FC = () => {
     [buyers]
   );
 
-  const allAvailablePackagingsList = useMemo(() => {
-    const map = new Map<string, any>();
-    (lookupData?.availablePackagings || []).forEach((p: any) => {
-      if (p.id) map.set(p.id, p);
-    });
-    (packagingData?.packagings || []).forEach((p: any) => {
-      if (p.id && (p.availableCount > 0 || p.availableWeightKg > 0)) {
-        if (!map.has(p.id)) {
-          map.set(p.id, p);
-        } else {
-          map.set(p.id, { ...map.get(p.id), ...p });
-        }
-      }
-    });
-    return Array.from(map.values()).filter(
+  const allAvailablePackagingsList = useMemo(() =>
+    (lookupData?.availablePackagings || []).filter(
       (p: any) => p.availableCount > 0 || p.availableWeightKg > 0
-    );
-  }, [lookupData?.availablePackagings, packagingData?.packagings]);
+    ), [lookupData?.availablePackagings]);
 
-  const selectedShipmentPackagingObj = useMemo(() => {
-    return (
-      allAvailablePackagingsList.find((p: any) => p.id === shipmentForm.packagingId) ||
-      packagingData?.packagings?.find((p: any) => p.id === shipmentForm.packagingId) ||
-      null
-    );
-  }, [allAvailablePackagingsList, packagingData?.packagings, shipmentForm.packagingId]);
+  const selectedShipmentPackagingObj = useMemo(() =>
+    allAvailablePackagingsList.find((p: any) => p.id === shipmentForm.packagingId) || null,
+    [allAvailablePackagingsList, shipmentForm.packagingId]);
 
   const shipmentPackagingOptions: CustomSelectOption[] = useMemo(
     () => [
@@ -896,6 +886,7 @@ const OnionDashboard: React.FC = () => {
         credentials: 'include',
         body: JSON.stringify({
           ...harvestForm,
+          chamberId: harvestForm.chamberId || chamberIdForName(harvestForm.locationOrChamber),
           quantityKg: Number(harvestForm.quantityKg),
           boxCount: harvestForm.boxCount ? Number(harvestForm.boxCount) : undefined,
           existingLotId: harvestForm.existingLotId || null,
@@ -914,7 +905,7 @@ const OnionDashboard: React.FC = () => {
         trailerInfo: '',
         notes: '',
       }));
-      refreshAll();
+      void invalidateOnionMutation(queryClient, harvestForm.autoStore ? 'harvestStored' : 'harvest');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -936,6 +927,7 @@ const OnionDashboard: React.FC = () => {
         credentials: 'include',
         body: JSON.stringify({
           ...storageForm,
+          chamberId: storageForm.chamberId || chamberIdForName(storageForm.locationOrChamber),
           quantityKg: Number(storageForm.quantityKg),
           boxCount: storageForm.boxCount ? Number(storageForm.boxCount) : undefined,
         }),
@@ -945,7 +937,7 @@ const OnionDashboard: React.FC = () => {
       showToast(data.message || 'Luk uspešno raspoređen u skladište.');
       setIsStorageModalOpen(false);
       setStorageForm((prev) => ({ ...prev, boxCount: '', quantityKg: '', notes: '' }));
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'storage');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -964,6 +956,7 @@ const OnionDashboard: React.FC = () => {
         credentials: 'include',
         body: JSON.stringify({
           locationOrChamber: editingStorage.locationOrChamber,
+          chamberId: editingStorage.chamberId ?? chamberIdForName(editingStorage.locationOrChamber),
           hasEquipment: editingStorage.hasEquipment,
           boxCount: editingStorage.boxCount ? Number(editingStorage.boxCount) : null,
           currentQuantityKg: Number(editingStorage.currentQuantityKg),
@@ -974,7 +967,7 @@ const OnionDashboard: React.FC = () => {
       if (!res.ok) throw new Error(data.error || 'Greška pri izmeni komore.');
       showToast(data.message || 'Podaci komore su ažurirani.');
       setEditingStorage(null);
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'storage');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -1019,7 +1012,7 @@ const OnionDashboard: React.FC = () => {
         hasEquipment: true,
         maxBoxes: '720',
       });
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'chamber');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -1054,7 +1047,7 @@ const OnionDashboard: React.FC = () => {
       showToast(data.message || 'Komora je uspešno obrisana.');
       setChamberToDelete(null);
       setDeleteChamberError(null);
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'chamber');
     } catch (err: any) {
       const errorMsg = err.message || 'Greška pri brisanju komore.';
       setDeleteChamberError(errorMsg);
@@ -1097,7 +1090,7 @@ const OnionDashboard: React.FC = () => {
         wasteQuantityKg: '0',
         notes: '',
       }));
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'sorting');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -1137,7 +1130,7 @@ const OnionDashboard: React.FC = () => {
         packerNotes: '',
         notes: '',
       }));
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'packaging');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -1172,7 +1165,7 @@ const OnionDashboard: React.FC = () => {
       if (!res.ok) throw new Error(data.error || 'Greška pri izmeni pakovanja.');
       showToast(data.message || 'Podaci o pakovanju i pakerici su ažurirani.');
       setEditingPackaging(null);
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'packagingUpdate');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -1204,7 +1197,7 @@ const OnionDashboard: React.FC = () => {
       showToast(data.message || 'Pakovanje je uspešno obrisano.');
       setPackagingToDelete(null);
       setDeletePackagingError(null);
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'packaging');
     } catch (err: any) {
       const errorMsg = err.message || 'Greška pri brisanju pakovanja.';
       setDeletePackagingError(errorMsg);
@@ -1215,6 +1208,8 @@ const OnionDashboard: React.FC = () => {
   };
 
   const handleQuickShipmentFromPackaging = (pk: any) => {
+    shipmentDraft.resume();
+    if (shipmentDraft.pending) { setIsShipmentModalOpen(true); return; }
     setShipmentForm((prev) => ({
       ...prev,
       buyerId: prev.buyerId || buyers[0]?.id || '',
@@ -1225,30 +1220,27 @@ const OnionDashboard: React.FC = () => {
     setIsShipmentModalOpen(true);
   };
 
-  const handleCreateShipment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!shipmentForm.buyerId) {
+  const handleCreateShipment = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
+    if (shipmentSubmitting.current || (!replay && shipmentDraft.pending)) return;
+    setShipmentError('');
+    if (!replay && !shipmentForm.buyerId) {
       showToast('Molimo izaberite kupca.', 'error');
       return;
     }
-    if (!shipmentForm.packagingId) {
+    if (!replay && !shipmentForm.packagingId) {
       showToast('Molimo izaberite spakovanu partiju za isporuku.', 'error');
       return;
     }
+    shipmentSubmitting.current = true;
     setSubmitting(true);
     try {
-      const res = await fetch(`${API}/shipment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          ...shipmentForm,
-          packageCount: Number(shipmentForm.packageCount),
-          pricePerKg: shipmentForm.pricePerKg ? Number(shipmentForm.pricePerKg) : null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri kreiranju isporuke.');
+      const payload = replay && shipmentDraft.pending ? shipmentDraft.pending.payload : {
+        ...shipmentForm, packageCount: Number(shipmentForm.packageCount),
+        pricePerKg: shipmentForm.pricePerKg ? Number(shipmentForm.pricePerKg) : null,
+      };
+      const data = await shipmentDraft.request(`${API}/shipment`, payload);
+      shipmentDraft.clear();
       showToast(data.message || 'Otpremnica i isporuka uspešno kreirane.');
       setIsShipmentModalOpen(false);
       setShipmentForm((prev) => ({
@@ -1259,10 +1251,12 @@ const OnionDashboard: React.FC = () => {
         driverName: '',
         notes: '',
       }));
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'shipment');
     } catch (err: any) {
+      setShipmentError(err.message);
       showToast(err.message, 'error');
     } finally {
+      shipmentSubmitting.current = false;
       setSubmitting(false);
     }
   };
@@ -1290,7 +1284,7 @@ const OnionDashboard: React.FC = () => {
       showToast(data.message || 'Otpis uspešno evidentiran.');
       setIsWasteModalOpen(false);
       setWasteForm((prev) => ({ ...prev, quantityKg: '', description: '', notes: '' }));
-      refreshAll();
+      void invalidateOnionMutation(queryClient, 'waste');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -1303,6 +1297,9 @@ const OnionDashboard: React.FC = () => {
   // ==========================================
   const handleDownloadDispatchPdf = async (shipment: any) => {
     try {
+      const [{ jsPDF }, { autoTable }] = await Promise.all([
+        import('jspdf'), import('jspdf-autotable'),
+      ]);
       const doc = new jsPDF();
       const hasUnicode = await applyUnicodeFont(doc);
       const fontName = hasUnicode ? 'Roboto' : 'helvetica';
@@ -1400,6 +1397,9 @@ const OnionDashboard: React.FC = () => {
   return (
     <AppLayout pageTitle="Modul Luk & Hladnjača — Tok Robe i Sledljivost">
       <div className={styles.container}>
+        {!isShipmentModalOpen && <SubmissionRecovery pending={!!shipmentDraft.pending} busy={submitting} error={shipmentDraft.storageError || shipmentError}
+                onRetry={() => void handleCreateShipment(undefined, true)} />}
+
         {/* Gornji Header sa brzim akcijama i tehničkom specifikacijom hladnjače */}
         <div className={styles.headerBar}>
           <div className={styles.titleArea}>
@@ -1428,8 +1428,8 @@ const OnionDashboard: React.FC = () => {
               type="button"
               className={styles.btnBlue}
               onClick={() => {
-                if (!sortingForm.lotId && lots[0]?.id) {
-                  setSortingForm((prev) => ({ ...prev, lotId: lots[0].id }));
+                if (!sortingForm.lotId && allSelectableLots[0]?.id) {
+                  setSortingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
                 }
                 setIsSortingModalOpen(true);
               }}
@@ -1442,8 +1442,8 @@ const OnionDashboard: React.FC = () => {
               type="button"
               className={styles.btnAmber}
               onClick={() => {
-                if (!packagingForm.lotId && lots[0]?.id) {
-                  setPackagingForm((prev) => ({ ...prev, lotId: lots[0].id }));
+                if (!packagingForm.lotId && allSelectableLots[0]?.id) {
+                  setPackagingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
                 }
                 setIsPackagingModalOpen(true);
               }}
@@ -1455,7 +1455,7 @@ const OnionDashboard: React.FC = () => {
             <button
               type="button"
               className={styles.btnSecondary}
-              onClick={refreshAll}
+              onClick={refreshCurrentTab}
               title="Osveži podatke"
             >
               <RotateCw size={16} className={loadingDashboard ? 'spin' : ''} />
@@ -1675,8 +1675,8 @@ const OnionDashboard: React.FC = () => {
                     type="button"
                     className={styles.btnBlue}
                     onClick={() => {
-                      if (!storageForm.lotId && lots[0]?.id) {
-                        setStorageForm((prev) => ({ ...prev, lotId: lots[0].id }));
+                      if (!storageForm.lotId && allSelectableLots[0]?.id) {
+                        setStorageForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
                       }
                       setIsStorageModalOpen(true);
                     }}
@@ -1983,8 +1983,8 @@ const OnionDashboard: React.FC = () => {
                   type="button"
                   className={styles.btnAmber}
                   onClick={() => {
-                    if (!packagingForm.lotId && lots[0]?.id) {
-                      setPackagingForm((prev) => ({ ...prev, lotId: lots[0].id }));
+                    if (!packagingForm.lotId && allSelectableLots[0]?.id) {
+                      setPackagingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
                     }
                     setIsPackagingModalOpen(true);
                   }}
@@ -2705,8 +2705,8 @@ const OnionDashboard: React.FC = () => {
                 type="button"
                 className={styles.btnBlue}
                 onClick={() => {
-                  if (!sortingForm.lotId && lots[0]?.id) {
-                    setSortingForm((prev) => ({ ...prev, lotId: lots[0].id }));
+                  if (!sortingForm.lotId && allSelectableLots[0]?.id) {
+                    setSortingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
                   }
                   setIsSortingModalOpen(true);
                 }}
@@ -2886,7 +2886,8 @@ const OnionDashboard: React.FC = () => {
                   type="button"
                   className={styles.btnPrimary}
                   onClick={() => {
-                    if (!shipmentForm.buyerId && buyers[0]?.id) {
+                    shipmentDraft.resume();
+                    if (!shipmentDraft.pending && !shipmentForm.buyerId && buyers[0]?.id) {
                       setShipmentForm((prev) => ({ ...prev, buyerId: buyers[0].id }));
                     }
                     setIsShipmentModalOpen(true);
@@ -3010,8 +3011,8 @@ const OnionDashboard: React.FC = () => {
                   type="button"
                   className={styles.btnDanger}
                   onClick={() => {
-                    if (!wasteForm.lotId && lots[0]?.id) {
-                      setWasteForm((prev) => ({ ...prev, lotId: lots[0].id }));
+                    if (!wasteForm.lotId && allSelectableLots[0]?.id) {
+                      setWasteForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
                     }
                     setIsWasteModalOpen(true);
                   }}
@@ -3790,10 +3791,11 @@ const OnionDashboard: React.FC = () => {
                           value={harvestForm.locationOrChamber}
                           onChange={(ch) => {
                             const isWithEq =
-                              ch === 'Komora 1' || ch === 'Komora 2' || ch === 'Komora 3';
+                              availableChambers.find((item: any) => item.name === ch)?.hasEquipment ?? false;
                             setHarvestForm({
                               ...harvestForm,
                               locationOrChamber: ch,
+                              chamberId: chamberIdForName(ch) || '',
                               hasEquipment: isWithEq,
                             });
                           }}
@@ -3862,10 +3864,11 @@ const OnionDashboard: React.FC = () => {
                         value={storageForm.locationOrChamber}
                         onChange={(ch) => {
                           const isWithEq =
-                            ch === 'Komora 1' || ch === 'Komora 2' || ch === 'Komora 3';
+                            availableChambers.find((item: any) => item.name === ch)?.hasEquipment ?? false;
                           setStorageForm({
                             ...storageForm,
                             locationOrChamber: ch,
+                            chamberId: chamberIdForName(ch) || '',
                             hasEquipment: isWithEq,
                           });
                         }}
@@ -3961,6 +3964,7 @@ const OnionDashboard: React.FC = () => {
                           setEditingStorage({
                             ...editingStorage,
                             locationOrChamber: val,
+                            chamberId: chamberIdForName(val) || null,
                           })
                         }
                         options={editChamberOptions}
@@ -4588,6 +4592,8 @@ const OnionDashboard: React.FC = () => {
               </div>
 
               <form onSubmit={handleCreateShipment}>
+                <SubmissionRecovery pending={!!shipmentDraft.pending} busy={submitting} error={shipmentDraft.storageError || shipmentError}
+                onRetry={() => void handleCreateShipment(undefined, true)} />
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
                     <div className={styles.labelWithActionsRow}>
@@ -4743,7 +4749,7 @@ const OnionDashboard: React.FC = () => {
                   >
                     Odustani
                   </button>
-                  <button type="submit" className={styles.btnPrimary} disabled={submitting}>
+                  <button type="submit" className={styles.btnPrimary} disabled={submitting || !!shipmentDraft.pending}>
                     <CheckCircle2 size={16} />
                     <span>
                       {submitting ? 'Kreiranje...' : 'Potvrdi isporuku i kreiraj otpremnicu'}
@@ -5317,11 +5323,7 @@ const OnionDashboard: React.FC = () => {
           onClose={() => setParcelQuickModalOpen(false)}
           parcelToEdit={parcelToEdit}
           onSaved={(savedParcel, mode) => {
-            queryClient.invalidateQueries({ queryKey: ['onion-lookup'] });
-            queryClient.invalidateQueries({ queryKey: ['onion-dashboard'] });
-            queryClient.invalidateQueries({ queryKey: ['onion-lots'] });
-            queryClient.invalidateQueries({ queryKey: ['onion-harvest'] });
-            queryClient.invalidateQueries({ queryKey: ['onion-traceability'] });
+            void invalidateOnionMutation(queryClient, mode === 'create' ? 'parcelCreate' : 'parcelUpdate');
 
             if (parcelQuickTarget === 'harvest-form') {
               setHarvestForm((prev) => ({ ...prev, parcelId: savedParcel.id }));
@@ -5345,11 +5347,7 @@ const OnionDashboard: React.FC = () => {
           onClose={() => setBuyerQuickModalOpen(false)}
           buyerToEdit={buyerToEdit}
           onSaved={(savedBuyer, mode) => {
-            queryClient.invalidateQueries({ queryKey: ['onion-lookup'] });
-            queryClient.invalidateQueries({ queryKey: ['onion-dashboard'] });
-            queryClient.invalidateQueries({ queryKey: ['onion-shipment'] });
-            queryClient.invalidateQueries({ queryKey: ['onion-traceability'] });
-            queryClient.invalidateQueries({ queryKey: ['partners'] });
+            void invalidateOnionMutation(queryClient, mode === 'create' ? 'buyerCreate' : 'buyerUpdate');
 
             if (buyerQuickTarget === 'shipment-form') {
               setShipmentForm((prev) => ({ ...prev, buyerId: savedBuyer.id }));

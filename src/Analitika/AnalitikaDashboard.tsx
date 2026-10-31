@@ -1,3 +1,6 @@
+import { fetchFuelEfficiency, fetchFuelExport, fuelFilterParams } from './fuelEfficiencyQueries';
+import { FuelEfficiency } from './FuelEfficiency';
+import { fuelOperationRows, fuelCriticalRows, fuelHeaders, criticalFuelHeaders } from './fuelEfficiencyReport';
 import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -20,9 +23,6 @@ import {
   CheckCircle2,
   Package,
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
 import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
@@ -31,7 +31,7 @@ import { useSession } from '../lib/auth-client';
 import styles from './AnalitikaDashboard.module.css';
 
 type PresetType = 'DANAS' | 'ZADNJIH_7' | 'MESEC' | 'ZADNJIH_30' | 'GODINA' | 'SVE' | 'CUSTOM';
-type ActiveTab = 'pregled' | 'masine' | 'radnici' | 'troskovi' | 'parcele';
+type ActiveTab = 'pregled' | 'masine' | 'radnici' | 'troskovi' | 'parcele' | 'gorivo';
 
 const API = '/api';
 const PAGE_SIZE = 10;
@@ -42,7 +42,7 @@ export const AnalitikaDashboard: React.FC = () => {
   const isDirector = currentUser?.role === 'DIREKTOR';
 
   // State za navigaciju i tabove
-  const [activeTab, setActiveTab] = useState<ActiveTab>('pregled');
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => new URLSearchParams(window.location.search).get('tab') === 'gorivo' ? 'gorivo' : 'pregled');
   const [expandedMachineId, setExpandedMachineId] = useState<string | null>(null);
   const [expandedWorkerId, setExpandedWorkerId] = useState<string | null>(null);
 
@@ -60,6 +60,11 @@ export const AnalitikaDashboard: React.FC = () => {
   const [selectedWorker, setSelectedWorker] = useState('');
   const [selectedParcel, setSelectedParcel] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [fuelSearch, setFuelSearch] = useState('');
+  useEffect(() => {
+    const timer = window.setTimeout(() => setFuelSearch(searchTerm), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchTerm]);
 
   // Paginacija za svih 5 sekcija (10 po stranici na nivou baze)
   const [topMachinesPage, setTopMachinesPage] = useState(1);
@@ -200,7 +205,7 @@ export const AnalitikaDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri dohvatanju pregleda');
       return res.json();
     },
-    enabled: isDirector,
+    enabled: isDirector && activeTab === 'pregled',
   });
 
   // 1.1 NAJAKTIVNIJE MAŠINE (Sa DB paginacijom)
@@ -214,7 +219,7 @@ export const AnalitikaDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri dohvatanju top mašina');
       return res.json();
     },
-    enabled: isDirector,
+    enabled: isDirector && activeTab === 'pregled',
   });
 
   // 3. ANALITIKA PO MAŠINAMA (Sa DB paginacijom & search)
@@ -230,7 +235,7 @@ export const AnalitikaDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri dohvatanju mašina');
       return res.json();
     },
-    enabled: isDirector,
+    enabled: isDirector && activeTab === 'masine',
   });
 
   // 4. ANALITIKA PO RADNICIMA (Sa DB paginacijom & search)
@@ -246,7 +251,7 @@ export const AnalitikaDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri dohvatanju radnika');
       return res.json();
     },
-    enabled: isDirector,
+    enabled: isDirector && activeTab === 'radnici',
   });
 
   // 5. ANALITIKA PO PARCELAMA (Sa DB paginacijom)
@@ -261,7 +266,7 @@ export const AnalitikaDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri dohvatanju parcela');
       return res.json();
     },
-    enabled: isDirector,
+    enabled: isDirector && activeTab === 'parcele',
   });
 
   // 6. FINANSIJSKI TOKOVI (Sa DB paginacijom meseci)
@@ -275,11 +280,25 @@ export const AnalitikaDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri dohvatanju finansija');
       return res.json();
     },
-    enabled: isDirector,
+    enabled: isDirector && activeTab === 'troskovi',
+  });
+
+  const fuelFilters = fuelFilterParams({ dateFrom, dateTo, machineId: selectedMachine, workerId: selectedWorker, parcelId: selectedParcel, search: fuelSearch });
+  const [fuelPages, setFuelPages] = useState({ filters: '', operations: 1, critical: 1 });
+  const fuelOperationsPage = fuelPages.filters === fuelFilters ? fuelPages.operations : 1;
+  const fuelCriticalPage = fuelPages.filters === fuelFilters ? fuelPages.critical : 1;
+  const fuelQuery = useQuery({ queryKey: ['analytics-fuel', currentUser?.id, fuelFilters, fuelOperationsPage, fuelCriticalPage],
+    queryFn: ({ signal }) => fetchFuelEfficiency(fuelFilters, fuelOperationsPage, fuelCriticalPage, signal),
+    enabled: isDirector && activeTab === 'gorivo', staleTime: 30_000,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === currentUser?.id ? previous : undefined });
+  const changeFuelPage = (table: 'operations' | 'critical', page: number) => setFuelPages({
+    filters: fuelFilters, operations: table === 'operations' ? page : fuelOperationsPage,
+    critical: table === 'critical' ? page : fuelCriticalPage,
   });
 
   // Osvežavanje svih podataka
   const handleRefreshAll = () => {
+    if (activeTab === 'gorivo') { void fuelQuery.refetch(); return; }
     refetchOverview();
     refetchTopMachines();
     refetchMachines();
@@ -306,6 +325,14 @@ export const AnalitikaDashboard: React.FC = () => {
   const handleExportPdf = async () => {
     try {
       setExportingPdf(true);
+      const overviewResult = await refetchOverview();
+      if (overviewResult.error) throw overviewResult.error;
+      const exportOverview = overviewResult.data;
+      const exportOperatingCosts = ['totalFuelCost', 'totalMaintenanceCost', 'totalTollCost', 'totalFertilizerCost', 'totalSeasonalWages']
+        .reduce((sum, key) => sum + (exportOverview?.[key] || 0), 0);
+      const [{ jsPDF }, { autoTable }] = await Promise.all([
+        import('jspdf'), import('jspdf-autotable'),
+      ]);
       const doc = new jsPDF('landscape', 'mm', 'a4');
       await applyUnicodeFont(doc);
 
@@ -343,14 +370,14 @@ export const AnalitikaDashboard: React.FC = () => {
 
       const kpiRows = [
         [
-          `Uradeno: ${(overviewData?.totalHaDone || 0).toFixed(1)} ha (${overviewData?.totalFieldWorks || 0} radova)`,
-          `Gorivo: ${(overviewData?.totalFuelLiters || 0).toLocaleString('sr-RS')} L (${(overviewData?.totalFuelCost || 0).toLocaleString('sr-RS')} RSD)`,
-          `Odrzavanje: ${(overviewData?.totalMaintenanceCost || 0).toLocaleString('sr-RS')} RSD (Delovi: ${(overviewData?.maintenancePartsCost || 0).toLocaleString('sr-RS')} RSD)`,
+          `Uradeno: ${(exportOverview?.totalHaDone || 0).toFixed(1)} ha (${exportOverview?.totalFieldWorks || 0} radova)`,
+          `Gorivo: ${(exportOverview?.totalFuelLiters || 0).toLocaleString('sr-RS')} L (${(exportOverview?.totalFuelCost || 0).toLocaleString('sr-RS')} RSD)`,
+          `Odrzavanje: ${(exportOverview?.totalMaintenanceCost || 0).toLocaleString('sr-RS')} RSD (Delovi: ${(exportOverview?.maintenancePartsCost || 0).toLocaleString('sr-RS')} RSD)`,
         ],
         [
-          `Putarine / ENP: ${(overviewData?.totalTollCost || 0).toLocaleString('sr-RS')} RSD`,
-          `Sezonci: ${(overviewData?.totalSeasonalHours || 0).toFixed(1)} h (${(overviewData?.totalSeasonalWages || 0).toLocaleString('sr-RS')} RSD dnevnica)`,
-          `UKUPNI OPERATIVNI TROSKOVI: ${totalOperatingCosts.toLocaleString('sr-RS')} RSD`,
+          `Putarine / ENP: ${(exportOverview?.totalTollCost || 0).toLocaleString('sr-RS')} RSD`,
+          `Sezonci: ${(exportOverview?.totalSeasonalHours || 0).toFixed(1)} h (${(exportOverview?.totalSeasonalWages || 0).toLocaleString('sr-RS')} RSD dnevnica)`,
+          `UKUPNI OPERATIVNI TROSKOVI: ${exportOperatingCosts.toLocaleString('sr-RS')} RSD`,
         ],
       ];
 
@@ -379,7 +406,7 @@ export const AnalitikaDashboard: React.FC = () => {
         `${(m.fieldWork.totalHa || 0).toFixed(1)} ha`,
         `${(m.fieldWork.totalWorkHours || 0).toFixed(1)} h`,
         `${(m.fuel.totalLiters || 0).toLocaleString('sr-RS')} L`,
-        m.fuel.avgLPerHa ? `${m.fuel.avgLPerHa} L/ha` : '-',
+        'Poseban izvestaj',
         `${(m.maintenance.totalCost || 0).toLocaleString('sr-RS')} RSD`,
         `${m.maintenance.count} popravki (${m.maintenance.downtimeHours || 0}h zastoja)`,
         `${(m.tolls.totalCost || 0).toLocaleString('sr-RS')} RSD`,
@@ -396,7 +423,7 @@ export const AnalitikaDashboard: React.FC = () => {
             'Uradeno',
             'Radni sati',
             'Gorivo (L)',
-            'Potr. L/ha',
+            'Normativi',
             'Popravke (RSD)',
             'Kvarovi & Zastoj',
             'Putarine',
@@ -458,6 +485,17 @@ export const AnalitikaDashboard: React.FC = () => {
         styles: { fontSize: 7.5, cellPadding: 2, font: 'Roboto' },
       });
 
+      const fuelExport = await fetchFuelExport(fuelFilters);
+      doc.addPage();
+      doc.text('Efikasnost goriva i normativi', 14, 18);
+      doc.setFontSize(9);
+      doc.text(`Obuhvat: ${fuelExport.summary.coveredHa.toFixed(2)} / ${fuelExport.summary.totalHa.toFixed(2)} ha; bez obracuna: ${fuelExport.summary.uncoveredWorksCount} radova`, 14, 26);
+      doc.text('Bilans zaduzenja sa dopunama; raspodela po satima ili hektarima. Trosak predstavlja tocenja.', 14, 32);
+      doc.text(`Potrosnja: ${fuelExport.summary.totalLiters.toFixed(2)} L; trosak tocenja: ${fuelExport.summary.dispensedCostRSD.toFixed(2)} RSD`, 14, 38);
+      autoTable(doc, { startY: 44, head: [fuelHeaders], body: fuelOperationRows(fuelExport), styles: { font: 'Roboto', fontSize: 7 } });
+      doc.addPage();
+      doc.text('Kriticna odstupanja goriva (raspodeljena potrosnja)', 14, 18);
+      autoTable(doc, { startY: 25, head: [criticalFuelHeaders], body: fuelCriticalRows(fuelExport), styles: { font: 'Roboto', fontSize: 6 } });
       doc.save(`Nandra_Direktorski_Izvestaj_${dateFrom || 'sve'}_${dateTo || 'sve'}.pdf`);
     } catch (err) {
       console.error('Greška pri izradi PDF izveštaja:', err);
@@ -473,6 +511,12 @@ export const AnalitikaDashboard: React.FC = () => {
   const handleExportExcel = async () => {
     try {
       setExportingExcel(true);
+      const overviewResult = await refetchOverview();
+      if (overviewResult.error) throw overviewResult.error;
+      const exportOverview = overviewResult.data;
+      const exportOperatingCosts = ['totalFuelCost', 'totalMaintenanceCost', 'totalTollCost', 'totalFertilizerCost', 'totalSeasonalWages']
+        .reduce((sum, key) => sum + (exportOverview?.[key] || 0), 0);
+      const XLSX = await import('xlsx');
       const wb = XLSX.utils.book_new();
 
       const exportParams = new URLSearchParams(queryParams);
@@ -492,20 +536,20 @@ export const AnalitikaDashboard: React.FC = () => {
       // Sheet 1: Pregled
       const overviewRows = [
         { Metrika: 'Period izveštaja', Vrednost: `${dateFrom || 'Sve'} do ${dateTo || 'Sve'}` },
-        { Metrika: 'Ukupno urađeno hektara', Vrednost: overviewData?.totalHaDone || 0 },
-        { Metrika: 'Ukupno završenih radova na njivi', Vrednost: overviewData?.totalFieldWorks || 0 },
-        { Metrika: 'Ukupno utrošeno goriva (litara)', Vrednost: overviewData?.totalFuelLiters || 0 },
-        { Metrika: 'Ukupan trošak goriva (RSD)', Vrednost: overviewData?.totalFuelCost || 0 },
-        { Metrika: 'Uloženo u popravke i servis (RSD)', Vrednost: overviewData?.totalMaintenanceCost || 0 },
-        { Metrika: 'Trošak rezervnih delova (RSD)', Vrednost: overviewData?.maintenancePartsCost || 0 },
-        { Metrika: 'Trošak eksternog rada servisa (RSD)', Vrednost: overviewData?.maintenanceLaborCost || 0 },
-        { Metrika: 'Troškovi putarina i ENP (RSD)', Vrednost: overviewData?.totalTollCost || 0 },
-        { Metrika: 'Troškovi nabavke đubriva (RSD)', Vrednost: overviewData?.totalFertilizerCost || 0 },
-        { Metrika: 'Sati rada sezonskih radnika', Vrednost: overviewData?.totalSeasonalHours || 0 },
-        { Metrika: 'Isplaćene dnevnice sezonaca (RSD)', Vrednost: overviewData?.totalSeasonalWages || 0 },
-        { Metrika: 'Otpremljeno luka (kg)', Vrednost: overviewData?.onionShippedKg || 0 },
-        { Metrika: 'Fakturisana vrednost luka (RSD)', Vrednost: overviewData?.onionShipmentValue || 0 },
-        { Metrika: 'UKUPNI OPERATIVNI TROŠKOVI (RSD)', Vrednost: totalOperatingCosts },
+        { Metrika: 'Ukupno urađeno hektara', Vrednost: exportOverview?.totalHaDone || 0 },
+        { Metrika: 'Ukupno završenih radova na njivi', Vrednost: exportOverview?.totalFieldWorks || 0 },
+        { Metrika: 'Ukupno utrošeno goriva (litara)', Vrednost: exportOverview?.totalFuelLiters || 0 },
+        { Metrika: 'Ukupan trošak goriva (RSD)', Vrednost: exportOverview?.totalFuelCost || 0 },
+        { Metrika: 'Uloženo u popravke i servis (RSD)', Vrednost: exportOverview?.totalMaintenanceCost || 0 },
+        { Metrika: 'Trošak rezervnih delova (RSD)', Vrednost: exportOverview?.maintenancePartsCost || 0 },
+        { Metrika: 'Trošak eksternog rada servisa (RSD)', Vrednost: exportOverview?.maintenanceLaborCost || 0 },
+        { Metrika: 'Troškovi putarina i ENP (RSD)', Vrednost: exportOverview?.totalTollCost || 0 },
+        { Metrika: 'Troškovi nabavke đubriva (RSD)', Vrednost: exportOverview?.totalFertilizerCost || 0 },
+        { Metrika: 'Sati rada sezonskih radnika', Vrednost: exportOverview?.totalSeasonalHours || 0 },
+        { Metrika: 'Isplaćene dnevnice sezonaca (RSD)', Vrednost: exportOverview?.totalSeasonalWages || 0 },
+        { Metrika: 'Otpremljeno luka (kg)', Vrednost: exportOverview?.onionShippedKg || 0 },
+        { Metrika: 'Fakturisana vrednost luka (RSD)', Vrednost: exportOverview?.onionShipmentValue || 0 },
+        { Metrika: 'UKUPNI OPERATIVNI TROŠKOVI (RSD)', Vrednost: exportOperatingCosts },
       ];
       const wsOverview = XLSX.utils.json_to_sheet(overviewRows);
       XLSX.utils.book_append_sheet(wb, wsOverview, 'Pregled & KPI');
@@ -521,7 +565,7 @@ export const AnalitikaDashboard: React.FC = () => {
         'Radnih Sati na Njivi': m.fieldWork.totalWorkHours || 0,
         'Utrošeno Goriva (L)': m.fuel.totalLiters || 0,
         'Trošak Goriva (RSD)': m.fuel.totalCost || 0,
-        'Prosečna Potrošnja (L/ha)': m.fuel.avgLPerHa || 0,
+        'Normativi goriva': 'List Gorivo normativi',
         'Popravke Ukupno (RSD)': m.maintenance.totalCost || 0,
         'Trošak Delova (RSD)': m.maintenance.partsCost || 0,
         'Trošak Rada Servisa (RSD)': m.maintenance.laborCost || 0,
@@ -617,6 +661,15 @@ export const AnalitikaDashboard: React.FC = () => {
         XLSX.utils.book_append_sheet(wb, wsMonthly, 'Mesečni Troškovi');
       }
 
+      const fuelExport = await fetchFuelExport(fuelFilters);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        ['Bilans zaduzenja sa dopunama; raspodela po satima ili hektarima.'],
+        ['Obuhvaceno ha', fuelExport.summary.coveredHa, 'Ukupno ha', fuelExport.summary.totalHa],
+        ['Bez obracuna (radovi)', fuelExport.summary.uncoveredWorksCount],
+        ['Potrosnja L', fuelExport.summary.totalLiters, 'Trosak tocenja RSD', fuelExport.summary.dispensedCostRSD],
+        fuelHeaders, ...fuelOperationRows(fuelExport),
+      ]), 'Gorivo normativi');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([criticalFuelHeaders, ...fuelCriticalRows(fuelExport)]), 'Gorivo odstupanja');
       XLSX.writeFile(wb, `Nandra_Direktorska_Analitika_${dateFrom || 'sve'}_${dateTo || 'sve'}.xlsx`);
     } catch (err) {
       console.error('Greška pri izradi Excel tabele:', err);
@@ -824,6 +877,10 @@ export const AnalitikaDashboard: React.FC = () => {
             NAVIGATION TABS
            ======================================================== */}
         <div className={styles.navTabs}>
+          <button className={`${styles.tabBtn} ${activeTab === 'gorivo' ? styles.tabBtnActive : ''}`} onClick={() => setActiveTab('gorivo')}>
+            <Fuel size={18} /> Efikasnost goriva i normativi
+          </button>
+
           <button
             className={`${styles.tabBtn} ${activeTab === 'pregled' ? styles.tabBtnActive : ''}`}
             onClick={() => setActiveTab('pregled')}
@@ -871,6 +928,10 @@ export const AnalitikaDashboard: React.FC = () => {
         {/* ========================================================
             TAB 1: PREGLED & KPI
            ======================================================== */}
+        {activeTab === 'gorivo' && (fuelQuery.isError ? <div role="alert">
+          <p>{fuelQuery.error.message}</p><button onClick={() => { void fuelQuery.refetch(); }}>Pokusaj ponovo</button>
+        </div> : fuelQuery.isPending ? <p role="status">Ucitavanje analitike goriva...</p> : <FuelEfficiency data={fuelQuery.data} fetching={fuelQuery.isFetching} search={searchTerm} onSearchChange={setSearchTerm} onOperationsPage={page => changeFuelPage('operations', page)} onCriticalPage={page => changeFuelPage('critical', page)} />)}
+
         {activeTab === 'pregled' && (
           <>
             {/* Executive Total Cost Banner */}
@@ -1144,7 +1205,7 @@ export const AnalitikaDashboard: React.FC = () => {
                     <th>Urađeno (ha)</th>
                     <th>Radni sati</th>
                     <th>Gorivo (L & RSD)</th>
-                    <th>Potrošnja</th>
+                    <th>Normativi goriva</th>
                     <th>Uloženo u popravke</th>
                     <th>Putarine</th>
                     <th>Ukupan trošak</th>
@@ -1194,13 +1255,7 @@ export const AnalitikaDashboard: React.FC = () => {
                             </div>
                           </td>
                           <td>
-                            {m.fuel.avgLPerHa ? (
-                              <span style={{ fontWeight: 700, color: '#0284c7' }}>
-                                {m.fuel.avgLPerHa} L/ha
-                              </span>
-                            ) : (
-                              '-'
-                            )}
+                            <button className={styles.tabBtn} onClick={() => setActiveTab('gorivo')}>Normativi goriva</button>
                           </td>
                           <td>
                             <div className={styles.costText}>

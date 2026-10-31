@@ -7,22 +7,36 @@ import {
   Loader2,
   FileEdit,
   Trash2,
+  Eye,
+  ArrowUpRight,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import { TablePagination } from '../components/TablePagination/TablePagination';
 import styles from './AuditLog.module.css';
+import AuditDetails from './AuditDetails';
 
 const API = 'http://localhost:5000/api';
 
 const ACTION_OPTIONS: CustomSelectOption[] = [
   { value: '', label: 'Sve akcije' },
+  { value: 'KREIRANJE', label: 'Samo kreiranja' },
+  { value: 'DEAKTIVACIJA', label: 'Samo deaktivacije' },
   { value: 'IZMENA', label: 'Samo Izmene (UPDATE)' },
   { value: 'STORNO', label: 'Samo Storniranja (STORNO)' },
   { value: 'BRISANJE', label: 'Samo Brisanja (DELETE)' },
 ];
 
 const AuditLogDashboard: React.FC = () => {
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const { data: storage, isError: storageUnavailable } = useQuery({
+    queryKey: ['database-storage-usage'], refetchInterval: 60000,
+    queryFn: async () => {
+      const res = await fetch(`${API}/audit-logs/storage`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Provera zauzeća nije dostupna.');
+      return res.json();
+    },
+  });
 
   // Filteri
   const [search, setSearch] = useState('');
@@ -77,6 +91,12 @@ const AuditLogDashboard: React.FC = () => {
   return (
     <AppLayout pageTitle="Revizija i Logovi">
       <div className={styles.container}>
+        {storageUnavailable && <p role="status">Provera zauzeća baze trenutno nije dostupna.</p>}
+        {storage && storage.level !== 'ok' && <div role="alert" style={{ padding: 16, border: '2px solid #d97706', borderRadius: 8, marginBottom: 16 }}>
+          <strong>{storage.level === 'critical' ? 'Kritično zauzeće baze' : 'Baza se približava ograničenju prostora'}</strong>
+          <p>Popunjeno je {storage.usedPercent}% podešene kvote ({(storage.databaseBytes / 1e9).toFixed(2)} GB od {(storage.quotaBytes / 1e9).toFixed(2)} GB). Potrebno je proveriti rast i raspoloživ prostor kod provajdera.</p>
+        </div>}
+        {detailId && <AuditDetails id={detailId} onClose={() => setDetailId(null)} />}
         {/* Header Bar */}
         <div className={styles.headerBar}>
           <div className={styles.titleArea}>
@@ -241,6 +261,11 @@ const AuditLogDashboard: React.FC = () => {
                           <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                             {log.description}
                           </span>
+                          <button type="button" onClick={() => setDetailId(log.id)} className={styles.detailsButton} aria-haspopup="dialog">
+                            <Eye size={15} aria-hidden="true" />
+                            Prikaži detalje
+                            <ArrowUpRight size={14} aria-hidden="true" />
+                          </button>
                         </div>
                       </td>
                     </tr>

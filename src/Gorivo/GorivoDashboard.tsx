@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
+import { fuelQueryOptions, fuelRequest } from './fuelQueries';
+import QueryErrorNotice from '../components/QueryErrorNotice';
 import {
   Fuel,
   Plus,
@@ -7,19 +10,14 @@ import {
   MapPin,
   AlertTriangle,
   CheckCircle2,
-  TrendingUp,
   BarChart3,
   RefreshCw,
   Trash2,
-  ShieldAlert,
   Pencil,
   History,
   Lock,
   Clock,
   Eye,
-  User,
-  Calendar,
-  Wrench,
   Receipt,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
@@ -31,8 +29,6 @@ import { PrijemCisterneModal } from './PrijemCisterneModal';
 import { IzmeniTocenjeModal } from './IzmeniTocenjeModal';
 import { PregledRacunaModal } from './PregledRacunaModal';
 import styles from './GorivoDashboard.module.css';
-
-const API = 'http://localhost:5000/api';
 
 interface FuelStats {
   tank: {
@@ -55,7 +51,6 @@ interface FuelStats {
     };
     totalCostRSD?: number;
   };
-  anomaliesCount: number;
 }
 
 interface FuelEntry {
@@ -72,8 +67,6 @@ interface FuelEntry {
   anomalyReason?: string;
   receiptNumber?: string;
   notes?: string;
-  calculatedLPerHa?: number;
-  fuelNorm?: number;
   isToday?: boolean;
   canEdit?: boolean;
   machine: {
@@ -132,24 +125,18 @@ interface FuelSupply {
   };
 }
 
-interface LPerHaAnalytic {
-  workTypeId: string;
-  workTypeName: string;
-  category: string;
-  normLPerHa: number | null;
-  totalLiters: number;
-  totalHa: number;
-  actualLPerHa: number | null;
-  variancePercent: number | null;
-  status: 'OPTIMALNO' | 'UPOZORENJE' | 'ANOMALIJA' | 'NEMA_PODATAKA';
-  entriesCount: number;
-}
-
 interface PaginationMeta {
   total: number;
   page: number;
   limit: number;
   totalPages: number;
+}
+
+function queryFeedback(query: UseQueryResult<unknown, Error>, title: string) {
+  if (query.isError) return <QueryErrorNotice error={query.error} title={title}
+    pending={query.isFetching} onRetry={() => { void query.refetch(); }} />;
+  if (query.isPending) return <p role="status">Učitavanje podataka…</p>;
+  return null;
 }
 
 const renderPumpBadge = (entry: FuelEntry) => {
@@ -179,7 +166,7 @@ const GorivoDashboard: React.FC = () => {
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(userRole);
 
   // Tabovi za rukovodioce
-  const [activeTab, setActiveTab] = useState<'TOCENJA' | 'CISTERNA' | 'ANALITIKA' | 'ANOMALIJE'>('TOCENJA');
+  const [activeTab, setActiveTab] = useState<'TOCENJA' | 'CISTERNA'>('TOCENJA');
 
   type PeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve' | 'custom';
   const PAGE_SIZE = 25;
@@ -187,25 +174,15 @@ const GorivoDashboard: React.FC = () => {
   // Brzi period filter (Danas, Ova Nedelja, Ovaj Mesec, Svi Unosi, Prilagođen Raspon)
   const [period, setPeriod] = useState<PeriodType>('sve');
   const [suppliesPage, setSuppliesPage] = useState(1);
-  const [analyticsPage, setAnalyticsPage] = useState(1);
-  const [anomaliesPage, setAnomaliesPage] = useState(1);
 
   // Stanje za Rukovodioce (Menadžere)
-  const [stats, setStats] = useState<FuelStats | null>(null);
-  const [managerEntries, setManagerEntries] = useState<FuelEntry[]>([]);
-  const [managerPagination, setManagerPagination] = useState<PaginationMeta | null>(null);
   const [managerPage, setManagerPage] = useState(1);
-  const [supplies, setSupplies] = useState<FuelSupply[]>([]);
-  const [analytics, setAnalytics] = useState<LPerHaAnalytic[]>([]);
-  const [anomalies, setAnomalies] = useState<FuelEntry[]>([]);
-  const [loading, setLoading] = useState(false);
 
   // Filteri za menadžere
   const [searchFilter, setSearchFilter] = useState('');
   const [machineFilter, setMachineFilter] = useState('');
   const [workerFilter, setWorkerFilter] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
-  const [onlyAnomalies, setOnlyAnomalies] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
@@ -214,8 +191,6 @@ const GorivoDashboard: React.FC = () => {
     setPeriod(newPeriod);
     setManagerPage(1);
     setSuppliesPage(1);
-    setAnalyticsPage(1);
-    setAnomaliesPage(1);
 
     const now = new Date();
     const formatYMD = (d: Date) => {
@@ -250,19 +225,8 @@ const GorivoDashboard: React.FC = () => {
   };
 
   // Stanje za Radnike (Operatere)
-  const [todayEntries, setTodayEntries] = useState<FuelEntry[]>([]);
-  const [todayLoading, setTodayLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
-  const [historyEntries, setHistoryEntries] = useState<FuelEntry[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [historyPage, setHistoryPage] = useState(1);
-  const [historyPagination, setHistoryPagination] = useState<PaginationMeta | null>(null);
-
-  // Šifarnici za modale i filtere
-  const [machines, setMachines] = useState<any[]>([]);
-  const [workers, setWorkers] = useState<any[]>([]);
-  const [partners, setPartners] = useState<any[]>([]);
 
   // Modali
   const [isTocenjeModalOpen, setIsTocenjeModalOpen] = useState(false);
@@ -272,229 +236,59 @@ const GorivoDashboard: React.FC = () => {
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
   const [selectedEntryForReceipt, setSelectedEntryForReceipt] = useState<FuelEntry | null>(null);
 
-  // 1. Učitavanje šifarnika (zajedničko)
-  useEffect(() => {
-    const fetchMasterData = async () => {
-      try {
-        const [mRes, wRes, ptRes] = await Promise.all([
-          fetch(`${API}/master/machines`, { credentials: 'include' }),
-          fetch(`${API}/master/workers`, { credentials: 'include' }),
-          fetch(`${API}/master/partners`, { credentials: 'include' }),
-        ]);
+  const queryClient = useQueryClient();
+  const userId = currentUser?.id as string | undefined;
+  const enabled = Boolean(userId);
+  const dateFilters = { dateFrom, dateTo };
+  const machinesQuery = useQuery(fuelQueryOptions<{ machines: any[] }>(userId, 'machines'));
+  const workersQuery = useQuery(fuelQueryOptions<{ workers: any[] }>(userId, 'workers'));
+  const partnersQuery = useQuery(fuelQueryOptions<{ partners: any[] }>(userId, 'partners'));
+  const statsQuery = useQuery({ ...fuelQueryOptions<FuelStats>(userId, 'stats'), enabled: enabled && isManager });
+  const managerEntriesQuery = useQuery({
+    ...fuelQueryOptions<{ entries: FuelEntry[]; pagination: PaginationMeta }>(userId, 'entries', {
+      ...dateFilters, page: managerPage, limit: PAGE_SIZE, machineId: machineFilter,
+      workerId: workerFilter, fuelSource: sourceFilter,
+    }),
+    enabled: enabled && isManager && activeTab === 'TOCENJA',
+  });
+  const suppliesQuery = useQuery({ ...fuelQueryOptions<{ supplies: FuelSupply[] }>(userId, 'supplies', dateFilters),
+    enabled: enabled && isManager && activeTab === 'CISTERNA' });
+  const todayQuery = useQuery({ ...fuelQueryOptions<{ entries: FuelEntry[] }>(userId, 'entries', { scope: 'today', limit: 50 }),
+    enabled: enabled && !isManager });
+  const historyQuery = useQuery({
+    ...fuelQueryOptions<{ entries: FuelEntry[]; pagination: PaginationMeta }>(userId, 'entries', { scope: 'history', page: historyPage, limit: PAGE_SIZE }),
+    enabled: enabled && !isManager && showHistory,
+  });
 
-        if (mRes.ok) {
-          const data = await mRes.json();
-          setMachines(data.machines || []);
-        }
-        if (wRes.ok) {
-          const data = await wRes.json();
-          setWorkers(data.workers || []);
-        }
-        if (ptRes.ok) {
-          const data = await ptRes.json();
-          setPartners(data.partners || []);
-        }
-      } catch (err) {
-        console.error('Greška pri učitavanju šifarnika:', err);
-      }
-    };
+  const stats = statsQuery.data;
+  const managerEntries = managerEntriesQuery.data?.entries || [];
+  const managerPagination = managerEntriesQuery.data?.pagination;
+  const supplies = suppliesQuery.data?.supplies || [];
+  const todayEntries = todayQuery.data?.entries || [];
+  const historyEntries = historyQuery.data?.entries || [];
+  const historyPagination = historyQuery.data?.pagination;
+  const machines = machinesQuery.data?.machines || [];
+  const workers = workersQuery.data?.workers || [];
+  const partners = partnersQuery.data?.partners || [];
+  const activeManagerQuery = activeTab === 'TOCENJA' ? managerEntriesQuery : suppliesQuery;
+  const loading = activeManagerQuery.isFetching;
+  const todayLoading = todayQuery.isFetching;
+  const historyLoading = historyQuery.isFetching;
+  const refreshFuel = () => queryClient.invalidateQueries({ queryKey: ['fuel', userId] });
 
-    fetchMasterData();
-  }, []);
-
-  // 2. FUNKCIJE ZA RUKOVODIOCE (DIREKTOR / RUKOVODILAC)
-  const fetchStats = async () => {
-    try {
-      const res = await fetch(`${API}/fuel/stats`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setStats(data);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju statistike goriva:', err);
+  const deleteMutation = useMutation({
+    mutationFn: ({ kind, id }: { kind: 'entries' | 'supplies'; id: string }) =>
+      fuelRequest(`/fuel/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    onSuccess: refreshFuel,
+  });
+  const handleDeleteEntry = (id: string, machineName: string, liters: number) => {
+    if (window.confirm(`Da li sigurno želite da stornirate točenje ${liters} L u mašinu "${machineName}"?`)) {
+      deleteMutation.mutate({ kind: 'entries', id });
     }
   };
-
-  const fetchManagerEntries = async (page = 1) => {
-    try {
-      setLoading(true);
-      const params = new URLSearchParams();
-      params.set('page', String(page));
-      params.set('limit', String(PAGE_SIZE));
-      if (machineFilter) params.set('machineId', machineFilter);
-      if (workerFilter) params.set('workerId', workerFilter);
-      if (sourceFilter) params.set('fuelSource', sourceFilter);
-      if (onlyAnomalies) params.set('hasAnomaly', 'true');
-      if (dateFrom) params.set('dateFrom', dateFrom);
-      if (dateTo) params.set('dateTo', dateTo);
-
-      const res = await fetch(`${API}/fuel/entries?${params.toString()}`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setManagerEntries(data.entries || []);
-        if (data.pagination) {
-          setManagerPagination(data.pagination);
-          setManagerPage(data.pagination.page);
-        }
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju točenja:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchSupplies = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (dateFrom) params.set('dateFrom', dateFrom);
-      if (dateTo) params.set('dateTo', dateTo);
-      const res = await fetch(`${API}/fuel/supplies?${params.toString()}`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setSupplies(data.supplies || []);
-        setSuppliesPage(1);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju prijema cisterni:', err);
-    }
-  };
-
-  const fetchAnalytics = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (dateFrom) params.set('dateFrom', dateFrom);
-      if (dateTo) params.set('dateTo', dateTo);
-      const res = await fetch(`${API}/fuel/analytics/l-per-ha?${params.toString()}`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setAnalytics(data.analytics || []);
-        setAnalyticsPage(1);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju L/ha analitike:', err);
-    }
-  };
-
-  const fetchAnomalies = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (dateFrom) params.set('dateFrom', dateFrom);
-      if (dateTo) params.set('dateTo', dateTo);
-      const res = await fetch(`${API}/fuel/anomalies?${params.toString()}`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setAnomalies(data.anomalies || []);
-        setAnomaliesPage(1);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju anomalija:', err);
-    }
-  };
-
-  const refreshAllManager = async () => {
-    setLoading(true);
-    await Promise.all([
-      fetchStats(),
-      fetchManagerEntries(managerPage),
-      fetchSupplies(),
-      fetchAnalytics(),
-      fetchAnomalies(),
-    ]);
-    setLoading(false);
-  };
-
-  // 3. FUNKCIJE ZA RADNIKE (OPERATER)
-  const fetchTodayEntries = async () => {
-    try {
-      setTodayLoading(true);
-      const res = await fetch(`${API}/fuel/entries?scope=today&limit=50`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setTodayEntries(data.entries || []);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju današnjih točenja:', err);
-    } finally {
-      setTodayLoading(false);
-    }
-  };
-
-  const fetchHistoryEntries = async (page = 1) => {
-    try {
-      setHistoryLoading(true);
-      const res = await fetch(`${API}/fuel/entries?scope=history&page=${page}&limit=${PAGE_SIZE}`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setHistoryEntries(data.entries || []);
-        setHasLoadedHistory(true);
-        if (data.pagination) {
-          setHistoryPagination(data.pagination);
-          setHistoryPage(data.pagination.page);
-        }
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju prethodnih točenja:', err);
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
-
-  // 4. Glavni efekat učitavanja u zavisnosti od uloge
-  useEffect(() => {
-    if (isManager) {
-      fetchStats();
-      fetchManagerEntries(1);
-      fetchSupplies();
-      fetchAnalytics();
-      fetchAnomalies();
-    } else {
-      // Radnik učitava SAMO svoja današnja točenja na početku!
-      fetchTodayEntries();
-    }
-  }, [isManager, machineFilter, workerFilter, sourceFilter, onlyAnomalies, dateFrom, dateTo]);
-
-  // Brisanje točenja (samo menadžer)
-  const handleDeleteEntry = async (id: string, machineName: string, liters: number) => {
-    if (!window.confirm(`Da li sigurno želite da stornirate točenje ${liters} L u mašinu "${machineName}"?`)) {
-      return;
-    }
-    try {
-      const res = await fetch(`${API}/fuel/entries/${id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (res.ok) {
-        refreshAllManager();
-      } else {
-        const err = await res.json();
-        alert(err.error || 'Greška pri storniranju.');
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Greška na serveru.');
-    }
-  };
-
-  // Brisanje prijema cisterne (samo menadžer)
-  const handleDeleteSupply = async (id: string, liters: number) => {
-    if (!window.confirm(`Da li sigurno želite da stornirate prijem cisterne od ${liters} L?`)) {
-      return;
-    }
-    try {
-      const res = await fetch(`${API}/fuel/supplies/${id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (res.ok) {
-        refreshAllManager();
-      } else {
-        const err = await res.json();
-        alert(err.error || 'Greška pri storniranju.');
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Greška na serveru.');
+  const handleDeleteSupply = (id: string, liters: number) => {
+    if (window.confirm(`Da li sigurno želite da stornirate prijem cisterne od ${liters} L?`)) {
+      deleteMutation.mutate({ kind: 'supplies', id });
     }
   };
 
@@ -526,6 +320,14 @@ const GorivoDashboard: React.FC = () => {
   return (
     <AppLayout pageTitle={isManager ? "Evidencija Goriva & Cisterna" : "Dnevnik točenja goriva"}>
       <div className={styles.container}>
+        {[machinesQuery, workersQuery, partnersQuery].map((query, index) => query.isError && (
+          <QueryErrorNotice key={index} error={query.error} title="Šifarnici nisu učitani."
+            pending={query.isFetching} onRetry={() => { void query.refetch(); }} />
+        ))}
+        {deleteMutation.isError && <QueryErrorNotice error={deleteMutation.error} title="Storniranje nije uspelo."
+          pending={deleteMutation.isPending} onRetry={() => {
+            if (deleteMutation.variables) deleteMutation.mutate(deleteMutation.variables);
+          }} />}
         {/* ======================================================== */}
         {/* 1. HEADER BAR                                             */}
         {/* ======================================================== */}
@@ -569,7 +371,8 @@ const GorivoDashboard: React.FC = () => {
         {isManager ? (
           <>
             {/* Hero Sekcija: Cisterna Gauge + 3 KPI kartice (SAMO MENADŽER) */}
-            <div className={styles.heroGrid}>
+            {queryFeedback(statsQuery, 'Stanje goriva nije učitano.')}
+            {!statsQuery.isError && !statsQuery.isPending && <div className={styles.heroGrid}>
               {/* Cisterna Gauge Card */}
               <div className={styles.tankCard}>
                 <div className={styles.tankCardHeader}>
@@ -664,54 +467,11 @@ const GorivoDashboard: React.FC = () => {
                   </div>
                 </div>
 
-                {/* KPI 2: Anomalije i nepravilnosti */}
-                <div
-                  className={styles.kpiCard}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setActiveTab('ANOMALIJE')}
-                >
-                  <div className={`${styles.kpiIconBox} ${styles.iconAlert}`}>
-                    <AlertTriangle size={26} />
-                  </div>
-                  <div className={styles.kpiContent}>
-                    <span className={styles.kpiLabel}>Upitne potrošnje</span>
-                    <span className={styles.kpiValue}>
-                      {stats?.anomaliesCount || 0}
-                    </span>
-                    <span className={styles.kpiSub}>
-                      {stats && stats.anomaliesCount > 0 ? (
-                        <span className={styles.anomalyAlertPill}>
-                          <AlertTriangle size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
-                          Pažnja: detektovane upitne potrošnje
-                        </span>
-                      ) : (
-                        'Sva točenja u granicama normativa'
-                      )}
-                    </span>
-                  </div>
-                </div>
-
-                {/* KPI 3: Poređenje normativa L/ha */}
-                <div
-                  className={styles.kpiCard}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setActiveTab('ANALITIKA')}
-                >
-                  <div className={`${styles.kpiIconBox} ${styles.iconNorm}`}>
-                    <TrendingUp size={26} />
-                  </div>
-                  <div className={styles.kpiContent}>
-                    <span className={styles.kpiLabel}>Cenovnik normativi</span>
-                    <span className={styles.kpiValue}>
-                      17 operacija
-                    </span>
-                    <span className={styles.kpiSub}>
-                      Oranje: 21 L/ha • Tanjiranje: 11 L/ha →
-                    </span>
-                  </div>
-                </div>
+                {userRole === 'DIREKTOR' && <a className={styles.kpiCard} href="/analitika?tab=gorivo">
+                  <BarChart3 size={26} /><span>Efikasnost goriva i normativi u analitici direktora</span>
+                </a>}
               </div>
-            </div>
+            </div>}
 
             {/* Tabovi Ekrana (Samo Menadžer) */}
             <div className={styles.tabsContainer}>
@@ -731,24 +491,6 @@ const GorivoDashboard: React.FC = () => {
                 <span>Prijem cisterne & Zalihe ({supplies.length})</span>
               </button>
 
-              <button
-                className={`${styles.tabBtn} ${activeTab === 'ANALITIKA' ? styles.tabBtnActive : ''}`}
-                onClick={() => setActiveTab('ANALITIKA')}
-              >
-                <BarChart3 size={17} />
-                <span>Analitika L/ha po operacijama</span>
-              </button>
-
-              <button
-                className={`${styles.tabBtn} ${activeTab === 'ANOMALIJE' ? styles.tabBtnActive : ''}`}
-                onClick={() => setActiveTab('ANOMALIJE')}
-              >
-                <ShieldAlert size={17} />
-                <span>Upitne potrošnje</span>
-                {stats && stats.anomaliesCount > 0 && (
-                  <span className={styles.tabBadgeAlert}>{stats.anomaliesCount}</span>
-                )}
-              </button>
             </div>
 
             {/* Brzi Period Filter (Danas, Ova Nedelja, Ovaj Mesec, Svi Unosi, Prilagođen Raspon) */}
@@ -803,8 +545,8 @@ const GorivoDashboard: React.FC = () => {
                       setPeriod('custom');
                       setManagerPage(1);
                       setSuppliesPage(1);
-                      setAnalyticsPage(1);
-                      setAnomaliesPage(1);
+
+
                     }}
                   />
                   <span>Do:</span>
@@ -817,8 +559,8 @@ const GorivoDashboard: React.FC = () => {
                       setPeriod('custom');
                       setManagerPage(1);
                       setSuppliesPage(1);
-                      setAnalyticsPage(1);
-                      setAnomaliesPage(1);
+
+
                     }}
                   />
                 </div>
@@ -842,7 +584,7 @@ const GorivoDashboard: React.FC = () => {
                   <div className={styles.filterSelectWrapper}>
                     <CustomSelect
                       value={machineFilter}
-                      onChange={(val) => setMachineFilter(val)}
+                      onChange={(val) => { setMachineFilter(val); setManagerPage(1); }}
                       options={[
                         { value: '', label: 'Sve mašine' },
                         ...machines.map((m) => ({
@@ -859,7 +601,7 @@ const GorivoDashboard: React.FC = () => {
                   <div className={styles.filterSelectWrapper}>
                     <CustomSelect
                       value={workerFilter}
-                      onChange={(val) => setWorkerFilter(val)}
+                      onChange={(val) => { setWorkerFilter(val); setManagerPage(1); }}
                       options={[
                         { value: '', label: 'Svi radnici' },
                         ...workers.map((w) => ({
@@ -875,7 +617,7 @@ const GorivoDashboard: React.FC = () => {
                   <div className={styles.filterSelectWrapper}>
                     <CustomSelect
                       value={sourceFilter}
-                      onChange={(val) => setSourceFilter(val)}
+                      onChange={(val) => { setSourceFilter(val); setManagerPage(1); }}
                       options={[
                         { value: '', label: 'Svi izvori' },
                         { value: 'CISTERNA', label: 'Cisterna firme' },
@@ -888,17 +630,8 @@ const GorivoDashboard: React.FC = () => {
                   </div>
 
                   <button
-                    type="button"
-                    className={`${styles.filterAnomalyToggle} ${onlyAnomalies ? styles.filterAnomalyToggleActive : ''}`}
-                    onClick={() => setOnlyAnomalies(!onlyAnomalies)}
-                  >
-                    <AlertTriangle size={15} />
-                    <span>Samo upitne potrošnje</span>
-                  </button>
-
-                  <button
                     className={styles.refreshBtn}
-                    onClick={refreshAllManager}
+                    onClick={refreshFuel}
                     title="Osveži podatke"
                     disabled={loading}
                   >
@@ -909,7 +642,7 @@ const GorivoDashboard: React.FC = () => {
 
                 {/* Tabela Točenja */}
                 <div className={styles.tableContainer}>
-                  {filteredManagerEntries.length === 0 ? (
+                  {managerEntriesQuery.isError || managerEntriesQuery.isPending ? queryFeedback(managerEntriesQuery, 'Točenja nisu učitana.') : filteredManagerEntries.length === 0 ? (
                     <div className={styles.emptyState}>
                       <Fuel size={40} />
                       <div className={styles.emptyStateTitle}>Nema pronađenih zapisa o točenju goriva</div>
@@ -925,8 +658,7 @@ const GorivoDashboard: React.FC = () => {
                             <th>Radnik</th>
                             <th>Količina (L)</th>
                             <th>Izvor točenja</th>
-                            <th>Potrošnja L/ha</th>
-                            <th>Status & Kontrola</th>
+
                             <th>Iznos (RSD) & Račun</th>
                             <th>Akcije</th>
                           </tr>
@@ -967,38 +699,6 @@ const GorivoDashboard: React.FC = () => {
                                     <span className={`${styles.sourceBadge} ${styles.badgeKanister}`}>
                                       <MapPin size={13} />
                                       Kanister
-                                    </span>
-                                  )}
-                                </td>
-                                <td>
-                                  {entry.calculatedLPerHa ? (
-                                    <span
-                                      className={
-                                        entry.fuelNorm && entry.calculatedLPerHa > entry.fuelNorm * 1.25
-                                          ? styles.normBadgeWarning
-                                          : styles.normBadgeGood
-                                      }
-                                    >
-                                      {entry.calculatedLPerHa} L/ha
-                                      {entry.fuelNorm && ` (norm: ${entry.fuelNorm})`}
-                                    </span>
-                                  ) : (
-                                    '—'
-                                  )}
-                                </td>
-                                <td>
-                                  {entry.hasAnomaly ? (
-                                    <span
-                                      className={styles.anomalyTag}
-                                      title={entry.anomalyReason || 'Detektovano odstupanje od normativa'}
-                                    >
-                                      <AlertTriangle size={13} />
-                                      Upitna potrošnja
-                                    </span>
-                                  ) : (
-                                    <span style={{ color: '#059669', fontSize: '0.85rem' }}>
-                                      <CheckCircle2 size={14} style={{ display: 'inline', marginRight: 4 }} />
-                                      U normi
                                     </span>
                                   )}
                                 </td>
@@ -1076,7 +776,6 @@ const GorivoDashboard: React.FC = () => {
                         pageSize={PAGE_SIZE}
                         onPageChange={(p) => {
                           setManagerPage(p);
-                          fetchManagerEntries(p);
                         }}
                         itemName="točenja"
                       />
@@ -1088,6 +787,7 @@ const GorivoDashboard: React.FC = () => {
 
             {/* TAB 2: Prijem cisterne & Zalihe */}
             {activeTab === 'CISTERNA' && (
+              queryFeedback(suppliesQuery, 'Prijemi cisterne nisu učitani.') ||
               <div className={styles.tableContainer}>
                 {supplies.length === 0 ? (
                   <div className={styles.emptyState}>
@@ -1158,150 +858,6 @@ const GorivoDashboard: React.FC = () => {
               </div>
             )}
 
-            {/* TAB 3: Analitika L/ha po operacijama */}
-            {activeTab === 'ANALITIKA' && (
-              <>
-                <div className={styles.analyticsGrid}>
-                  {analytics
-                    .slice((analyticsPage - 1) * PAGE_SIZE, analyticsPage * PAGE_SIZE)
-                    .map((item) => (
-                      <div key={item.workTypeId} className={styles.analyticsCard}>
-                        <div className={styles.analyticsCardHeader}>
-                          <div>
-                            <div className={styles.analyticsOpName}>{item.workTypeName}</div>
-                            <div className={styles.analyticsCategory}>{item.category}</div>
-                          </div>
-                          {item.variancePercent !== null && (
-                            <span
-                              className={
-                                item.status === 'ANOMALIJA'
-                                  ? styles.normBadgeWarning
-                                  : styles.normBadgeGood
-                              }
-                            >
-                              {item.variancePercent > 0 ? `+${item.variancePercent}%` : `${item.variancePercent}%`}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className={styles.analyticsCompareRow}>
-                          <div>
-                            <span className={styles.tankMetaLabel}>Ostvareno:</span>
-                            <div className={styles.actualLiters}>
-                              {item.actualLPerHa !== null ? `${item.actualLPerHa} L/ha` : '—'}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <span className={styles.tankMetaLabel}>Propisan normativ:</span>
-                            <div className={styles.normLiters}>
-                              <strong>{item.normLPerHa !== null ? `${item.normLPerHa} L/ha` : 'Nije definisan'}</strong>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Progress bar odstupanja */}
-                        {item.normLPerHa && item.actualLPerHa && (
-                          <div className={styles.varianceBarTrack}>
-                            <div
-                              className={
-                                item.status === 'ANOMALIJA'
-                                  ? styles.varianceBarFillBad
-                                  : item.status === 'UPOZORENJE'
-                                    ? styles.varianceBarFillWarning
-                                    : styles.varianceBarFillGood
-                              }
-                              style={{
-                                width: `${Math.min(100, (item.actualLPerHa / (item.normLPerHa * 1.5)) * 100)}%`,
-                              }}
-                            />
-                          </div>
-                        )}
-
-                        <div className={styles.analyticsTotals}>
-                          <span>Ukupno: {item.totalLiters.toLocaleString()} L</span>
-                          <span>Urađeno: {item.totalHa.toLocaleString()} ha</span>
-                          <span>Broj točenja: {item.entriesCount}</span>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-
-                <div style={{ marginTop: '1rem', background: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                  <TablePagination
-                    currentPage={analyticsPage}
-                    totalPages={Math.max(1, Math.ceil(analytics.length / PAGE_SIZE))}
-                    totalItems={analytics.length}
-                    pageSize={PAGE_SIZE}
-                    onPageChange={(p) => setAnalyticsPage(p)}
-                    itemName="radnih operacija"
-                  />
-                </div>
-              </>
-            )}
-
-            {/* TAB 4: Upitne Potrošnje */}
-            {activeTab === 'ANOMALIJE' && (
-              <>
-                <div className={styles.anomalyCardList}>
-                  {anomalies.length === 0 ? (
-                    <div className={styles.emptyState}>
-                      <CheckCircle2 size={44} color="#059669" />
-                      <div className={styles.emptyStateTitle}>Nema upitnih potrošnji</div>
-                      <p>Sva točenja goriva su usklađena sa normativima iz Cenovnika, kapacitetom mašina i radovima na njivi.</p>
-                    </div>
-                  ) : (
-                    anomalies
-                      .slice((anomaliesPage - 1) * PAGE_SIZE, anomaliesPage * PAGE_SIZE)
-                      .map((a) => (
-                        <div key={a.id} className={styles.anomalyAlertCard}>
-                          <div className={styles.anomalyInfo}>
-                            <div className={styles.anomalyMachine}>
-                              <AlertTriangle size={18} color="#ef4444" />
-                              <span>{a.machine.name}</span>
-                              <span className={styles.amountCell} style={{ fontSize: '1rem', marginLeft: 8 }}>
-                                ({a.liters} L)
-                              </span>
-                            </div>
-
-                            <div className={styles.anomalyReasonText}>
-                              <strong>Razlog detekcije:</strong> {a.anomalyReason || 'Prekoračenje normativa ili točenje bez radnog naloga'}
-                            </div>
-
-                            <div className={styles.anomalyMeta}>
-                              <span><Calendar size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {new Date(a.date).toLocaleDateString('sr-RS')}</span>
-                              <span><User size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Točilac: {a.worker.name}</span>
-                              <span><Building2 size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Izvor: {a.fuelSource}{a.gasStation ? ` (${a.gasStation})` : ''}</span>
-                              {a.fieldWork?.parcel && <span><MapPin size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> Parcela: {a.fieldWork.parcel.name}</span>}
-                              {a.fieldWork?.workType && <span><Wrench size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> {a.fieldWork.workType.name}</span>}
-                            </div>
-                          </div>
-
-                          <button
-                            className={styles.deleteRowBtn}
-                            onClick={() => handleDeleteEntry(a.id, a.machine.name, a.liters)}
-                            title="Storniraj točenje"
-                          >
-                            <Trash2 size={18} />
-                          </button>
-                        </div>
-                      ))
-                  )}
-                </div>
-
-                {anomalies.length > 0 && (
-                  <div style={{ marginTop: '1rem', background: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                    <TablePagination
-                      currentPage={anomaliesPage}
-                      totalPages={Math.max(1, Math.ceil(anomalies.length / PAGE_SIZE))}
-                      totalItems={anomalies.length}
-                      pageSize={PAGE_SIZE}
-                      onPageChange={(p) => setAnomaliesPage(p)}
-                      itemName="upitnih potrošnji"
-                    />
-                  </div>
-                )}
-              </>
-            )}
           </>
         ) : (
           /* ======================================================== */
@@ -1318,7 +874,7 @@ const GorivoDashboard: React.FC = () => {
             </div>
 
             <div className={styles.tableContainer}>
-              {todayLoading ? (
+              {todayQuery.isError ? queryFeedback(todayQuery, 'Današnja točenja nisu učitana.') : todayLoading ? (
                 <div className={styles.emptyState}>
                   <RefreshCw size={32} className={styles.spinner} color="#16a34a" />
                   <div className={styles.emptyStateTitle}>Učitavanje današnjih točenja...</div>
@@ -1428,7 +984,7 @@ const GorivoDashboard: React.FC = () => {
                     className={styles.historyLoadBtn}
                     onClick={() => {
                       setShowHistory(true);
-                      fetchHistoryEntries(1);
+                      setHistoryPage(1);
                     }}
                   >
                     <Eye size={18} />
@@ -1452,7 +1008,7 @@ const GorivoDashboard: React.FC = () => {
                   </div>
 
                   <div className={styles.tableContainer}>
-                    {historyLoading ? (
+                    {historyQuery.isError ? queryFeedback(historyQuery, 'Istorija točenja nije učitana.') : historyLoading ? (
                       <div className={styles.emptyState}>
                         <RefreshCw size={32} className={styles.spinner} color="#2563eb" />
                         <div className={styles.emptyStateTitle}>Učitavanje prethodnih točenja...</div>
@@ -1533,7 +1089,7 @@ const GorivoDashboard: React.FC = () => {
                           pageSize={PAGE_SIZE}
                           onPageChange={(page) => {
                             setHistoryPage(page);
-                            fetchHistoryEntries(page);
+                            setHistoryPage(page);
                           }}
                           itemName="prethodnih točenja"
                         />
@@ -1554,14 +1110,7 @@ const GorivoDashboard: React.FC = () => {
           isOpen={isTocenjeModalOpen}
           onClose={() => setIsTocenjeModalOpen(false)}
           onSuccess={() => {
-            if (isManager) {
-              refreshAllManager();
-            } else {
-              fetchTodayEntries();
-              if (hasLoadedHistory) {
-                fetchHistoryEntries(historyPage);
-              }
-            }
+            void refreshFuel();
           }}
           machines={machines}
           workers={workers}
@@ -1574,7 +1123,7 @@ const GorivoDashboard: React.FC = () => {
           <PrijemCisterneModal
             isOpen={isSupplyModalOpen}
             onClose={() => setIsSupplyModalOpen(false)}
-            onSuccess={refreshAllManager}
+            onSuccess={refreshFuel}
             partners={partners}
             currentTankLiters={stats ? stats.tank.currentLiters : 0}
             tankCapacity={stats ? stats.tank.capacity : 10000}
@@ -1589,14 +1138,7 @@ const GorivoDashboard: React.FC = () => {
             setSelectedEntryForEdit(null);
           }}
           onSuccess={() => {
-            if (isManager) {
-              refreshAllManager();
-            } else {
-              fetchTodayEntries();
-              if (hasLoadedHistory) {
-                fetchHistoryEntries(historyPage);
-              }
-            }
+            void refreshFuel();
           }}
           entry={selectedEntryForEdit}
           machines={machines}
@@ -1613,11 +1155,7 @@ const GorivoDashboard: React.FC = () => {
           entry={selectedEntryForReceipt}
           isManager={isManager}
           onPriceSaved={() => {
-            if (isManager) {
-              refreshAllManager();
-            } else {
-              fetchTodayEntries();
-            }
+            void refreshFuel();
           }}
         />
       </div>

@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CreditCard,
@@ -274,7 +276,7 @@ const PutarineDashboard: React.FC = () => {
   };
 
   const todayStr = formatLocalDateInput();
-  const [entryForm, setEntryForm] = useState({
+  const initialEntryForm = {
     date: todayStr,
     machineId: '',
     workerId: '',
@@ -283,7 +285,14 @@ const PutarineDashboard: React.FC = () => {
     tagNumber: '',
     routeRelation: '',
     notes: '',
-  });
+  };
+  const [newEntryForm, setNewEntryForm] = useState(initialEntryForm);
+  const [editEntryForm, setEditEntryForm] = useState(initialEntryForm);
+  const entryForm = editingEntry ? editEntryForm : newEntryForm;
+  const setEntryForm = editingEntry ? setEditEntryForm : setNewEntryForm;
+  const entryDraft = useDurableSubmission('toll-entry', currentUser?.id, newEntryForm, setNewEntryForm);
+  const entrySubmitting = useRef(false);
+  const entryAcknowledged = useRef<string | null>(null);
 
   // Pomoćna funkcija za pronalazak ulogovanog radnika
   const findCurrentUsersWorkerId = () => {
@@ -302,7 +311,8 @@ const PutarineDashboard: React.FC = () => {
       sortedVehicles[0]?.id ||
       '';
     const veh = vehicles.find((v) => v.id === defaultMachine);
-    setEntryForm({
+    entryDraft.resume();
+    if (!entryDraft.pending && (!entryDraft.hasDraft || entryAcknowledged.current === currentUser?.id) && !newEntryForm.amount) setNewEntryForm({
       date: formatLocalDateInput(),
       machineId: defaultMachine,
       workerId: findCurrentUsersWorkerId(),
@@ -318,7 +328,7 @@ const PutarineDashboard: React.FC = () => {
   const openEditEntryModal = (entry: TollEntry) => {
     setEditingEntry(entry);
     setEntryError('');
-    setEntryForm({
+    setEditEntryForm({
       date: entry.date ? formatLocalDateInput(entry.date) : todayStr,
       machineId: entry.machineId,
       workerId: entry.workerId,
@@ -341,48 +351,49 @@ const PutarineDashboard: React.FC = () => {
     }));
   };
 
-  const handleSaveEntry = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveEntry = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
+    if (entrySubmitting.current || (!replay && !editingEntry && entryDraft.pending)) return;
+    const isEdit = !replay && !!editingEntry;
     setEntryError('');
 
-    if (!entryForm.machineId || (isManager && !entryForm.workerId) || !entryForm.amount || Number(entryForm.amount) <= 0) {
+    if (!replay && (!entryForm.machineId || (isManager && !entryForm.workerId) || !entryForm.amount || Number(entryForm.amount) <= 0)) {
       setEntryError('Vozilo, vozač i iznos u RSD (veći od 0) su obavezni.');
       return;
     }
 
+    entrySubmitting.current = true;
     setEntryLoading(true);
     try {
-      const url = editingEntry ? `${API}/tolls/${editingEntry.id}` : `${API}/tolls`;
-      const method = editingEntry ? 'PUT' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          date: entryForm.date,
-          machineId: entryForm.machineId,
-          workerId: entryForm.workerId || undefined,
-          amount: Number(entryForm.amount),
-          paymentMethod: entryForm.paymentMethod,
-          tagNumber: entryForm.tagNumber.trim() || null,
-          routeRelation: entryForm.routeRelation.trim() || null,
-          notes: entryForm.notes.trim() || null,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri čuvanju putarine.');
+      const payload = replay && entryDraft.pending ? entryDraft.pending.payload : {
+        date: entryForm.date, machineId: entryForm.machineId, workerId: entryForm.workerId || undefined,
+        amount: Number(entryForm.amount), paymentMethod: entryForm.paymentMethod,
+        tagNumber: entryForm.tagNumber.trim() || null, routeRelation: entryForm.routeRelation.trim() || null,
+        notes: entryForm.notes.trim() || null,
+      };
+      if (isEdit) {
+        const res = await fetch(`${API}/tolls/${editingEntry!.id}`, {
+          method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Greška pri čuvanju putarine.');
+      } else {
+        await entryDraft.request(`${API}/tolls`, payload);
+        entryDraft.clear();
+        entryAcknowledged.current = currentUser.id;
+        setNewEntryForm(initialEntryForm);
+      }
 
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
       queryClient.invalidateQueries({ queryKey: ['machines'] });
       queryClient.invalidateQueries({ queryKey: ['machines-lite'] });
 
       setEntryModalOpen(false);
-      showToast(editingEntry ? 'Putarina je uspešno izmenjena.' : 'Putarina je uspešno evidentirana.');
+      showToast(isEdit ? 'Putarina je uspešno izmenjena.' : 'Putarina je uspešno evidentirana.');
     } catch (err: any) {
       setEntryError(err.message || 'Greška na serveru.');
     } finally {
+      entrySubmitting.current = false;
       setEntryLoading(false);
     }
   };
@@ -427,13 +438,18 @@ const PutarineDashboard: React.FC = () => {
     notes: '',
   });
 
+  const topUpDraft = useDurableSubmission('toll-top-up', currentUser?.id, topUpForm, setTopUpForm);
+  const topUpSubmitting = useRef(false);
+  const topUpAcknowledged = useRef<string | null>(null);
+
   const openTopUpModal = (preselectedMachine?: VehicleItem) => {
     setTopUpError('');
     const target =
       preselectedMachine ||
       sortedVehicles.find((v) => v.type === 'KAMION') ||
       sortedVehicles[0];
-    setTopUpForm({
+    topUpDraft.resume();
+    if (!topUpDraft.pending && (!topUpDraft.hasDraft || topUpAcknowledged.current === currentUser?.id) && !topUpForm.amount) setTopUpForm({
       date: todayStr,
       machineId: target?.id || '',
       tagNumber: target?.enpTagNumber || '',
@@ -444,40 +460,35 @@ const PutarineDashboard: React.FC = () => {
     setTopUpModalOpen(true);
   };
 
-  const handleSaveTopUp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveTopUp = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
+    if (topUpSubmitting.current || (!replay && topUpDraft.pending)) return;
     setTopUpError('');
 
-    if (!topUpForm.machineId || !topUpForm.amount || Number(topUpForm.amount) <= 0) {
+    if (!replay && (!topUpForm.machineId || !topUpForm.amount || Number(topUpForm.amount) <= 0)) {
       setTopUpError('Izaberite vozilo i unesite iznos dopune u RSD.');
       return;
     }
 
+    topUpSubmitting.current = true;
     setTopUpLoading(true);
     try {
-      const res = await fetch(`${API}/tolls/top-up`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          date: topUpForm.date,
-          machineId: topUpForm.machineId,
-          tagNumber: topUpForm.tagNumber.trim() || null,
-          amount: Number(topUpForm.amount),
-          paymentReference: topUpForm.paymentReference.trim() || null,
-          notes: topUpForm.notes.trim() || null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri dopuni ENP taga.');
-
+      const payload = replay && topUpDraft.pending ? topUpDraft.pending.payload : {
+        date: topUpForm.date, machineId: topUpForm.machineId, tagNumber: topUpForm.tagNumber.trim() || null,
+        amount: Number(topUpForm.amount), paymentReference: topUpForm.paymentReference.trim() || null, notes: topUpForm.notes.trim() || null,
+      };
+      await topUpDraft.request(`${API}/tolls/top-up`, payload);
+      topUpDraft.clear();
+      topUpAcknowledged.current = currentUser.id;
+      setTopUpForm(prev => ({ ...prev, amount: '', paymentReference: '', notes: '' }));
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
       queryClient.invalidateQueries({ queryKey: ['machines'] });
       setTopUpModalOpen(false);
-      showToast(`ENP tag je uspešno dopunjen za ${Number(topUpForm.amount).toLocaleString('sr-RS')} RSD!`);
+      showToast('Dopuna ENP taga je uspešno evidentirana.');
     } catch (err: any) {
       setTopUpError(err.message || 'Greška na serveru.');
     } finally {
+      topUpSubmitting.current = false;
       setTopUpLoading(false);
     }
   };
@@ -582,6 +593,11 @@ const PutarineDashboard: React.FC = () => {
   return (
     <AppLayout pageTitle="Putarine & ENP Tagovi">
       <div className={styles.container}>
+        {!entryModalOpen && <SubmissionRecovery pending={!!entryDraft.pending} busy={entryLoading} error={entryDraft.storageError || (!editingEntry ? entryError : '')}
+                onRetry={() => void handleSaveEntry(undefined, true)} />}
+        {!topUpModalOpen && <SubmissionRecovery pending={!!topUpDraft.pending} busy={topUpLoading} error={topUpDraft.storageError || topUpError}
+                onRetry={() => void handleSaveTopUp(undefined, true)} />}
+
         {toast && (
           <div
             className={`${styles.toast} ${
@@ -1301,6 +1317,8 @@ const PutarineDashboard: React.FC = () => {
               </div>
 
               <form onSubmit={handleSaveEntry}>
+                {!editingEntry && <SubmissionRecovery pending={!!entryDraft.pending} busy={entryLoading} error={entryDraft.storageError || (!editingEntry ? entryError : '')}
+                onRetry={() => void handleSaveEntry(undefined, true)} />}
                 <div className={styles.modalBody}>
                   {entryError && (
                     <div className={styles.modalError}>
@@ -1431,7 +1449,7 @@ const PutarineDashboard: React.FC = () => {
                   >
                     Otkaži
                   </button>
-                  <button type="submit" className={styles.btnPrimary} disabled={entryLoading}>
+                  <button type="submit" className={styles.btnPrimary} disabled={entryLoading || (!editingEntry && !!entryDraft.pending)}>
                     {entryLoading
                       ? 'Čuvanje...'
                       : editingEntry
@@ -1462,6 +1480,8 @@ const PutarineDashboard: React.FC = () => {
               </div>
 
               <form onSubmit={handleSaveTopUp}>
+                <SubmissionRecovery pending={!!topUpDraft.pending} busy={topUpLoading} error={topUpDraft.storageError || topUpError}
+                onRetry={() => void handleSaveTopUp(undefined, true)} />
                 <div className={styles.modalBody}>
                   {topUpError && (
                     <div className={styles.modalError}>
@@ -1559,7 +1579,7 @@ const PutarineDashboard: React.FC = () => {
                   >
                     Otkaži
                   </button>
-                  <button type="submit" className={styles.btnPrimary} disabled={topUpLoading}>
+                  <button type="submit" className={styles.btnPrimary} disabled={topUpLoading || !!topUpDraft.pending}>
                     {topUpLoading ? 'Čuvanje...' : 'Evidentiraj dopunu'}
                   </button>
                 </div>

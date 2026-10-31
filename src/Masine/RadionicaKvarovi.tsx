@@ -1,3 +1,6 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { operationalQueryOptions, operationalKey, cancelInactiveWorkshopQueries } from '../lib/operationalQueries';
+import QueryErrorNotice from '../components/QueryErrorNotice';
 import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -52,66 +55,46 @@ const RadionicaKvarovi: React.FC = () => {
   const userRole = currentUser?.role || 'MEHANICAR';
   const isManagerOrDirector = ['RUKOVODILAC', 'DIREKTOR'].includes(userRole);
 
-  const [activeTab, setActiveTab] = useState<TabType>('kvarovi');
+  const [activeTab, setActiveTab] = useState<TabType>(() => searchParams.get('orderId') ? 'nalozi' : 'kvarovi');
   const [toast, setToast] = useState<Toast | null>(null);
-
-  // Stats State
-  const [stats, setStats] = useState({
-    brokenIssues: 0,
-    inRepairIssues: 0,
-    waitingPartsIssues: 0,
-    repairedIssues: 0,
-    totalActiveIssues: 0,
-    freeMachines: 0,
-    brokenMachines: 0,
-    serviceMachines: 0,
-    remontOrders: 0,
-  });
-
-  // Master Data
-  const [machines, setMachines] = useState<any[]>([]);
-  const [workers, setWorkers] = useState<any[]>([]);
 
   // ==========================================
   // TAB 1: Kvarovi sa terena (Paginacija 25)
   // ==========================================
-  const [issues, setIssues] = useState<any[]>([]);
-  const [loadingIssues, setLoadingIssues] = useState(false);
   const [issueStatusFilter, setIssueStatusFilter] = useState('AKTIVNI');
   const [issuePriorityFilter, setIssuePriorityFilter] = useState('');
-  const [issueMachineFilter, setIssueMachineFilter] = useState('');
+  const [issueMachineFilter, setIssueMachineFilter] = useState(() => searchParams.get('machineId') || '');
   const [issueSearch, setIssueSearch] = useState('');
   const [debouncedIssueSearch, setDebouncedIssueSearch] = useState('');
-  const [issuesPage, setIssuesPage] = useState(1);
-  const [issuesTotal, setIssuesTotal] = useState(0);
-  const [issuesTotalPages, setIssuesTotalPages] = useState(1);
+  const issuesPageFilterKey = JSON.stringify([issueStatusFilter, issuePriorityFilter, issueMachineFilter, debouncedIssueSearch]);
+  const [issuesPageState, setIssuesPageState] = useState({ key: issuesPageFilterKey, page: 1 });
+  const issuesPage = issuesPageState.key === issuesPageFilterKey ? issuesPageState.page : 1;
+  const setIssuesPage = (page: number) => setIssuesPageState({ key: issuesPageFilterKey, page });
 
   // ==========================================
   // TAB 2: Nalozi za remont (Paginacija 25)
   // ==========================================
-  const [remontOrders, setRemontOrders] = useState<any[]>([]);
-  const [loadingRemontOrders, setLoadingRemontOrders] = useState(false);
   const [remontMachineFilter, setRemontMachineFilter] = useState('');
   const [remontWorkerFilter, setRemontWorkerFilter] = useState('');
   const [remontSearch, setRemontSearch] = useState('');
   const [debouncedRemontSearch, setDebouncedRemontSearch] = useState('');
-  const [remontPage, setRemontPage] = useState(1);
-  const [remontTotal, setRemontTotal] = useState(0);
-  const [remontTotalPages, setRemontTotalPages] = useState(1);
+  const remontPageFilterKey = JSON.stringify([remontMachineFilter, remontWorkerFilter, debouncedRemontSearch]);
+  const [remontPageState, setRemontPageState] = useState({ key: remontPageFilterKey, page: 1 });
+  const remontPage = remontPageState.key === remontPageFilterKey ? remontPageState.page : 1;
+  const setRemontPage = (page: number) => setRemontPageState({ key: remontPageFilterKey, page });
 
   // ==========================================
   // TAB 3: Servisna knjižica (Paginacija 25)
   // ==========================================
-  const [historyItems, setHistoryItems] = useState<any[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
   const [historyMachineFilter, setHistoryMachineFilter] = useState('');
   const [historyDateFrom, setHistoryDateFrom] = useState('');
   const [historyDateTo, setHistoryDateTo] = useState('');
   const [historySearch, setHistorySearch] = useState('');
   const [debouncedHistorySearch, setDebouncedHistorySearch] = useState('');
-  const [historyPage, setHistoryPage] = useState(1);
-  const [historyTotal, setHistoryTotal] = useState(0);
-  const [historyTotalPages, setHistoryTotalPages] = useState(1);
+  const historyPageFilterKey = JSON.stringify([historyMachineFilter, historyDateFrom, historyDateTo, debouncedHistorySearch]);
+  const [historyPageState, setHistoryPageState] = useState({ key: historyPageFilterKey, page: 1 });
+  const historyPage = historyPageState.key === historyPageFilterKey ? historyPageState.page : 1;
+  const setHistoryPage = (page: number) => setHistoryPageState({ key: historyPageFilterKey, page });
 
   // Resolve Modal State
   const [selectedIssueToResolve, setSelectedIssueToResolve] = useState<any | null>(null);
@@ -164,133 +147,64 @@ const RadionicaKvarovi: React.FC = () => {
     return () => clearTimeout(t);
   }, [historySearch]);
 
-  // Učitaj statistiku
-  const fetchStats = async () => {
-    try {
-      const res = await fetch(`${API}/maintenance/stats`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setStats(data);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju statistike radionice:', err);
+  const userId = currentUser?.id as string | undefined;
+  const queryClient = useQueryClient();
+  const statsQuery = useQuery(operationalQueryOptions<{
+    brokenIssues: number; inRepairIssues: number; waitingPartsIssues: number; repairedIssues: number;
+    totalActiveIssues: number; freeMachines: number; brokenMachines: number; serviceMachines: number; remontOrders: number;
+  }>(userId, userRole, 'stats'));
+  const machinesQuery = useQuery(operationalQueryOptions<{ machines: any[] }>(userId, userRole, 'machines'));
+  const workersQuery = useQuery(operationalQueryOptions<{ workers: any[] }>(userId, userRole, 'workers'));
+  const machines = machinesQuery.data?.machines || [];
+  const workers = workersQuery.data?.workers || [];
+  const stats = statsQuery.data || { brokenIssues: 0, inRepairIssues: 0, waitingPartsIssues: 0, repairedIssues: 0,
+    totalActiveIssues: 0, freeMachines: 0, brokenMachines: 0, serviceMachines: 0, remontOrders: 0 };
+  const masterFeedback = <>{[machinesQuery, workersQuery].map((query, index) => query.isError ? <QueryErrorNotice key={index}
+    title={index === 0 ? 'Mašine nisu učitane.' : 'Radnici nisu učitani.'} error={query.error} pending={query.isFetching}
+    onRetry={() => { void query.refetch(); }} /> : null)}
+    {(machinesQuery.isPending || workersQuery.isPending) && <p role="status">Učitavanje šifarnika...</p>}</>;
+  const issuesQuery = useQuery({ ...operationalQueryOptions<{ issues: any[]; total: number; totalPages: number }>(userId, userRole, 'issues', {
+    page: issuesPage, limit: PAGE_SIZE, status: issueStatusFilter, priority: issuePriorityFilter, machineId: issueMachineFilter, search: debouncedIssueSearch.trim(),
+  }), enabled: Boolean(userId) && activeTab === 'kvarovi' });
+  const remontQuery = useQuery({ ...operationalQueryOptions<{ orders: any[]; total: number; totalPages: number }>(userId, userRole, 'remont', {
+    page: remontPage, limit: PAGE_SIZE, machineId: remontMachineFilter, workerId: remontWorkerFilter, search: debouncedRemontSearch.trim(),
+  }), enabled: Boolean(userId) && activeTab === 'nalozi' });
+  const historyQuery = useQuery({ ...operationalQueryOptions<{ history: any[]; total: number; totalPages: number }>(userId, userRole, 'history', {
+    page: historyPage, limit: PAGE_SIZE, machineId: historyMachineFilter, dateFrom: historyDateFrom, dateTo: historyDateTo, search: debouncedHistorySearch.trim(),
+  }), enabled: Boolean(userId) && activeTab === 'istorijat' });
+  const issues = issuesQuery.data?.issues || [];
+  const issuesTotal = issuesQuery.data?.total ?? issues.length;
+  const issuesTotalPages = issuesQuery.data?.totalPages || 1;
+  const loadingIssues = issuesQuery.isPending;
+  const remontOrders = remontQuery.data?.orders || [];
+  const remontTotal = remontQuery.data?.total ?? remontOrders.length;
+  const remontTotalPages = remontQuery.data?.totalPages || 1;
+  const loadingRemontOrders = remontQuery.isPending;
+  const historyItems = historyQuery.data?.history || [];
+  const historyTotal = historyQuery.data?.total ?? historyItems.length;
+  const historyTotalPages = historyQuery.data?.totalPages || 1;
+  const loadingHistory = historyQuery.isPending;
+  useEffect(() => { void cancelInactiveWorkshopQueries(queryClient, userId, userRole, activeTab); }, [queryClient, userId, userRole, activeTab]);
+  const refreshStats = () => {
+    for (const resource of ['stats', 'machines', 'workers'] as const) {
+      void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, resource) });
     }
   };
-
-  // Učitaj šifarnike mašina i radnika
-  const fetchMasterData = async () => {
-    try {
-      const [mRes, wRes] = await Promise.all([
-        fetch(`${API}/master/machines`, { credentials: 'include' }),
-        fetch(`${API}/master/workers`, { credentials: 'include' }),
-      ]);
-      if (mRes.ok) {
-        const data = await mRes.json();
-        setMachines(data.machines || []);
-      }
-      if (wRes.ok) {
-        const data = await wRes.json();
-        setWorkers(data.workers || []);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju šifarnika:', err);
-    }
+  const refreshIssues = (targetPage = issuesPage) => {
+    if (targetPage !== issuesPage) setIssuesPage(targetPage);
+    void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'issues'), refetchType: targetPage === issuesPage ? 'active' : 'none' });
   };
-
-  // ==========================================
-  // FETCH TAB 1: KVAROVI (Server-side 25 po strani)
-  // ==========================================
-  const fetchIssues = async (page = issuesPage, isSilent = false) => {
-    if (!isSilent && issues.length === 0) setLoadingIssues(true);
-    try {
-      const params = new URLSearchParams();
-      params.append('page', String(page));
-      params.append('limit', String(PAGE_SIZE));
-      if (issueStatusFilter) params.append('status', issueStatusFilter);
-      if (issuePriorityFilter) params.append('priority', issuePriorityFilter);
-      if (issueMachineFilter) params.append('machineId', issueMachineFilter);
-      if (debouncedIssueSearch.trim()) params.append('search', debouncedIssueSearch.trim());
-
-      const res = await fetch(`${API}/maintenance/issues?${params.toString()}`, {
-        credentials: 'include',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setIssues(data.issues || []);
-        setIssuesTotal(data.total ?? (data.issues?.length || 0));
-        setIssuesTotalPages(data.totalPages || 1);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju kvarova:', err);
-    } finally {
-      setLoadingIssues(false);
-    }
+  const refreshRemontOrders = (targetPage = remontPage) => {
+    if (targetPage !== remontPage) setRemontPage(targetPage);
+    void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'remont'), refetchType: targetPage === remontPage ? 'active' : 'none' });
   };
-
-  // ==========================================
-  // FETCH TAB 2: REMONT NALOZI (Server-side 25 po strani)
-  // ==========================================
-  const fetchRemontOrders = async (page = remontPage, isSilent = false) => {
-    if (!isSilent && remontOrders.length === 0) setLoadingRemontOrders(true);
-    try {
-      const params = new URLSearchParams();
-      params.append('page', String(page));
-      params.append('limit', String(PAGE_SIZE));
-      if (remontMachineFilter) params.append('machineId', remontMachineFilter);
-      if (remontWorkerFilter) params.append('workerId', remontWorkerFilter);
-      if (debouncedRemontSearch.trim()) params.append('search', debouncedRemontSearch.trim());
-
-      const res = await fetch(`${API}/maintenance/remont-orders?${params.toString()}`, {
-        credentials: 'include',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setRemontOrders(data.orders || []);
-        setRemontTotal(data.total ?? (data.orders?.length || 0));
-        setRemontTotalPages(data.totalPages || 1);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju naloga za remont:', err);
-    } finally {
-      setLoadingRemontOrders(false);
-    }
-  };
-
-  // ==========================================
-  // FETCH TAB 3: SERVISNA KNJIŽICA (Server-side 25 po strani)
-  // ==========================================
-  const fetchHistory = async (page = historyPage, isSilent = false) => {
-    if (!isSilent && historyItems.length === 0) setLoadingHistory(true);
-    try {
-      const params = new URLSearchParams();
-      params.append('page', String(page));
-      params.append('limit', String(PAGE_SIZE));
-      if (historyMachineFilter) params.append('machineId', historyMachineFilter);
-      if (historyDateFrom) params.append('dateFrom', historyDateFrom);
-      if (historyDateTo) params.append('dateTo', historyDateTo);
-      if (debouncedHistorySearch.trim()) params.append('search', debouncedHistorySearch.trim());
-
-      const res = await fetch(`${API}/maintenance/history?${params.toString()}`, {
-        credentials: 'include',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setHistoryItems(data.history || []);
-        setHistoryTotal(data.total ?? (data.history?.length || 0));
-        setHistoryTotalPages(data.totalPages || 1);
-      }
-    } catch (err) {
-      console.error('Greška pri dohvatanju servisne knjižice:', err);
-    } finally {
-      setLoadingHistory(false);
-    }
+  const refreshHistory = (targetPage = historyPage) => {
+    if (targetPage !== historyPage) setHistoryPage(targetPage);
+    void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'history'), refetchType: targetPage === historyPage ? 'active' : 'none' });
   };
 
   // Inicijalno učitavanje
   useEffect(() => {
-    fetchStats();
-    fetchMasterData();
-
     const orderIdParam = searchParams.get('orderId');
     const machineIdParam = searchParams.get('machineId');
 
@@ -301,57 +215,19 @@ const RadionicaKvarovi: React.FC = () => {
     }
   }, [searchParams]);
 
-  // Tab 1: Reagovanje na filtere i pretragu -> reset na stranu 1
-  useEffect(() => {
-    if (activeTab === 'kvarovi') {
-      setIssuesPage(1);
-      fetchIssues(1, true);
-    }
-  }, [issueStatusFilter, issuePriorityFilter, issueMachineFilter, debouncedIssueSearch]);
-
-  // Tab 2: Reagovanje na filtere i pretragu -> reset na stranu 1
-  useEffect(() => {
-    if (activeTab === 'nalozi') {
-      setRemontPage(1);
-      fetchRemontOrders(1, true);
-    }
-  }, [remontMachineFilter, remontWorkerFilter, debouncedRemontSearch]);
-
-  // Tab 3: Reagovanje na filtere i pretragu -> reset na stranu 1
-  useEffect(() => {
-    if (activeTab === 'istorijat') {
-      setHistoryPage(1);
-      fetchHistory(1, true);
-    }
-  }, [historyMachineFilter, historyDateFrom, historyDateTo, debouncedHistorySearch]);
-
-  // Promena taba
-  useEffect(() => {
-    if (activeTab === 'kvarovi') {
-      fetchIssues(issuesPage, true);
-    } else if (activeTab === 'nalozi') {
-      fetchRemontOrders(remontPage, true);
-    } else if (activeTab === 'istorijat') {
-      fetchHistory(historyPage, true);
-    }
-  }, [activeTab]);
-
   // Paginacija hendleri
   const handleIssuesPageChange = (newPage: number) => {
     setIssuesPage(newPage);
-    fetchIssues(newPage);
     window.scrollTo({ top: 380, behavior: 'smooth' });
   };
 
   const handleRemontPageChange = (newPage: number) => {
     setRemontPage(newPage);
-    fetchRemontOrders(newPage);
     window.scrollTo({ top: 380, behavior: 'smooth' });
   };
 
   const handleHistoryPageChange = (newPage: number) => {
     setHistoryPage(newPage);
-    fetchHistory(newPage);
     window.scrollTo({ top: 380, behavior: 'smooth' });
   };
 
@@ -367,9 +243,10 @@ const RadionicaKvarovi: React.FC = () => {
 
       if (res.ok) {
         showToast(`Status uspešno promenjen na: ${newStatus}`);
-        fetchStats();
-        fetchIssues(issuesPage, true);
-        if (activeTab === 'nalozi') fetchRemontOrders(remontPage, true);
+        refreshStats();
+        refreshIssues();
+        refreshRemontOrders();
+        refreshHistory();
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri promeni statusa.', 'error');
@@ -447,10 +324,10 @@ const RadionicaKvarovi: React.FC = () => {
       const data = await res.json();
       if (res.ok) {
         showToast(data.message || 'Nalog je uspešno vraćen u rad!');
-        fetchStats();
-        fetchIssues(issuesPage, true);
-        fetchRemontOrders(remontPage, true);
-        fetchHistory(historyPage, true);
+        refreshStats();
+        refreshIssues();
+        refreshRemontOrders();
+        refreshHistory();
       } else {
         showToast(data.error || 'Greška pri vraćanju naloga u rad.', 'error');
       }
@@ -502,10 +379,10 @@ const RadionicaKvarovi: React.FC = () => {
         );
         setSelectedIssueToResolve(null);
         setIsEditingCompletedReport(false);
-        fetchStats();
-        fetchIssues(issuesPage, true);
-        if (activeTab === 'nalozi') fetchRemontOrders(remontPage, true);
-        if (activeTab === 'istorijat') fetchHistory(historyPage, true);
+        refreshStats();
+        refreshIssues();
+        refreshRemontOrders();
+        refreshHistory();
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri obradi popravke.', 'error');
@@ -546,9 +423,10 @@ const RadionicaKvarovi: React.FC = () => {
         showToast(data.message || 'Radni nalog za remont uspešno izdat!');
         setIsRemontModalOpen(false);
         setRemontInstructions('');
-        fetchStats();
-        fetchRemontOrders(1, true);
-        fetchIssues(1, true);
+        refreshStats();
+        refreshIssues(1);
+        refreshRemontOrders(1);
+        refreshHistory();
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri izdavanju radnog naloga.', 'error');
@@ -589,8 +467,10 @@ const RadionicaKvarovi: React.FC = () => {
         setIsNewIssueModalOpen(false);
         setNewIssueTitle('');
         setNewIssueDesc('');
-        fetchStats();
-        fetchIssues(1, true);
+        refreshStats();
+        refreshIssues(1);
+        refreshRemontOrders();
+        refreshHistory();
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri prijavi kvara.', 'error');
@@ -745,10 +625,10 @@ const RadionicaKvarovi: React.FC = () => {
           <div className={styles.headerActions}>
             <button
               onClick={() => {
-                fetchStats();
-                if (activeTab === 'kvarovi') fetchIssues(issuesPage, true);
-                if (activeTab === 'nalozi') fetchRemontOrders(remontPage, true);
-                if (activeTab === 'istorijat') fetchHistory(historyPage, true);
+                refreshStats();
+                if (activeTab === 'kvarovi') refreshIssues();
+                if (activeTab === 'nalozi') refreshRemontOrders();
+                if (activeTab === 'istorijat') refreshHistory();
               }}
               className={styles.btnSecondary}
               title="Osveži podatke u radionici"
@@ -779,8 +659,11 @@ const RadionicaKvarovi: React.FC = () => {
           </div>
         </div>
 
+        {!isRemontModalOpen && !isNewIssueModalOpen && masterFeedback}
+
         {/* Dashboard Stats Grid (KPI Cards) */}
-        <div className={styles.statsGrid}>
+        {statsQuery.isError ? <QueryErrorNotice title="Statistika radionice nije učitana." error={statsQuery.error}
+          pending={statsQuery.isFetching} onRetry={() => { void statsQuery.refetch(); }} /> : statsQuery.isPending ? <p role="status">Učitavanje statistike...</p> : <div className={styles.statsGrid}>
           <div className={styles.statCard}>
             <div className={`${styles.statIcon} ${styles.iconBroken}`}>
               <AlertTriangle size={24} />
@@ -830,7 +713,7 @@ const RadionicaKvarovi: React.FC = () => {
               <span className={styles.statLabel}>Nalozi za Remont</span>
             </div>
           </div>
-        </div>
+        </div>}
 
         {/* Navigation Tabs */}
         <div className={styles.tabsContainer}>
@@ -942,7 +825,7 @@ const RadionicaKvarovi: React.FC = () => {
             </div>
 
             {/* Lista Kvarova */}
-            {loadingIssues ? (
+            {issuesQuery.isError ? <QueryErrorNotice title="Kvarovi nisu učitani." error={issuesQuery.error} pending={issuesQuery.isFetching} onRetry={() => { void issuesQuery.refetch(); }} /> : loadingIssues ? (
               <div className={styles.emptyState}>
                 <RefreshCw size={26} className="animate-spin" style={{ color: '#0284c7' }} />
                 <p>Učitavanje prijavljenih kvarova (stranica {issuesPage})...</p>
@@ -1216,7 +1099,7 @@ const RadionicaKvarovi: React.FC = () => {
               )}
             </div>
 
-            {loadingRemontOrders ? (
+            {remontQuery.isError ? <QueryErrorNotice title="Nalozi za remont nisu učitani." error={remontQuery.error} pending={remontQuery.isFetching} onRetry={() => { void remontQuery.refetch(); }} /> : loadingRemontOrders ? (
               <div className={styles.emptyState}>
                 <RefreshCw size={26} className="animate-spin" style={{ color: '#0284c7' }} />
                 <p>Učitavanje servisnih radnih naloga (stranica {remontPage})...</p>
@@ -1521,7 +1404,7 @@ const RadionicaKvarovi: React.FC = () => {
               )}
             </div>
 
-            {loadingHistory ? (
+            {historyQuery.isError ? <QueryErrorNotice title="Servisna knjižica nije učitana." error={historyQuery.error} pending={historyQuery.isFetching} onRetry={() => { void historyQuery.refetch(); }} /> : loadingHistory ? (
               <div className={styles.emptyState}>
                 <RefreshCw size={26} className="animate-spin" style={{ color: '#0284c7' }} />
                 <p>Učitavanje servisne knjižice (stranica {historyPage})...</p>
@@ -1880,6 +1763,7 @@ const RadionicaKvarovi: React.FC = () => {
               </div>
 
               <form onSubmit={handleCreateRemontOrder}>
+                {masterFeedback}
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
                     <label>Mašina ili priključak za remont *</label>
@@ -1988,6 +1872,7 @@ const RadionicaKvarovi: React.FC = () => {
               </div>
 
               <form onSubmit={handleCreateNewIssue}>
+                {masterFeedback}
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
                     <label>Mašina *</label>

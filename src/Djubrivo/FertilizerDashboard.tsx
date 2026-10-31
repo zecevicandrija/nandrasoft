@@ -1,4 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import SubmissionRecovery from '../components/SubmissionRecovery';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Package,
@@ -541,6 +543,9 @@ const FertilizerDashboard: React.FC = () => {
     notes: '',
   });
   const [issueLoading, setIssueLoading] = useState(false);
+  const issueDraft = useDurableSubmission('fertilizer-issue', currentUser?.id, issueForm, setIssueForm);
+  const issueSubmitting = useRef(false);
+  const [issueError, setIssueError] = useState('');
 
   const selectedIssueProduct = products.find((p) => p.id === issueForm.productId);
   const selectedIssueParcel = parcels.find((p) => p.id === issueForm.parcelId);
@@ -587,43 +592,35 @@ const FertilizerDashboard: React.FC = () => {
     return Number((baseKg / issueAreaNum).toFixed(1));
   }, [issueQtyNum, issueAreaNum, selectedIssueProduct]);
 
-  const handleIssueSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!issueForm.productId || issueQtyNum <= 0) {
+  const handleIssueSubmit = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
+    if (issueSubmitting.current || (!replay && issueDraft.pending)) return;
+    setIssueError('');
+    if (!replay && (!issueForm.productId || issueQtyNum <= 0)) {
       showToast('Izaberite đubrivo i unesite količinu veću od 0.', 'error');
       return;
     }
-    if (issueForm.movementType === 'IZDAVANJE_NJIVA' && (!issueForm.parcelId || !issueForm.receivedWorkerId)) {
+    if (!replay && issueForm.movementType === 'IZDAVANJE_NJIVA' && (!issueForm.parcelId || !issueForm.receivedWorkerId)) {
       showToast('Za izdavanje na njivu obavezno izaberite parcelu i traktoristu.', 'error');
       return;
     }
-    if (exceedsStock) {
+    if (!replay && exceedsStock) {
       showToast('Nije moguće izdati više đubriva nego što ima na stanju u magacinu!', 'error');
       return;
     }
 
+    issueSubmitting.current = true;
     setIssueLoading(true);
     try {
-      const res = await fetch(`${API}/fertilizer/issue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          date: issueForm.date,
-          movementType: issueForm.movementType,
-          productId: issueForm.productId,
-          parcelId: issueForm.parcelId || null,
-          receivedWorkerId: issueForm.receivedWorkerId || null,
-          quantity: issueQtyNum,
-          areaHa: issueAreaNum > 0 ? issueAreaNum : null,
-          cropName: issueForm.cropName.trim() || null,
-          notes: issueForm.notes.trim() || null,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri izdavanju đubriva.');
-
+      const payload = replay && issueDraft.pending ? issueDraft.pending.payload : {
+        date: issueForm.date, movementType: issueForm.movementType, productId: issueForm.productId,
+        parcelId: issueForm.parcelId || null, receivedWorkerId: issueForm.receivedWorkerId || null,
+        quantity: issueQtyNum, areaHa: issueAreaNum > 0 ? issueAreaNum : null,
+        cropName: issueForm.cropName.trim() || null, notes: issueForm.notes.trim() || null,
+      };
+      const data = await issueDraft.request(`${API}/fertilizer/issue`, payload);
+      issueDraft.clear();
+      issueDraft.resume();
       showToast(data.message || 'Izdavanje đubriva uspešno evidentirano!');
       setIssueForm((prev) => ({
         ...prev,
@@ -636,8 +633,10 @@ const FertilizerDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['fertilizer-movements-recent'] });
       queryClient.invalidateQueries({ queryKey: ['fertilizer-parcel-summary'] });
     } catch (err: any) {
+      setIssueError(err.message);
       showToast(err.message || 'Greška prilikom izdavanja đubriva.', 'error');
     } finally {
+      issueSubmitting.current = false;
       setIssueLoading(false);
     }
   };
@@ -951,6 +950,9 @@ const FertilizerDashboard: React.FC = () => {
   return (
     <AppLayout pageTitle="Magacin Veštačkog Đubriva">
       <div className={styles.container}>
+        {activeTab !== 'issue' && <SubmissionRecovery pending={!!issueDraft.pending} busy={issueLoading} error={issueDraft.storageError || issueError}
+                onRetry={() => void handleIssueSubmit(undefined, true)} />}
+
         {/* Toast obaveštenje */}
         {toast && (
           <div
@@ -1717,6 +1719,8 @@ const FertilizerDashboard: React.FC = () => {
               </p>
 
               <form onSubmit={handleIssueSubmit} className={styles.formGrid}>
+                <SubmissionRecovery pending={!!issueDraft.pending} busy={issueLoading} error={issueDraft.storageError || issueError}
+                onRetry={() => void handleIssueSubmit(undefined, true)} />
                 <div className={styles.formField}>
                   <label>Vrsta promene *</label>
                   <CustomSelect
@@ -1999,7 +2003,7 @@ const FertilizerDashboard: React.FC = () => {
                           : styles.btnBlue
                     }
                     style={{ width: '100%', padding: '0.8rem' }}
-                    disabled={issueLoading || exceedsStock}
+                    disabled={!!issueDraft.pending || issueLoading || exceedsStock}
                   >
                     {issueLoading ? (
                       <Loader2 size={18} style={{ animation: 'spin 0.8s linear infinite' }} />
