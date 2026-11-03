@@ -115,8 +115,8 @@ router.get("/products", async (req, res) => {
         monthIssuedKg += qtyKg;
         monthIssuedCostRSD = addMoney(monthIssuedCostRSD, m.totalCost || 0);
       } else if (m.movementType === "POVRAT_SA_NJIVE") {
-        monthIssuedKg = Math.max(0, monthIssuedKg - qtyKg);
-        monthIssuedCostRSD = Math.max(0, subtractMoney(monthIssuedCostRSD, m.totalCost || 0));
+        monthIssuedKg -= qtyKg;
+        monthIssuedCostRSD = subtractMoney(monthIssuedCostRSD, m.totalCost || 0);
       }
     }
 
@@ -1075,7 +1075,7 @@ router.get("/parcel-summary", async (req, res) => {
 
     const movements = await prisma.fertilizerMovement.findMany({
       where,
-      orderBy: { date: "desc" },
+      orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],
       include: {
         product: true,
         parcel: true,
@@ -1107,6 +1107,10 @@ router.get("/parcel-summary", async (req, res) => {
       }
 
       const entry = parcelMap.get(pId);
+      if (new Date(m.date) >= new Date(entry.lastAppliedAt)) {
+        entry.lastAppliedAt = m.date;
+        entry.currentCrop = m.cropName || m.parcel.currentCrop || "Nije navedeno";
+      }
       const isReturn = m.movementType === "POVRAT_SA_NJIVE";
       const sign = isReturn ? -1 : 1;
       const baseQty = toBaseKgOrL(m.quantity, m.product.unit);
@@ -1114,14 +1118,14 @@ router.get("/parcel-summary", async (req, res) => {
       const cost = (m.totalCost || 0) * sign;
 
       if (isReturn) {
-        entry.totalReturnedKg = Number((entry.totalReturnedKg + baseQty).toFixed(2));
+        entry.totalReturnedKg += baseQty;
       } else {
-        entry.totalIssuedKg = Number((entry.totalIssuedKg + baseQty).toFixed(2));
+        entry.totalIssuedKg += baseQty;
         entry.applicationsCount += 1;
       }
 
-      entry.totalKgApplied = Math.max(0, Number((entry.totalKgApplied + qtyKg).toFixed(2)));
-      entry.totalCostRSD = Math.max(0, addMoney(entry.totalCostRSD, cost));
+      entry.totalKgApplied += qtyKg;
+      entry.totalCostRSD = addMoney(entry.totalCostRSD, cost);
 
       const prodName = m.product.name;
       if (!entry.productsBreakdown[prodName]) {
@@ -1134,12 +1138,8 @@ router.get("/parcel-summary", async (req, res) => {
           totalKg: 0,
         };
       }
-      entry.productsBreakdown[prodName].totalQuantity = Number(
-        (entry.productsBreakdown[prodName].totalQuantity + m.quantity * sign).toFixed(2)
-      );
-      entry.productsBreakdown[prodName].totalKg = Number(
-        (entry.productsBreakdown[prodName].totalKg + qtyKg).toFixed(2)
-      );
+      entry.productsBreakdown[prodName].totalQuantity += m.quantity * sign;
+      entry.productsBreakdown[prodName].totalKg += qtyKg;
     }
 
     const summary = Array.from(parcelMap.values()).map((item) => {
@@ -1152,13 +1152,15 @@ router.get("/parcel-summary", async (req, res) => {
         parcelName: item.parcelName,
         areaHa: item.areaHa,
         currentCrop: item.currentCrop,
-        totalIssuedKg: item.totalIssuedKg,
-        totalReturnedKg: item.totalReturnedKg,
-        totalKgApplied: item.totalKgApplied,
+        totalIssuedKg: Number(item.totalIssuedKg.toFixed(2)),
+        totalReturnedKg: Number(item.totalReturnedKg.toFixed(2)),
+        totalKgApplied: Number(item.totalKgApplied.toFixed(2)),
         avgKgPerHa,
         applicationsCount: item.applicationsCount,
         lastAppliedAt: item.lastAppliedAt,
-        products: Object.values(item.productsBreakdown).filter((p) => p.totalQuantity > 0),
+        products: Object.values(item.productsBreakdown).map((p) => ({
+          ...p, totalQuantity: Number(p.totalQuantity.toFixed(2)), totalKg: Number(p.totalKg.toFixed(2)),
+        })).filter((p) => p.totalQuantity !== 0),
         ...(isManager && {
           totalCostRSD: item.totalCostRSD,
           costPerHaRSD,

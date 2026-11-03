@@ -70,5 +70,15 @@ test('PostgreSQL paginates both tables, filters all summaries and keeps full ass
     const ambiguous = await loadPagedFuelEfficiency(db,{ machineId:'m1' });
     assert.equal(ambiguous.summary.totalLiters,0); assert.equal(ambiguous.summary.uncoveredWorksCount,2);
     assert.equal(ambiguous.criticalWorks.length,0);
+    await client.query(`INSERT INTO machine VALUES ('split','Two refills');
+      INSERT INTO field_work VALUES ('split-work','2026-10-04 12:00','ZAVRSENO','split','w1','p1','t1',10,5);
+      INSERT INTO machine_assignment VALUES ('split-assignment','split','w1','p1','RAZDUZENA','2026-10-04 06:00','2026-10-04 18:00',100,100);
+      INSERT INTO fuel_entry VALUES ('split','w1','2026-10-04 08:00',40,8000), ('split','w1','2026-10-04 10:00',60,12000)`);
+    const multipleRefills = await loadPagedFuelEfficiency(db, { machineId: 'split' });
+    assert.equal(multipleRefills.summary.totalLiters,100);
+    assert.equal(multipleRefills.summary.coveredHa,10);
+    assert.equal(multipleRefills.summary.totalHa,10);
+    assert.equal(multipleRefills.summary.actualLPerHa,10);
+    assert.equal(multipleRefills.operations[0].worksCount,1);
   } finally { await client.end(); }
 });

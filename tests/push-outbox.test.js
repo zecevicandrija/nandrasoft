@@ -97,6 +97,8 @@ test("expired subscriptions are removed; permanent failures, superseded jobs and
 
 test("background worker returns immediately, limits concurrency and waits for running sends at shutdown", async () => {
   const f = fixture();
+  // This scheduler test needs fresh jobs regardless of the calendar date.
+  f.job.createdAt = new Date();
   let release, claimed = 0, active = 0, peak = 0;
   const gate = new Promise((resolve) => { release = resolve; });
   f.db.$queryRaw = async () => { claimed++; return [f.job, { ...f.job, id: "second" }]; };

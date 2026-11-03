@@ -23,7 +23,7 @@ test("fuel and seasonal controllers commit each request key only once", async (t
   const original = prisma.$transaction;
   const originalLogs = prisma.seasonalWorkLog;
   let state, failure, tail = Promise.resolve(), workerReads = 0;
-  const workers = [{ id: "a", dailyWage: 3000 }, { id: "b", dailyWage: 4000 }];
+  const workers = [{ id: "a", hourlyRate: 375 }, { id: "b", hourlyRate: 500 }];
   const reset = () => {
     user = { id: "manager", name: "Manager", role: "DIREKTOR", isActive: true };
     state = { logs: [], entries: [], receipts: [], audit: [], machine: {
@@ -80,7 +80,11 @@ test("fuel and seasonal controllers commit each request key only once", async (t
       },
       machine: {
         async findUnique() { return structuredClone(state.machine); },
-        async update({ data }) { Object.assign(state.machine, data); return state.machine; },
+        async update({ data }) {
+          for (const [key, value] of Object.entries(data)) state.machine[key] = value && typeof value === "object" && "increment" in value
+            ? state.machine[key] + value.increment : value;
+          return state.machine;
+        },
       },
       worker: { async findUnique() { return { id: "worker", isActive: true }; } },
       fieldWork: { async findFirst() { return null; } },
@@ -108,8 +112,8 @@ test("fuel and seasonal controllers commit each request key only once", async (t
   try {
     await t.test("single and group logs reject negative, zero, non-finite or coerced hours and wages before any write", async () => {
       for (const [path, base, wageField] of [
-        ["/logs", { seasonalWorkerId: "a", jobDescription: "Harvest", hoursWorked: 8 }, "dailyWageApplied"],
-        ["/logs/group", group, "dailyWage"],
+        ["/logs", { seasonalWorkerId: "a", jobDescription: "Harvest", hoursWorked: 8 }, "hourlyRateApplied"],
+        ["/logs/group", group, "hourlyRate"],
       ]) {
         for (const field of ["hoursWorked", wageField]) {
           for (const value of [-1, 0, NaN, Infinity, -Infinity, "abc", "Infinity", true, [], {}]) {
@@ -139,25 +143,26 @@ test("fuel and seasonal controllers commit each request key only once", async (t
     await t.test("numeric form strings and overnight shifts retain valid hours and wages", async () => {
       reset();
       const response = await request(seasonal, "/logs", {
-        seasonalWorkerId: "a", jobDescription: "Harvest", startTime: "22:00", endTime: "06:00", breakMinutes: "30", dailyWageApplied: "3500.50",
+        seasonalWorkerId: "a", jobDescription: "Harvest", startTime: "22:00", endTime: "06:00", breakMinutes: "30", hourlyRateApplied: "450.50",
       });
       assert.equal(response.status, 201);
       assert.equal(state.logs[0].hoursWorked, 7.5);
-      assert.equal(state.logs[0].dailyWageApplied, 3500.5);
+      assert.equal(state.logs[0].hourlyRateApplied, 450.5);
+      assert.equal(state.logs[0].dailyWageApplied, 3378.75);
     });
     await t.test("a negative default wage in any selected worker rejects the whole group", async () => {
-      reset(); const saved = workers[1].dailyWage;
+      reset(); const saved = workers[1].hourlyRate;
       try {
-        workers[1].dailyWage = -100;
+        workers[1].hourlyRate = -100;
         assert.equal((await request(seasonal, "/logs/group", group, "default-key-123")).status, 400);
         assert.equal(state.logs.length, 0);
         assert.equal(state.receipts.length, 0);
-      } finally { workers[1].dailyWage = saved; }
+      } finally { workers[1].hourlyRate = saved; }
     });
     await t.test("editing cannot introduce invalid numbers; a note-only edit preserves existing hours and break", async () => {
       reset();
       state.logs.push({ id: "existing", seasonalWorkerId: "a", jobDescription: "Harvest", startTime: null, endTime: null, hoursWorked: 8, breakMinutes: 30, dailyWageApplied: 3000 });
-      for (const field of ["hoursWorked", "dailyWageApplied", "breakMinutes"]) {
+      for (const field of ["hoursWorked", "hourlyRateApplied", "breakMinutes"]) {
         for (const value of [-1, Infinity, "abc"]) {
           const before = structuredClone(state);
           assert.equal((await request(seasonal, "/logs/existing", { [field]: value }, undefined, "PUT")).status, 400);
@@ -169,8 +174,8 @@ test("fuel and seasonal controllers commit each request key only once", async (t
       assert.equal(state.logs[0].breakMinutes, 30);
     });
     await t.test("the seasonal worker catalogue also rejects invalid default wages", async () => {
-      for (const dailyWage of [-1, 0, Infinity]) {
-        assert.equal((await request(seasonal, "/workers", { name: "Test Worker", dailyWage })).status, 400);
+      for (const hourlyRate of [-1, 0, Infinity]) {
+        assert.equal((await request(seasonal, "/workers", { name: "Test Worker", hourlyRate })).status, 400);
       }
     });
     await t.test("parallel group submits and a lost-response retry create one set of wages", async () => {
@@ -196,6 +201,56 @@ test("fuel and seasonal controllers commit each request key only once", async (t
       assert.equal(first.status, 201);
       assert.deepEqual(await request(seasonal, "/logs", body, "single-key-123"), first);
       assert.equal(state.logs.length, 1);
+    });
+    await t.test("group override applies an hourly rate and preserves individual defaults", async () => {
+      reset();
+      assert.equal((await request(seasonal, "/logs/group", { ...group, hoursWorked: 7.5, hourlyRate: 450 })).status, 201);
+      assert.deepEqual(state.logs.map((log) => [log.hourlyRateApplied, log.dailyWageApplied]), [[450, 3375], [450, 3375]]);
+      assert.deepEqual(workers.map((worker) => worker.hourlyRate), [375, 500]);
+    });
+    await t.test("missing hourly rates reject a complete group without using old daily wages", async () => {
+      reset(); const saved = workers[1].hourlyRate;
+      try {
+        workers[1].hourlyRate = null;
+        workers[1].dailyWage = 4000;
+        assert.equal((await request(seasonal, "/logs/group", group)).status, 400);
+        assert.equal(state.logs.length, 0);
+      } finally { workers[1].hourlyRate = saved; delete workers[1].dailyWage; }
+    });
+    await t.test("rate and time edits recompute earnings, while later default changes preserve agreed rates", async () => {
+      reset();
+      await request(seasonal, "/logs", { seasonalWorkerId: "a", jobDescription: "Harvest", hoursWorked: 8 });
+      const id = state.logs[0].id;
+      assert.equal((await request(seasonal, `/logs/${id}`, { hoursWorked: 6.5 }, undefined, "PUT")).status, 200);
+      assert.equal(state.logs[0].dailyWageApplied, 2437.5);
+      assert.equal((await request(seasonal, `/logs/${id}`, { hourlyRateApplied: 450 }, undefined, "PUT")).status, 200);
+      assert.equal(state.logs[0].dailyWageApplied, 2925);
+      const saved = workers[0].hourlyRate;
+      try {
+        workers[0].hourlyRate = 900;
+        assert.equal((await request(seasonal, `/logs/${id}`, { notes: "Checked" }, undefined, "PUT")).status, 200);
+        assert.equal(state.logs[0].hourlyRateApplied, 450);
+        assert.equal(state.logs[0].dailyWageApplied, 2925);
+      } finally { workers[0].hourlyRate = saved; }
+    });
+    await t.test("minute-based hours are not rounded before calculating earnings", async () => {
+      reset();
+      assert.equal((await request(seasonal, "/logs", { seasonalWorkerId: "a", jobDescription: "Harvest", startTime: "07:00", endTime: "15:20", hourlyRateApplied: 500 })).status, 201);
+      assert.equal(state.logs[0].dailyWageApplied, 4166.67);
+    });
+    await t.test("both director and supervisor may change the applied rate; other roles cannot", async () => {
+      reset();
+      await request(seasonal, "/logs", { seasonalWorkerId: "a", jobDescription: "Harvest", hoursWorked: 8 });
+      const id = state.logs[0].id;
+      for (const role of ["DIREKTOR", "RUKOVODILAC"]) {
+        user.role = role;
+        assert.equal((await request(seasonal, `/logs/${id}`, { hourlyRateApplied: 550 }, undefined, "PUT")).status, 200);
+      }
+      for (const role of ["OPERATER", "MAGACIN", "MEHANICAR"]) {
+        user.role = role;
+        assert.equal((await request(seasonal, `/logs/${id}`, { hourlyRateApplied: 100 }, undefined, "PUT")).status, 403);
+        assert.equal(state.logs[0].dailyWageApplied, 4400);
+      }
     });
     await t.test("fuel replay returns its original result without changing cost, tank level or audit", async () => {
       reset(); state.machine.tankCapacityLiters = 20;

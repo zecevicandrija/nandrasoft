@@ -1,5 +1,6 @@
 import { generateOrderNumber } from "../lib/documentNumbers.js";
 import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
+import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker, canAccessWorkerRecord } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -356,6 +357,9 @@ router.post("/:id/accept", machineMutation(async (req, res, prisma) => {
     const calculatedStartFuelLevel =
       tankCapacity > 0 ? Math.round((startFuelLiters / tankCapacity) * 100) : null;
 
+    const conflict = fuelSnapshotError(order.machine, req.body.expectedMachineUpdatedAt);
+    if (conflict) return res.status(409).json(conflict);
+
     const initialHours =
       startHours !== undefined && startHours !== null
         ? startHours
@@ -386,7 +390,7 @@ router.post("/:id/accept", machineMutation(async (req, res, prisma) => {
         where: { id: order.machineId, status: order.machine.status },
         data: {
           status: "ZADUZENA",
-          currentFuelLiters: startFuelLiters,
+          ...measuredFuelData(order.machine, startFuelLiters),
           currentHours: initialHours,
         },
       }),
@@ -453,6 +457,11 @@ router.post("/", requireManager, machineMutation(async (req, res, prisma) => {
       });
     }
 
+    for (const id of [parsed.data.machineId, parsed.data.attachmentId].filter(Boolean)) {
+      const selected = await prisma.machine.findUnique({ where: { id } });
+      if (!selected) return res.status(404).json({ error: "Izabrana mašina ili priključak nije pronađen." });
+      if (selected.isActive === false) return res.status(409).json({ error: "Arhivirana mašina ili priključak ne može se koristiti na novom nalogu." });
+    }
     const orderNumber = await generateOrderNumber(prisma);
 
     let maintenanceId = null;
@@ -719,6 +728,12 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
       return res.status(409).json({ error: "Status servisa menjajte u radionici. Za drugu mašinu ili vrstu rada kreirajte novi nalog." });
     }
 
+    for (const field of ["machineId", "attachmentId"]) {
+      if (parsed.data[field] && parsed.data[field] !== existing[field]) {
+        const selected = await prisma.machine.findUnique({ where: { id: parsed.data[field] } });
+        if (selected?.isActive === false) return res.status(409).json({ error: "Ne možete izabrati arhiviranu mašinu ili priključak." });
+      }
+    }
     const dataToUpdate = {};
     if (parsed.data.orderDate !== undefined) dataToUpdate.orderDate = new Date(parsed.data.orderDate);
     if (parsed.data.orderType !== undefined) dataToUpdate.orderType = parsed.data.orderType;

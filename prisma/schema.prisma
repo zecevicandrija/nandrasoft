@@ -315,6 +315,8 @@ model Session {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([expiresAt, id])
+  @@index([userId])
   @@map("session")
 }
 
@@ -460,6 +462,7 @@ model MachineAssignment {
   // by migration 20261030120000_one_active_machine_assignment (custom SQL).
   @@index([machineId, status])
   @@index([machineId, assignedAt])
+  @@index([workOrderId, status])
   @@map("machine_assignment")
 }
 
@@ -719,7 +722,7 @@ model TollEntry {
   date            DateTime @default(now())
 
   machineId       String
-  machine         Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  machine         Machine  @relation(fields: [machineId], references: [id], onDelete: Restrict)
 
   workerId        String
   worker          Worker   @relation(fields: [workerId], references: [id])
@@ -751,7 +754,7 @@ model TollTopUp {
   date             DateTime @default(now())
 
   machineId        String
-  machine          Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  machine          Machine  @relation(fields: [machineId], references: [id], onDelete: Restrict)
 
   tagNumber        String?  // Broj ENP taga
   amount           Decimal @db.Decimal(15, 2)    // Uplaćeni iznos dopune u RSD
@@ -901,6 +904,7 @@ model SeasonalWorker {
   
   groupName       String?           // Naziv posade/grupe (opciono, npr. "Grupa Agim")
   dailyWage       Decimal? @db.Decimal(15, 2)            // Dnevnica u RSD (opciono)
+  hourlyRate      Decimal? @db.Decimal(15, 2)            // Podrazumevana satnica u RSD
   
   isActive        Boolean           @default(true)
   notes           String?
@@ -935,6 +939,7 @@ model SeasonalWorkLog {
   
   // Finansije (opciono)
   dailyWageApplied  Decimal? @db.Decimal(15, 2)          // Dnevnica za taj dan (opciono)
+  hourlyRateApplied Decimal? @db.Decimal(15, 2)         // Satnica primenjena na ovaj zapis
   
   // Nadzor
   supervisorId      String          // Poslovođa / rukovodilac sa terena
@@ -974,6 +979,7 @@ enum OnionStorageType {
 model OnionChamber {
   id            String   @id @default(cuid())
   name          String   @unique
+  isActive      Boolean  @default(true) @map("is_active")
   storageType   String   @default("HLADNJACA") @map("storage_type")
   hasEquipment  Boolean  @default(true) @map("has_equipment")
   maxBoxes      Int      @default(720) @map("max_boxes")
@@ -1035,7 +1041,6 @@ model OnionLot {
   shipments           OnionShipment[]
   wastes              OnionWaste[]
 
-  @@index([lotNumber])
   @@index([parcelId])
   @@index([status])
   @@map("onion_lot")
@@ -1211,6 +1216,8 @@ model OnionShipmentItem {
   packageCount        Int             // Koliko džakova ovog pakovanja je otišlo
   totalWeightKg       Float           // Ukupno kg
   
+  @@index([shipmentId])
+  @@index([packagingId])
   @@map("onion_shipment_item")
 }
 

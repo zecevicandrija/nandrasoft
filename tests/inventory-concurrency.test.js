@@ -83,6 +83,10 @@ test("inventory mutations serialize reads and roll back failed operations", asyn
         async update({ data }) { return patch(state.lot, data); },
       },
       onionPackaging: {
+        async aggregate() { return read({ _sum: {
+          totalWeightKg: state.packagings.reduce((sum, p) => sum + p.totalWeightKg, 0),
+          availableWeightKg: state.packagings.reduce((sum, p) => sum + p.availableWeightKg, 0),
+        } }); },
         async create({ data }) { return create(state.packagings, data); },
         async findUnique() { return read({ ...state.packagings[0], lot: state.lot }); },
         async update({ data }) { return patch(state.packagings[0], data); },

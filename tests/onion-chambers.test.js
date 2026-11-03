@@ -19,18 +19,19 @@ test("chamber routes use the Prisma catalogue without runtime DDL or fabricated 
   const originals = Object.fromEntries(["onionChamber", "$transaction"].map((key) => [key, prisma[key]]));
   const session = mock.method(auth.api, "getSession", async () => ({ user: { id: "manager", role: "DIREKTOR", isActive: true }, session: {} }));
   const logging = mock.method(console, "error", () => {});
-  let chambers = [], entries = [], audit = [], failRead = false, failUpdate = false;
+  let chambers = [], entries = [], audit = [], failRead = false, failUpdate = false, failAudit = false;
   const matches = (row, where) => Object.entries(where).every(([key, value]) => {
     if (key === "OR") return value.some((item) => matches(row, item));
+    if (value && typeof value === "object" && "gt" in value) return row[key] > value.gt;
     return value && typeof value === "object" ? (value.not ? row[key] !== value.not : row[key].toLowerCase() === value.equals.toLowerCase()) : row[key] === value;
   });
   const catalogue = {
     async findUnique({ where }) { return structuredClone(chambers.find((row) => row.id === where.id) || null); },
-    async findMany() { if (failRead) throw new Error("Missing table"); return structuredClone(chambers); },
+    async findMany({ where = {} } = {}) { if (failRead) throw new Error("Missing table"); return structuredClone(chambers.filter((row) => matches(row, where))); },
     async findFirst({ where }) { return structuredClone(chambers.find((row) => matches(row, where)) || null); },
-    async create({ data }) { chambers.push(data); return structuredClone(data); },
-    async update({ where, data }) { if (failUpdate) throw new Error("Update failed"); Object.assign(chambers.find((row) => row.id === where.id), data); },
-    async delete({ where }) { chambers = chambers.filter((row) => row.id !== where.id); },
+    async create({ data }) { const row = { isActive: true, ...data }; chambers.push(row); return structuredClone(row); },
+    async update({ where, data }) { if (failUpdate) throw new Error("Update failed"); const row = chambers.find((row) => row.id === where.id); Object.assign(row, data); return structuredClone(row); },
+    async delete() { throw new Error("Historical chamber identities must not be deleted"); },
   };
   prisma.onionChamber = catalogue;
   prisma.$transaction = async (callback) => {
@@ -38,7 +39,7 @@ test("chamber routes use the Prisma catalogue without runtime DDL or fabricated 
     try { return await callback({
       async $executeRaw(strings) { assert.ok(!/CREATE|INSERT|UPDATE|DELETE/i.test(strings.join(""))); return 1; },
       onionChamber: catalogue,
-      auditLog: { async create({ data }) { audit.push(data); return data; } },
+      auditLog: { async create({ data }) { if (failAudit) throw new Error("Audit failed"); audit.push(data); return data; } },
       onionLot: {
         async findUnique() { return { id: "lot", rawStockKg: 1000, storageEntries: entries.filter((row) => row.lotId === "lot") }; },
       },
@@ -46,9 +47,9 @@ test("chamber routes use the Prisma catalogue without runtime DDL or fabricated 
         async create({ data }) { const row = { id: `entry-${entries.length}`, ...data }; entries.push(row); return structuredClone(row); },
         async findUnique({ where }) { return structuredClone(entries.find((row) => row.id === where.id) || null); },
         async update({ where, data }) { const row = entries.find((row) => row.id === where.id); Object.assign(row, data); return structuredClone(row); },
-        async findMany({ where }) { return entries.filter((row) => row.chamberId === where.chamberId && row.currentQuantityKg > 0); },
+        async findMany({ where }) { return entries.filter((row) => matches(row, where)); },
         async updateMany({ where, data }) { for (const row of entries.filter((row) => row.chamberId === where.chamberId)) Object.assign(row, data); },
-        async deleteMany({ where }) { entries = entries.filter((row) => row.chamberId !== where.chamberId); },
+        async deleteMany() { throw new Error("Historical storage entries must not be deleted"); },
       },
     }); } catch (error) { chambers = snapshot.chambers; entries = snapshot.entries; audit = snapshot.audit; throw error; }
   };
@@ -87,11 +88,17 @@ test("chamber routes use the Prisma catalogue without runtime DDL or fabricated 
       assert.equal(entries[0].chamberId, id);
       assert.equal(entries[1].locationOrChamber, "New room");
     });
-    await t.test("occupied chambers cannot be deleted and empty ones can", async () => {
+    await t.test("occupied chambers cannot be archived and empty ones keep their history when archived", async () => {
       assert.equal((await request("DELETE", `/chambers/${chambers[0].id}`)).status, 400);
       entries[0].currentQuantityKg = 0;
       assert.equal((await request("DELETE", `/chambers/${chambers[0].id}`)).status, 200);
-      assert.equal(chambers.length, 0);
+      assert.equal(chambers.length, 1);
+      assert.equal(chambers[0].isActive, false);
+      assert.equal(entries.length, 2);
+      assert.equal(entries[0].chamberId, chambers[0].id);
+      assert.deepEqual((await request("GET", "/chambers")).body.chambers, []);
+      assert.equal((await request("POST", "/storage", { lotId: "lot", chamberId: chambers[0].id, storageType: "HLADNJACA", quantityKg: 50, boxCount: 1 })).status, 400);
+      assert.equal(entries.length, 2);
     });
     await t.test("storage creation and edits keep chamber IDs even when clients send an old display name", async () => {
       const created = await request("POST", "/chambers", { name: "Storage chamber" });
@@ -113,6 +120,24 @@ test("chamber routes use the Prisma catalogue without runtime DDL or fabricated 
       const legacy = await request("POST", "/storage", { lotId: "lot", locationOrChamber: "storage CHAMBER", storageType: "HLADNJACA", quantityKg: 10, boxCount: 1 });
       assert.equal(legacy.status, 201);
       assert.equal(legacy.body.entry.chamberId, chamberId);
+    });
+    await t.test("name-only legacy stock blocks archival and disabling through PUT", async () => {
+      const chamber = chambers.find((row) => row.isActive);
+      const before = structuredClone(entries);
+      entries.push({ chamberId: null, locationOrChamber: chamber.name.toLowerCase(), currentQuantityKg: 10 });
+      assert.equal((await request("DELETE", `/chambers/${chamber.id}`)).status, 400);
+      assert.equal((await request("PUT", `/chambers/${chamber.id}`, { isActive: false })).status, 400);
+      assert.equal(chamber.isActive, true);
+      entries = before;
+    });
+    await t.test("archival audit failure rolls back the chamber and retains all history", async () => {
+      const chamber = chambers.find((row) => row.isActive);
+      for (const entry of entries) entry.currentQuantityKg = 0;
+      const before = structuredClone({ chambers, entries, audit });
+      failAudit = true;
+      assert.equal((await request("DELETE", `/chambers/${chamber.id}`)).status, 500);
+      assert.deepEqual({ chambers, entries, audit }, before);
+      failAudit = false;
     });
   } finally {
     session.mock.restore(); logging.mock.restore();

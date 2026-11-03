@@ -1,5 +1,6 @@
 import { reportingQuery, fieldWorkStats, unassignedWorkPage } from "../lib/fieldWorkReporting.js";
 import { machineMutation, hasOpenMaintenance } from "../lib/machineAvailability.js";
+import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker, isManager as isManagerUser, canAccessWorkerRecord } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -261,6 +262,22 @@ router.post("/", machineMutation(async (req, res, prisma) => {
     if (!machineObj) {
       return res.status(404).json({ error: "Izabrana mašina ne postoji." });
     }
+    if (machineObj.isActive === false) return res.status(409).json({ error: "Mašina je arhivirana i nije dostupna za novi rad." });
+    if (attachmentId && (await prisma.machine.findUnique({ where: { id: attachmentId } }))?.isActive === false) {
+      return res.status(409).json({ error: "Priključak je arhiviran i nije dostupan za novi rad." });
+    }
+
+    // machineMutation holds the machine lock before this read and all writes.
+    const tankCapacity = machineObj.tankCapacityLiters ?? 200;
+    if (parsed.data.endFuelLiters != null && parsed.data.endFuelLiters > tankCapacity) {
+      return res.status(400).json({
+        error: `Količina goriva na povratku (${parsed.data.endFuelLiters} L) ne može biti veća od kapaciteta rezervoara mašine "${machineObj.name}" (${tankCapacity} L).`,
+      });
+    }
+    if (parsed.data.endFuelLiters != null) {
+      const conflict = fuelSnapshotError(machineObj, req.body.expectedMachineUpdatedAt);
+      if (conflict) return res.status(409).json(conflict);
+    }
 
     let linkedOrder = null;
     if (parsed.data.workOrderId) {
@@ -428,7 +445,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
           data: {
             status: isOperational ? "SLOBODNA" : "U_KVARU",
             currentHours: finalEndHours,
-            ...(endFuel !== null ? { currentFuelLiters: endFuel } : {}),
+            ...(endFuel !== null ? measuredFuelData(currentMachine, endFuel) : {}),
           },
         });
 
@@ -476,7 +493,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
             data: {
               status: isOperational ? "SLOBODNA" : "U_KVARU",
               currentHours: finalEndHours,
-              ...(endFuel !== null ? { currentFuelLiters: endFuel } : {}),
+              ...(endFuel !== null ? measuredFuelData(currentMachine, endFuel) : {}),
             },
           });
 
@@ -642,6 +659,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
     }
     if (updateData.machineId && updateData.machineId !== existing.machineId) {
       const newM = await prisma.machine.findUnique({ where: { id: updateData.machineId } });
+      if (newM?.isActive === false) return res.status(409).json({ error: "Ne možete izabrati arhiviranu mašinu." });
       changes.push(`Mašina: ${existing.machine?.name || existing.machineId} → ${newM ? newM.name : updateData.machineId}`);
       oldValues.machine = existing.machine?.name || existing.machineId;
       newValues.machine = newM ? newM.name : updateData.machineId;
@@ -680,6 +698,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
 
     if (updateData.attachmentId !== undefined && updateData.attachmentId !== existing.attachmentId) {
       const newAtt = updateData.attachmentId ? await prisma.machine.findUnique({ where: { id: updateData.attachmentId } }) : null;
+      if (newAtt?.isActive === false) return res.status(409).json({ error: "Ne možete izabrati arhivirani priključak." });
       changes.push(`Priključak: ${existing.attachment?.name || 'Bez priključka'} → ${newAtt ? newAtt.name : 'Bez priključka'}`);
       oldValues.attachment = existing.attachment?.name || null;
       newValues.attachment = newAtt ? newAtt.name : null;

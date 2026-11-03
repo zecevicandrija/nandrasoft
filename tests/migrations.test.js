@@ -35,9 +35,26 @@ test("migrate deploy builds the complete schema from empty and preserves existin
     assert.ok(analyticsIndexes.every((index) => index.indisvalid && index.indisready));
     assert.match(analyticsIndexes.find((index) => index.relname.startsWith("fuel_entry")).definition, /\("workerId", date\)/);
     assert.match(analyticsIndexes.find((index) => index.relname.startsWith("maintenance_issue")).definition, /\("machineId", "dateReported"\)/);
+    const missingIndexes = new Map([
+      ["session_userId_idx", /\("userId"\)/],
+      ["machine_assignment_workOrderId_status_idx", /\("workOrderId", status\)/],
+      ["onion_shipment_item_shipmentId_idx", /\("shipmentId"\)/],
+      ["onion_shipment_item_packagingId_idx", /\("packagingId"\)/],
+      ["onion_lot_lotNumber_key", /UNIQUE.*\("lotNumber"\)/],
+    ]);
+    const indexes = (await client.query(`SELECT i.relname, x.indisvalid, x.indisready,
+      pg_get_indexdef(i.oid) AS definition FROM pg_index x
+      JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_namespace n ON n.oid=i.relnamespace
+      WHERE n.nspname=$1 AND i.relname = ANY($2::text[])`, [schema, [...missingIndexes.keys()]])).rows;
+    assert.equal(indexes.length, missingIndexes.size);
+    for (const index of indexes) {
+      assert.ok(index.indisvalid && index.indisready, index.relname);
+      assert.match(index.definition, missingIndexes.get(index.relname));
+    }
+    assert.equal((await client.query("SELECT 1 FROM pg_indexes WHERE schemaname=$1 AND indexname='onion_lot_lotNumber_idx'", [schema])).rowCount, 0);
     // Monetary schema and retention must be enforced by PostgreSQL itself.
     const monetaryColumns = (await client.query("SELECT table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE table_schema = $1 AND data_type = 'numeric'", [schema])).rows;
-    assert.equal(monetaryColumns.length, 22);
+    assert.equal(monetaryColumns.length, 24);
     assert.ok(monetaryColumns.every((column) => column.numeric_precision === 15 && [2, 4].includes(column.numeric_scale)));
     await client.query(`INSERT INTO worker (id, name, "dailyWage", "hourlyRate", "updatedAt") VALUES ('decimal-worker', 'Decimal test', 1.005, 12.12345, NOW())`);
     const monetary = (await client.query(`SELECT "dailyWage"::text AS wage, "hourlyRate"::text AS rate FROM worker WHERE id = 'decimal-worker'`)).rows[0];

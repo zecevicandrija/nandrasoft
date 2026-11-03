@@ -22,8 +22,8 @@ test('critical stock and ENP routes commit each keyed submission exactly once', 
   const reset = () => {
     failure = null; userId = 'manager';
     state = { receipts: [], shipments: [], movements: [], entries: [], topUps: [], audit: [], counters: {},
-      lot: { id: 'lot', rawStockKg: 0, packagedStockKg: 1000, shippedKg: 0 },
-      packaging: { id: 'pack', lotId: 'lot', availableCount: 100, availableWeightKg: 1000, unitWeightKg: 10 },
+      lot: { id: 'lot', rawStockKg: 0, sortedQualityKg: 1000, sortedSmallKg: 0, packagedStockKg: 1000, shippedKg: 0 },
+      packaging: { id: 'pack', lotId: 'lot', totalWeightKg: 1000, availableCount: 100, availableWeightKg: 1000, unitWeightKg: 10 },
       product: { id: 'product', name: 'Fertilizer', currentStock: 100, unit: 'KG', minStockWarning: 10, defaultPricePerUnit: 5 },
       machine: { id: 'machine', name: 'Truck', enpTagBalance: 1000, enpTagNumber: 'TAG' } };
   };
@@ -57,7 +57,11 @@ test('critical stock and ENP routes commit each keyed submission exactly once', 
         }
         return 1;
       },
-      onionPackaging: { async findUnique() { return copy({ ...state.packaging, lot: state.lot }); }, async update({ data }) { return update(state.packaging, data); } },
+      onionPackaging: {
+        async aggregate() { return copy({ _sum: { totalWeightKg: state.packaging.totalWeightKg, availableWeightKg: state.packaging.availableWeightKg } }); },
+        async findUnique() { return copy({ ...state.packaging, lot: state.lot }); },
+        async update({ data }) { return update(state.packaging, data); },
+      },
       onionLot: { async update({ data }) { return update(state.lot, data); } },
       onionShipment: { async create({ data }) { return { ...create(state.shipments, data), buyer: { id: 'buyer', name: 'Buyer' } }; } },
       partner: { async findUnique() { return { id: 'buyer', name: 'Buyer' }; } },

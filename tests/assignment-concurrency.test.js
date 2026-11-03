@@ -9,6 +9,7 @@ import orders from "../routes/workOrders.js";
 import { isActiveAssignmentConflict } from "../lib/assignmentConflict.js";
 
 function request(router, url, body) {
+  body = { expectedMachineUpdatedAt: "2026-11-01T00:00:00.000Z", ...body };
   return new Promise((resolve, reject) => router.handle({ method: "POST", url, body, headers: {}, query: {} }, {
     statusCode: 200,
     status(code) { this.statusCode = code; return this; },
@@ -32,7 +33,7 @@ test("concurrent checkouts return one success and one conflict under the shared 
   const logging = mock.method(console, "error", () => {});
   let state, tail, failure, locked;
   const reset = () => {
-    state = { assignments: [], machine: { id: "machine", name: "Tractor", status: "SLOBODNA", currentHours: 10, currentFuelLiters: 0, tankCapacityLiters: 200 },
+    state = { assignments: [], machine: { id: "machine", name: "Tractor", status: "SLOBODNA", currentHours: 10, currentFuelLiters: 0, tankCapacityLiters: 200, updatedAt: new Date("2026-11-01T00:00:00.000Z") },
       orders: { a: "DODELJEN", b: "DODELJEN" }, audit: [] };
     tail = Promise.resolve(); failure = null; locked = false;
   };

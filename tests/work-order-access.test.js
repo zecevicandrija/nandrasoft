@@ -7,6 +7,7 @@ import fieldRouter from "../routes/fieldWork.js";
 import assignmentsRouter from "../routes/assignments.js";
 
 function request(router, method, url, body, headers = {}) {
+  body = { expectedMachineUpdatedAt: "2026-11-01T00:00:00.000Z", ...body };
   return new Promise((resolve, reject) => router.handle({ method, url, body, headers, query: {} }, {
     statusCode: 200,
     status(code) { this.statusCode = code; return this; },
@@ -28,7 +29,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
         { id: "own", workerId: "worker-a", machineId: "machine-a", parcelId: "parcel-a", workTypeId: "type-a", attachmentId: null, status: "DODELJEN", orderNumber: "RN-OWN" },
         { id: "other", workerId: "worker-b", machineId: "machine-b", parcelId: "parcel-b", workTypeId: "type-b", attachmentId: null, status: "DODELJEN", orderNumber: "RN-OTHER" },
       ],
-      machines: ["machine-a", "machine-b"].map((id) => ({ id, name: id, status: "SLOBODNA", currentHours: 10, tankCapacityLiters: 200 })),
+      machines: ["machine-a", "machine-b"].map((id) => ({ id, name: id, status: "SLOBODNA", currentHours: 10, tankCapacityLiters: 200, updatedAt: new Date("2026-11-01T00:00:00.000Z") })),
       assignments: [], works: [], audit: [], receipts: [],
     };
     failOrderUpdate = false;
@@ -169,6 +170,73 @@ test("work orders enforce ownership and field-work consistency before mutations"
       const before = structuredClone(state);
       assert.equal((await request(fieldRouter, "POST", "/", workBody)).status, 403);
       assert.deepEqual(state, before);
+    });
+
+    await t.test("field-work fuel outside the tank capacity rejects both checkout paths without any writes", async () => {
+      user.role = "OPERATER";
+      for (const assigned of [false, true]) {
+        for (const endFuelLiters of [200.01, 500, -1, "100", NaN, Infinity]) {
+          reset();
+          state.machines[0].currentFuelLiters = 50;
+          if (assigned) {
+            state.machines[0].status = "ZADUZENA";
+            state.assignments.push({ id: "own-assignment", machineId: "machine-a", workerId: "worker-a", parcelId: "parcel-a", workOrderId: "own", status: "ZADUZENA", startHours: 10 });
+          }
+          const before = structuredClone(state);
+          const result = await request(fieldRouter, "POST", "/", { ...workBody, endFuelLiters });
+          assert.equal(result.status, 400, `assigned=${assigned}, fuel=${endFuelLiters}`);
+          if (endFuelLiters > 200 && Number.isFinite(endFuelLiters)) assert.match(result.data.error, /200 L/);
+          assert.deepEqual(state, before);
+        }
+      }
+    });
+
+    await t.test("valid field-work fuel including empty and full tanks is saved through both checkout paths", async () => {
+      user.role = "OPERATER";
+      for (const assigned of [false, true]) {
+        for (const endFuelLiters of [0, 125.5, 200, null, undefined]) {
+          reset();
+          state.machines[0].currentFuelLiters = 50;
+          if (assigned) {
+            state.machines[0].status = "ZADUZENA";
+            state.assignments.push({ id: "own-assignment", machineId: "machine-a", workerId: "worker-a", parcelId: "parcel-a", workOrderId: "own", status: "ZADUZENA", startHours: 10 });
+          }
+          const result = await request(fieldRouter, "POST", "/", { ...workBody, endFuelLiters, endHours: 12 });
+          assert.equal(result.status, 201, `assigned=${assigned}, fuel=${endFuelLiters}`);
+          assert.equal(state.works.length, 1);
+          assert.equal(state.assignments.length, 1);
+          assert.equal(state.assignments[0].status, "RAZDUZENA");
+          assert.equal(state.assignments[0].endFuelLiters, endFuelLiters ?? null);
+          assert.equal(state.machines[0].currentFuelLiters, endFuelLiters ?? 50);
+          assert.equal(state.machines[0].currentHours, 12);
+          assert.equal(state.machines[0].status, "SLOBODNA");
+          assert.equal(state.orders[0].status, "ZAVRSEN");
+        }
+      }
+    });
+
+    await t.test("field-work fuel uses the machine capacity and the default only when it is missing", async () => {
+      user.role = "OPERATER";
+      for (const [capacity, accepted, rejected] of [[80, 80, 80.01], [500, 500, 500.01], [0, 0, 0.01], [null, 200, 200.01], [undefined, 200, 200.01]]) {
+        for (const [endFuelLiters, expected] of [[accepted, 201], [rejected, 400]]) {
+          reset();
+          state.machines[0].tankCapacityLiters = capacity;
+          const before = structuredClone(state);
+          assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, endFuelLiters })).status, expected);
+          if (expected === 400) assert.deepEqual(state, before);
+          else assert.equal(state.machines[0].currentFuelLiters, accepted);
+        }
+      }
+    });
+
+    await t.test("invalid fuel cannot bypass validation without an order, automatic checkout or finished status", async () => {
+      user.role = "OPERATER";
+      for (const patch of [{ workOrderId: undefined }, { autoAssignMachine: false }, { status: "U_TOKU" }, { status: "STORNO" }]) {
+        reset();
+        const before = structuredClone(state);
+        assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, ...patch, endFuelLiters: 201 })).status, 400);
+        assert.deepEqual(state, before);
+      }
     });
 
     await t.test("only finished work completes the matching order", async () => {

@@ -1,4 +1,5 @@
 import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
+import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker, isManager as isManagerUser } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -253,6 +254,11 @@ router.post("/checkout", machineMutation(async (req, res, prisma) => {
         ? Math.round((startFuelLevel / 100) * tankCapacity)
         : null;
 
+    if (calculatedFuelLiters !== null) {
+      const conflict = fuelSnapshotError(machine, req.body.expectedMachineUpdatedAt);
+      if (conflict) return res.status(409).json(conflict);
+    }
+
     // 3. Atomska Prisma transakcija: kreiraj zaduženje i postavi status mašine na ZADUZENA
     const [assignment] = await prisma.$transaction([
       prisma.machineAssignment.create({
@@ -277,7 +283,7 @@ router.post("/checkout", machineMutation(async (req, res, prisma) => {
         where: { id: machineId },
         data: {
           status: "ZADUZENA",
-          ...(calculatedFuelLiters !== null ? { currentFuelLiters: calculatedFuelLiters } : {}),
+          ...(calculatedFuelLiters !== null ? measuredFuelData(machine, calculatedFuelLiters) : {}),
         },
       }),
     ]);
@@ -364,6 +370,11 @@ router.post("/checkin", machineMutation(async (req, res, prisma) => {
         ? Math.round((endFuelLevel / 100) * tankCapacity)
         : null;
 
+    if (calculatedEndFuelLiters !== null) {
+      const conflict = fuelSnapshotError(assignment.machine, req.body.expectedMachineUpdatedAt);
+      if (conflict) return res.status(409).json(conflict);
+    }
+
     const newMachineStatus = isOperational ? "SLOBODNA" : "U_KVARU";
     const newAssignmentStatus = isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM";
 
@@ -389,7 +400,7 @@ router.post("/checkin", machineMutation(async (req, res, prisma) => {
         data: {
           status: newMachineStatus,
           currentHours: endHours,
-          ...(calculatedEndFuelLiters !== null ? { currentFuelLiters: calculatedEndFuelLiters } : {}),
+          ...(calculatedEndFuelLiters !== null ? measuredFuelData(assignment.machine, calculatedEndFuelLiters) : {}),
         },
       }),
     ];
@@ -488,6 +499,7 @@ router.post("/direct", machineMutation(async (req, res, prisma) => {
     if (!machine) {
       return res.status(404).json({ error: "Izabrana mašina ne postoji u sistemu." });
     }
+    if (machine.isActive === false) return res.status(409).json({ error: "Mašina je arhivirana i nije dostupna za novo zaduženje." });
 
     const tankCapacity = machine.tankCapacityLiters || 200;
     if (startFuelLiters !== undefined && startFuelLiters !== null && startFuelLiters > tankCapacity) {
@@ -528,6 +540,11 @@ router.post("/direct", machineMutation(async (req, res, prisma) => {
         : endFuelLevel !== undefined && endFuelLevel !== null && tankCapacity > 0
         ? Math.round((endFuelLevel / 100) * tankCapacity)
         : null;
+
+    if (calcEndLiters !== null || calcStartLiters !== null) {
+      const conflict = fuelSnapshotError(machine, req.body.expectedMachineUpdatedAt);
+      if (conflict) return res.status(409).json(conflict);
+    }
 
     let assignDate = new Date();
     if (date) {
@@ -573,9 +590,9 @@ router.post("/direct", machineMutation(async (req, res, prisma) => {
           status: newMachineStatus,
           currentHours: updatedCurrentHours,
           ...(calcEndLiters !== null
-            ? { currentFuelLiters: calcEndLiters }
+            ? measuredFuelData(machine, calcEndLiters)
             : calcStartLiters !== null
-            ? { currentFuelLiters: calcStartLiters }
+            ? measuredFuelData(machine, calcStartLiters)
             : {}),
         },
       }),

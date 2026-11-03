@@ -10,6 +10,7 @@ import { prisma } from "./lib/prisma.js";
 import { installGracefulShutdown } from "./lib/shutdown.js";
 import { createHealthCheck, rejectWhileDraining } from "./lib/health.js";
 import { startStorageMonitor } from "./lib/storageUsage.js";
+import { startTechnicalCleanup } from "./lib/technicalCleanup.js";
 import { startPushOutboxWorker } from "./lib/pushOutbox.js";
 import { sendPushSubscription, isPushConfigured } from "./lib/pushNotification.js";
 import usersRouter from "./routes/users.js";
@@ -90,6 +91,7 @@ app.use("/api/analytics", analyticsRouter);
 app.use(sentryErrorHandler);
 
 const stopStorageMonitor = startStorageMonitor(prisma);
+const stopTechnicalCleanup = startTechnicalCleanup(prisma, { enabled: process.env.TECHNICAL_CLEANUP_ENABLED !== "0" });
 const stopPushWorker = startPushOutboxWorker(prisma, sendPushSubscription, { enabled: isPushConfigured() });
 const server = app.listen(PORT, () => {
   console.log(`✅ NANDRA Backend pokrenut na http://localhost:${PORT}`);
@@ -97,9 +99,10 @@ const server = app.listen(PORT, () => {
 
 const shutdown = installGracefulShutdown(server, prisma, { onShutdown: () => {
   stopStorageMonitor();
-  return Promise.resolve(stopPushWorker()).finally(flushSentry);
+  return Promise.all([stopPushWorker(), stopTechnicalCleanup()]).finally(flushSentry);
 } });
 server.once("close", stopStorageMonitor);
+server.once("close", () => { void stopTechnicalCleanup(); });
 
 export default app;
 

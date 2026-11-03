@@ -215,6 +215,7 @@ router.post("/issues", machineMutation(async (req, res, prisma) => {
     if (!machine) {
       return res.status(404).json({ error: "Mašina nije pronađena." });
     }
+    if (machine.isActive === false) return res.status(409).json({ error: "Mašina je arhivirana. Prvo je ponovo aktivirajte za novi servis." });
 
     const newMachineStatus = parsed.data.serviceType === "KVAR_NJIVA" ? "U_KVARU" : "SERVIS";
 
@@ -427,6 +428,7 @@ router.post("/remont-order", requireManager, machineMutation(async (req, res, pr
 
     const machine = await prisma.machine.findUnique({ where: { id: machineId } });
     if (!machine) return res.status(404).json({ error: "Mašina nije pronađena." });
+    if (machine.isActive === false) return res.status(409).json({ error: "Mašina je arhivirana. Prvo je ponovo aktivirajte za novi servis." });
 
     const orderNumber = await generateOrderNumber(prisma);
 
@@ -778,6 +780,8 @@ router.post("/issues/:id/reopen", machineMutation(async (req, res, prisma) => {
         error: "Samo nalozi sa statusom POPRAVLJENO mogu biti vraćeni u rad.",
       });
     }
+
+    if (issue.machine?.isActive === false) return res.status(409).json({ error: "Mašina je arhivirana. Prvo je ponovo aktivirajte za ponovno otvaranje servisa." });
 
     // Provera da li je završeno danas
     const finishDate = new Date(issue.repairedAt || issue.updatedAt);

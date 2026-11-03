@@ -332,6 +332,7 @@ router.post("/", inventoryMutation("tolls", async (req, res, prisma) => {
     if (!machine) {
       return res.status(404).json({ error: "Izabrano vozilo nije pronađeno." });
     }
+    if (machine.isActive === false) return res.status(409).json({ error: "Vozilo je arhivirano i nije dostupno za novi prolazak." });
 
     // Za radnika (ne-menadžera) uvek vezujemo unos za njegov sopstveni profil radnika
     let finalWorkerId = data.workerId;
@@ -498,6 +499,9 @@ router.put("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
       // 2. Oduzmi novo stanje ako je novi zapis ENP_TAG
       if (newPaymentMethod === "ENP_TAG") {
         const targetMachine = await tx.machine.findUnique({ where: { id: newMachineId } });
+        if (newMachineId !== existing.machineId && targetMachine?.isActive === false) {
+          throw Object.assign(new Error("Ne možete izabrati arhivirano vozilo."), { status: 409 });
+        }
         if (targetMachine) {
           await tx.machine.update({
             where: { id: targetMachine.id },
@@ -555,6 +559,7 @@ router.put("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
     res.json({ entry: updated });
   } catch (error) {
     console.error("Greška pri izmeni putarine:", error);
+    if (error.status === 409) return res.status(409).json({ error: error.message });
     res.status(500).json({ error: "Greška na serveru pri izmeni putarine." });
   }
 }));
@@ -652,6 +657,7 @@ router.post("/top-up", requireManager, inventoryMutation("tolls", async (req, re
     if (!machine) {
       return res.status(404).json({ error: "Vozilo nije pronađeno." });
     }
+    if (machine.isActive === false) return res.status(409).json({ error: "Vozilo je arhivirano i nije dostupno za novu ENP dopunu." });
 
     const resolvedTag = data.tagNumber?.trim() || machine.enpTagNumber || null;
 

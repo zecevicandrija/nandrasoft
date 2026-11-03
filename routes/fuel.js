@@ -1,6 +1,7 @@
 import { validateFuelFieldWork } from "../lib/fuelFieldWork.js";
 import { money, rate, multiplyMoney, divideRate } from "../lib/money.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
+import { fuelDeltaData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker } from "../lib/workerIdentity.js";
 import { Router } from "express";
 import multer from "multer";
@@ -367,6 +368,7 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
     if (!machine) {
       return res.status(404).json({ error: "Izabrana mašina ne postoji u sistemu." });
     }
+    if (machine.isActive === false) return res.status(409).json({ error: "Mašina je arhivirana i nije dostupna za novo točenje." });
 
     // 2. Proveri radnika - za radnika je hardkodovan njegov profil
     let targetWorkerId = data.workerId;
@@ -534,7 +536,7 @@ router.post("/entries", inventoryMutation("fuel", async (req, res, prisma) => {
       await tx.machine.update({
         where: { id: data.machineId },
         data: {
-          currentFuelLiters: Math.min(tankCapacity, (machine.currentFuelLiters || 0) + data.liters),
+          ...fuelDeltaData(machine, data.liters),
         },
       });
       await tx.auditLog.create({
@@ -690,11 +692,13 @@ router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) =>
       }
     }
 
-    // Detekcija anomalija za novu vrednost
-    const hasAnomaly = false;
-    const anomalyReasons = [];
+    // Preserve historical anomaly flags on edits. Consumption is calculated
+    // from closed assignments in analytics, not re-detected from this refill.
 
     const tankCapacity = existing.machine.tankCapacityLiters || 250;
+    if ((existing.machine.currentFuelLiters || 0) + diffLiters < 0) {
+      return res.status(400).json({ error: "Korekcija bi dovela stanje goriva ispod nule. Proverite potrošnju i kasnija merenja pre izmene ovog točenja." });
+    }
     if ((existing.machine.currentFuelLiters || 0) + diffLiters > tankCapacity) {
       return res.status(400).json({ error: "Ukupna količina goriva prelazi kapacitet rezervoara mašine." });
     }
@@ -764,8 +768,6 @@ router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) =>
           pricePerLiter: effectivePrice,
           totalCost: newTotalCost,
           receiptImageUrl: newReceiptImageUrl,
-          hasAnomaly,
-          anomalyReason: anomalyReasons.length > 0 ? anomalyReasons.join(". ") : null,
         },
         include: {
           machine: true,
@@ -780,7 +782,7 @@ router.put("/entries/:id", inventoryMutation("fuel", async (req, res, prisma) =>
         where: { id: existing.machineId },
         data: {
           ...(diffLiters !== 0 && {
-            currentFuelLiters: Math.max(0, (existing.machine.currentFuelLiters || 0) + diffLiters),
+            ...fuelDeltaData(existing.machine, diffLiters),
           }),
         },
       }),
@@ -829,13 +831,17 @@ router.delete("/entries/:id", requireManager, inventoryMutation("fuel", async (r
       return res.status(404).json({ error: "Zapis točenja nije pronađen." });
     }
 
+    if ((entry.machine.currentFuelLiters || 0) < entry.liters) {
+      return res.status(400).json({ error: "Storno bi doveo stanje goriva ispod nule. Proverite potrošnju i kasnija merenja pre storniranja ovog točenja." });
+    }
+
     await prisma.$transaction([
       prisma.fuelEntry.delete({ where: { id: req.params.id } }),
       // Umanji gorivo na mašini
       prisma.machine.update({
         where: { id: entry.machineId },
         data: {
-          currentFuelLiters: Math.max(0, (entry.machine.currentFuelLiters || 0) - entry.liters),
+          ...fuelDeltaData(entry.machine, -entry.liters),
         },
       }),
       prisma.auditLog.create({

@@ -1,7 +1,8 @@
 import { writeAudit } from "../lib/audit.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
-import { machineMutation, hasOpenMaintenance } from "../lib/machineAvailability.js";
+import { machineMutation, hasOpenMaintenance, machineArchiveBlocker } from "../lib/machineAvailability.js";
+import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
@@ -150,6 +151,7 @@ const machineSchema = z.object({
 router.get("/machines", async (req, res) => {
   try {
     const machines = await prisma.machine.findMany({
+      where: req.query.includeInactive === "true" && ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role) ? {} : { isActive: true },
       orderBy: [{ type: "asc" }, { name: "asc" }],
     });
     res.json({ machines });
@@ -177,6 +179,23 @@ router.put("/machines/:id", requireManager, machineMutation(async (req, res, pri
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
     }
+    let fuelData = {};
+    let beforeActivation;
+    if (parsed.data.isActive !== undefined) {
+      beforeActivation = await prisma.machine.findUnique({ where: { id: req.params.id } });
+      if (!beforeActivation) return res.status(404).json({ error: "Mašina nije pronađena." });
+      if (parsed.data.isActive === false && beforeActivation.isActive !== false) {
+        const blocker = await machineArchiveBlocker(prisma, beforeActivation);
+        if (blocker) return res.status(409).json({ error: blocker });
+      }
+    }
+    if (parsed.data.currentFuelLiters !== undefined) {
+      const current = await prisma.machine.findUnique({ where: { id: req.params.id } });
+      if (!current) return res.status(404).json({ error: "Mašina nije pronađena." });
+      const conflict = fuelSnapshotError(current, req.body.expectedMachineUpdatedAt);
+      if (conflict) return res.status(409).json(conflict);
+      fuelData = measuredFuelData(current, parsed.data.currentFuelLiters);
+    }
     if (parsed.data.status === "SLOBODNA" &&
         (await hasOpenMaintenance(prisma, req.params.id) ||
          await prisma.machineAssignment.findFirst({ where: { machineId: req.params.id, status: "ZADUZENA" } }))) {
@@ -184,7 +203,12 @@ router.put("/machines/:id", requireManager, machineMutation(async (req, res, pri
     }
     const machine = await prisma.machine.update({
       where: { id: req.params.id },
-      data: parsed.data,
+      data: { ...parsed.data, ...fuelData },
+    });
+    if (beforeActivation && beforeActivation.isActive !== machine.isActive) await writeAudit(prisma, req, {
+      entityType: "Machine", entityId: machine.id, action: machine.isActive ? "IZMENA" : "DEAKTIVACIJA",
+      description: machine.isActive ? "Ponovno aktiviranje mašine" : "Arhiviranje mašine; istorija je sačuvana",
+      oldValues: beforeActivation, newValues: machine,
     });
     res.json({ machine });
   } catch (error) {
@@ -192,14 +216,21 @@ router.put("/machines/:id", requireManager, machineMutation(async (req, res, pri
   }
 }));
 
-router.delete("/machines/:id", requireManager, async (req, res) => {
+router.delete("/machines/:id", requireManager, machineMutation(async (req, res, prisma) => {
   try {
-    await prisma.machine.delete({ where: { id: req.params.id } });
-    res.json({ message: "Mašina uspešno obrisana." });
+    const current = await prisma.machine.findUnique({ where: { id: req.params.id } });
+    if (!current) return res.status(404).json({ error: "Mašina nije pronađena." });
+    if (current.isActive === false) return res.json({ message: "Mašina je već arhivirana." });
+    const blocker = await machineArchiveBlocker(prisma, current);
+    if (blocker) return res.status(409).json({ error: blocker });
+    const archived = await prisma.machine.update({ where: { id: current.id }, data: { isActive: false } });
+    await writeAudit(prisma, req, { entityType: "Machine", entityId: current.id, action: "DEAKTIVACIJA",
+      description: "Arhiviranje mašine; istorija putarina, goriva i radova je sačuvana", oldValues: current, newValues: archived });
+    res.json({ message: "Mašina je arhivirana. Sva istorija je sačuvana." });
   } catch (error) {
     res.status(500).json({ error: "Greška na serveru." });
   }
-});
+}));
 
 // ==========================================
 // 4. RADNICI I ZAPOSLENI (WORKERS)
@@ -308,6 +339,7 @@ router.post("/workers", requireManager, inventoryMutation("workers", async (req,
         role: isSezonac ? null : targetRole,
         city: data.city?.trim() || null,
         dailyWage: isSezonac && data.dailyWage !== undefined && data.dailyWage !== null ? Number(data.dailyWage) : null,
+        hourlyRate: data.hourlyRate ?? null,
         phone: data.phone?.trim() || null,
         jmbg: data.jmbg?.trim() || null,
         isActive: data.isActive ?? true,
@@ -327,6 +359,7 @@ router.post("/workers", requireManager, inventoryMutation("workers", async (req,
             phone: data.phone?.trim() || null,
             city: data.city?.trim() || null,
             dailyWage: data.dailyWage !== undefined && data.dailyWage !== null ? Number(data.dailyWage) : null,
+            hourlyRate: data.hourlyRate || null,
             isActive: data.isActive ?? true,
           },
         });
@@ -409,6 +442,7 @@ router.put("/workers/:id", requireManager, inventoryMutation("workers", async (r
     if (data.city !== undefined) updatePayload.city = data.city?.trim() || null;
     if (data.jmbg !== undefined) updatePayload.jmbg = data.jmbg?.trim() || null;
     if (data.isActive !== undefined) updatePayload.isActive = data.isActive;
+    if (data.hourlyRate !== undefined) updatePayload.hourlyRate = data.hourlyRate || null;
 
     updatePayload.type = isSezonac ? "SEZONAC" : "STALNI";
     updatePayload.role = isSezonac ? null : newRole;
@@ -456,6 +490,7 @@ router.put("/workers/:id", requireManager, inventoryMutation("workers", async (r
             phone: updatePayload.phone !== undefined ? updatePayload.phone : existingSeasonal.phone,
             city: updatePayload.city !== undefined ? updatePayload.city : existingSeasonal.city,
             dailyWage: updatePayload.dailyWage !== undefined ? updatePayload.dailyWage : existingSeasonal.dailyWage,
+            ...(data.hourlyRate !== undefined && { hourlyRate: updatePayload.hourlyRate }),
             isActive: updatePayload.isActive !== undefined ? updatePayload.isActive : existingSeasonal.isActive,
           },
         });
@@ -466,6 +501,7 @@ router.put("/workers/:id", requireManager, inventoryMutation("workers", async (r
             phone: worker.phone,
             city: worker.city,
             dailyWage: worker.dailyWage,
+            hourlyRate: worker.hourlyRate || null,
             isActive: worker.isActive,
           },
         });

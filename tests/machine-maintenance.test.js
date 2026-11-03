@@ -10,6 +10,7 @@ import masterData from "../routes/masterData.js";
 import { machineMutation } from "../lib/machineAvailability.js";
 
 function request(router, method, url, body) {
+  body = { expectedMachineUpdatedAt: "2026-11-01T00:00:00.000Z", ...body };
   return new Promise((resolve, reject) => router.handle({ method, url, body, headers: {}, query: {} }, {
     statusCode: 200, status(code) { this.statusCode = code; return this; },
     json(body) { resolve({ status: this.statusCode, body }); },
@@ -23,7 +24,7 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
   const logging = mock.method(console, "error", () => {});
   let state, tail, locked, failAudit, failOrder;
   const reset = () => {
-    state = { machine: { id: "m", name: "Tractor", status: "SLOBODNA", isActive: true, currentHours: 10, currentFuelLiters: 50, tankCapacityLiters: 200 },
+    state = { machine: { id: "m", name: "Tractor", status: "SLOBODNA", isActive: true, currentHours: 10, currentFuelLiters: 50, tankCapacityLiters: 200, updatedAt: new Date("2026-11-01T00:00:00.000Z") },
       issues: [], orders: [], assignments: [], audit: [], counters: {} };
     tail = Promise.resolve(); locked = false; failAudit = false; failOrder = false;
   };

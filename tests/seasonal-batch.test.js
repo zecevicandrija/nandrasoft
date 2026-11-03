@@ -33,9 +33,9 @@ test("seasonal group logging uses batch insert (createManyAndReturn)", async (t)
   mock.method(auth.api, "getSession", async () => ({ user: supervisor, session: {} }));
 
   const workers = [
-    { id: "sw-1", name: "Jovan Petrović", dailyWage: 3000, groupName: "Grupa A" },
-    { id: "sw-2", name: "Dragan Nikolić", dailyWage: 3200, groupName: "Grupa A" },
-    { id: "sw-3", name: "Zoran Simić", dailyWage: 3500, groupName: "Grupa A" },
+    { id: "sw-1", name: "Jovan Petrović", hourlyRate: 3000, groupName: "Grupa A" },
+    { id: "sw-2", name: "Dragan Nikolić", hourlyRate: 3200, groupName: "Grupa A" },
+    { id: "sw-3", name: "Zoran Simić", hourlyRate: 3500, groupName: "Grupa A" },
   ];
 
   let batchCalledWith = null;
@@ -88,7 +88,7 @@ test("seasonal group logging uses batch insert (createManyAndReturn)", async (t)
     startTime: "07:00",
     endTime: "15:00",
     breakMinutes: 30,
-    dailyWage: 3500,
+    hourlyRate: 450,
     groupName: "Ekipa 1",
     notes: "Odličan učinak",
   };
@@ -109,7 +109,8 @@ test("seasonal group logging uses batch insert (createManyAndReturn)", async (t)
   assert.equal(batchCalledWith[1].seasonalWorkerId, "sw-2");
   assert.equal(batchCalledWith[2].seasonalWorkerId, "sw-3");
   assert.equal(batchCalledWith[0].hoursWorked, 7.5);
-  assert.equal(batchCalledWith[0].dailyWageApplied, 3500);
+  assert.equal(batchCalledWith[0].hourlyRateApplied, 450);
+  assert.equal(batchCalledWith[0].dailyWageApplied, 3375);
   assert.equal(batchCalledWith[0].groupCount, 3);
   assert.equal(batchCalledWith[0].groupName, "Ekipa 1");
   assert.equal(batchCalledWith[0].supervisorId, "u-poslovodja");
@@ -126,7 +127,7 @@ test("seasonal group logging falls back cleanly if createManyAndReturn is not pr
   const supervisor = { id: "u-poslovodja", role: "RUKOVODILAC", isActive: true, name: "Poslovođa Milan" };
   mock.method(auth.api, "getSession", async () => ({ user: supervisor, session: {} }));
 
-  const workers = [{ id: "sw-1", name: "Jovan Petrović", dailyWage: 3000 }];
+  const workers = [{ id: "sw-1", name: "Jovan Petrović", hourlyRate: 3000 }];
   let createSingleCount = 0;
 
   const originalWorkersFindMany = prisma.seasonalWorker.findMany;

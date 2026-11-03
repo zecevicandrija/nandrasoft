@@ -1,7 +1,7 @@
 import { writeAudit } from "../lib/audit.js";
 import { addMoney, multiplyMoney } from "../lib/money.js";
 import { generateDispatchNumber, reserveDispatchNumber } from "../lib/documentNumbers.js";
-import { resolveStorageChamber, StorageChamberError } from "../lib/storageChamber.js";
+import { resolveStorageChamber, validateStorageCapacity, StorageChamberError } from "../lib/storageChamber.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -76,8 +76,16 @@ async function generateLotNumber(parcelCode, dateObj = new Date(), db = prisma) 
   }
 }
 
-export async function getAllChambers(db = prisma) {
-  return db.onionChamber.findMany({ orderBy: { name: "asc" } });
+export async function getAllChambers(db = prisma, { includeInactive = false } = {}) {
+  return db.onionChamber.findMany({ where: includeInactive ? {} : { isActive: true }, orderBy: { name: "asc" } });
+}
+
+async function chamberStoredKg(db, chamber) {
+  const entries = await db.onionStorageEntry.findMany({ where: {
+    OR: [{ chamberId: chamber.id }, { chamberId: null, locationOrChamber: { equals: chamber.name, mode: "insensitive" } }],
+    currentQuantityKg: { gt: 0 },
+  } });
+  return entries.reduce((sum, entry) => sum + entry.currentQuantityKg, 0);
 }
 
 // =========================================================================
@@ -85,7 +93,7 @@ export async function getAllChambers(db = prisma) {
 // =========================================================================
 router.get("/chambers", async (req, res) => {
   try {
-    const chambers = await getAllChambers(prisma);
+    const chambers = await getAllChambers(prisma, { includeInactive: req.query.includeInactive === "true" });
     res.json({ chambers });
   } catch (error) {
     console.error("Greška pri dohvatanju komora:", error);
@@ -101,6 +109,7 @@ const chamberCreateSchema = z.object({
 });
 
 const chamberUpdateSchema = z.object({
+  isActive: z.boolean().optional(),
   name: z.string().trim().min(1, "Naziv komore je obavezan.").optional(),
   storageType: z.enum(["HLADNJACA", "MAGACIN"]).optional(),
   hasEquipment: z.boolean().optional(),
@@ -146,6 +155,10 @@ router.put("/chambers/:id", inventoryMutation("onion", async (req, res, prisma) 
     if (!current) return res.status(404).json({ error: "Komora nije pronadjena." });
     const parsed = chamberUpdateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    if (parsed.data.isActive === false && await chamberStoredKg(prisma, current) > 0) {
+      return res.status(400).json({ error: "Komora sadrži luk. Prvo je ispraznite ili sortirajte luk, pa je arhivirajte." });
+    }
+    const newIsActive = parsed.data.isActive ?? current.isActive;
     const newName = parsed.data.name ?? current.name;
     const newStorageType = parsed.data.storageType ?? current.storageType;
     const newHasEquipment = parsed.data.hasEquipment ?? current.hasEquipment;
@@ -168,10 +181,11 @@ router.put("/chambers/:id", inventoryMutation("onion", async (req, res, prisma) 
 
     await prisma.onionChamber.update({ where: { id: current.id }, data: {
       name: newName, storageType: newStorageType, hasEquipment: newHasEquipment,
+      ...(newIsActive !== undefined && { isActive: newIsActive }),
       maxBoxes: newMaxBoxes, maxCapacityKg: newMaxCapacityKg,
     } });
 
-    await writeAudit(prisma, req, { entityType: "OnionChamber", entityId: current.id, action: "IZMENA", description: "Izmena: komora", oldValues: current, newValues: { ...current, name: newName, storageType: newStorageType, hasEquipment: newHasEquipment, maxBoxes: newMaxBoxes, maxCapacityKg: newMaxCapacityKg } });
+    await writeAudit(prisma, req, { entityType: "OnionChamber", entityId: current.id, action: newIsActive === false && current.isActive !== false ? "DEAKTIVACIJA" : "IZMENA", description: "Izmena statusa/podataka komore; istorija je sačuvana", oldValues: current, newValues: { ...current, isActive: newIsActive, name: newName, storageType: newStorageType, hasEquipment: newHasEquipment, maxBoxes: newMaxBoxes, maxCapacityKg: newMaxCapacityKg } });
     res.json({
       message: `Komora "${newName}" uspešno ažurirana (kapacitet: ${newMaxBoxes} boksova).`,
     });
@@ -188,29 +202,19 @@ router.delete("/chambers/:id", inventoryMutation("onion", async (req, res, prism
     const current = await prisma.onionChamber.findFirst({ where: { OR: [{ id }, { name: { equals: id, mode: "insensitive" } }] } });
     if (!current) return res.status(404).json({ error: "Komora nije pronadjena." });
 
-    const activeEntries = await prisma.onionStorageEntry.findMany({
-      where: {
-        chamberId: current.id,
-        currentQuantityKg: { gt: 0 },
-      },
-    });
-
-    const activeKg = activeEntries.reduce((sum, e) => sum + (e.currentQuantityKg || 0), 0);
+    if (current.isActive === false) return res.json({ message: "Komora je već arhivirana." });
+    const activeKg = await chamberStoredKg(prisma, current);
     if (activeKg > 0) {
       return res.status(400).json({
-        error: `Nije moguće obrisati komoru "${current.name}" jer se u njoj trenutno nalazi ${activeKg.toLocaleString("sr-RS")} kg luka. Prvo ispraznite ili sortirajte luk.`,
+        error: `Nije moguće arhivirati komoru "${current.name}" jer se u njoj trenutno nalazi ${activeKg.toLocaleString("sr-RS")} kg luka. Prvo ispraznite ili sortirajte luk.`,
       });
     }
 
-    await prisma.onionStorageEntry.deleteMany({
-      where: { chamberId: current.id },
-    });
+    const archived = await prisma.onionChamber.update({ where: { id: current.id }, data: { isActive: false } });
 
-    await prisma.onionChamber.delete({ where: { id: current.id } });
-
-    await writeAudit(prisma, req, { entityType: "OnionChamber", entityId: current.id, action: "BRISANJE", description: "Brisanje: komora", oldValues: current, newValues: null });
+    await writeAudit(prisma, req, { entityType: "OnionChamber", entityId: current.id, action: "DEAKTIVACIJA", description: "Arhiviranje komore; istorija skladištenja je sačuvana", oldValues: current, newValues: archived });
     res.json({
-      message: `Komora "${current.name}" je uspešno obrisana.`,
+      message: `Komora "${current.name}" je arhivirana. Istorija skladištenja je sačuvana.`,
     });
   } catch (error) {
     console.error("Greška pri brisanju komore:", error);
@@ -395,6 +399,7 @@ router.get("/dashboard", async (req, res) => {
       }),
       prisma.onionStorageEntry.findMany({
         include: {
+          chamber: { select: { isActive: true } },
           lot: {
             select: {
               id: true,
@@ -418,8 +423,12 @@ router.get("/dashboard", async (req, res) => {
       prisma.onionWaste.findMany({
         orderBy: { date: "desc" },
       }),
-      getAllChambers(prisma),
+      getAllChambers(prisma, { includeInactive: true }),
     ]);
+
+    const activeChambers = allChambers.filter((chamber) => chamber.isActive !== false);
+    const archivedChamberNames = new Set(allChambers.filter((chamber) => chamber.isActive === false)
+      .map((chamber) => chamber.name.trim().toLowerCase()));
 
     // 1. Ukupno dovezeno sa njive
     const totalHarvestedKg = lots.reduce((sum, l) => sum + (l.initialQuantityKg || 0), 0);
@@ -437,7 +446,7 @@ router.get("/dashboard", async (req, res) => {
     let unequippedChambersCount = 0;
     const chamberMap = new Map();
 
-    for (const ch of allChambers) {
+    for (const ch of activeChambers) {
       if (ch.storageType === "HLADNJACA") {
         maxColdStorageBoxes += ch.maxBoxes;
         maxColdStorageKg += ch.maxCapacityKg;
@@ -463,6 +472,9 @@ router.get("/dashboard", async (req, res) => {
 
     for (const entry of storageEntries) {
       const cur = Math.max(0, entry.currentQuantityKg || 0);
+      const archived = entry.chamber?.isActive === false ||
+        (!entry.chamberId && archivedChamberNames.has(entry.locationOrChamber.trim().toLowerCase()));
+      if (archived && cur === 0) continue;
       if (entry.storageType === "HLADNJACA") {
         inColdStorageKg += cur;
       } else {
@@ -477,6 +489,7 @@ router.get("/dashboard", async (req, res) => {
           entry.locationOrChamber.includes("6");
         chamberMap.set(key, {
           id: `ch_unknown_${entry.locationOrChamber}`,
+          isActive: !archived,
           storageType: entry.storageType,
           locationOrChamber: entry.locationOrChamber,
           hasEquipment: entry.hasEquipment !== undefined ? entry.hasEquipment : !isUnkWithoutEq,
@@ -582,7 +595,7 @@ router.get("/dashboard", async (req, res) => {
         maxColdStorageKg,
         equippedChambersCount,
         unequippedChambersCount,
-        totalChambersCount: allChambers.length,
+        totalChambersCount: activeChambers.length,
         inWarehouseKg: inWarehouseKg + unallocatedRawKg,
         explicitWarehouseKg: inWarehouseKg,
         unallocatedRawKg,
@@ -604,7 +617,7 @@ router.get("/dashboard", async (req, res) => {
         responsiblePerson: BOX_PALLET_SPEC.defaultResponsiblePerson,
       },
       spec: BOX_PALLET_SPEC,
-      chambers: allChambers,
+      chambers: activeChambers,
       packagedByType: Object.values(packagedByTypeMap),
       chambersSummary: Array.from(chamberMap.values()),
     });
@@ -833,6 +846,9 @@ router.post("/harvest", inventoryMutation("onion", async (req, res, prisma) => {
     if (!parcel) {
       return res.status(404).json({ error: "Izabrana parcela nije pronađena." });
     }
+    if (data.vehicleId && (await prisma.machine.findUnique({ where: { id: data.vehicleId } }))?.isActive === false) {
+      return res.status(409).json({ error: "Vozilo je arhivirano i nije dostupno za novi dovoz." });
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       let lot;
@@ -893,13 +909,15 @@ router.post("/harvest", inventoryMutation("onion", async (req, res, prisma) => {
       let storageEntry = null;
       if (data.autoStore) {
         const chamber = await resolveStorageChamber(tx, data);
+        const boxCount = data.boxCount || Math.ceil(data.quantityKg / BOX_PALLET_SPEC.capacityKgPerBox);
+        await validateStorageCapacity(tx, { ...chamber, boxCount, currentQuantityKg: data.quantityKg });
 
         storageEntry = await tx.onionStorageEntry.create({
           data: {
             date: arrivalDate,
             lotId: lot.id,
             ...chamber,
-            boxCount: data.boxCount || Math.round(data.quantityKg / BOX_PALLET_SPEC.capacityKgPerBox),
+            boxCount,
             quantityKg: data.quantityKg,
             currentQuantityKg: data.quantityKg,
             temperatureC: data.temperatureC,
@@ -1036,6 +1054,7 @@ router.post("/storage", inventoryMutation("onion", async (req, res, prisma) => {
     }
 
     const chamber = await resolveStorageChamber(prisma, data);
+    await validateStorageCapacity(prisma, { ...chamber, boxCount: data.boxCount, currentQuantityKg: data.quantityKg });
 
     const entry = await prisma.onionStorageEntry.create({
       data: {
@@ -1072,8 +1091,27 @@ router.post("/storage", inventoryMutation("onion", async (req, res, prisma) => {
  * PUT /api/onion/storage/:id
  * Izmena komore, broja boks paleta, temperature, vlažnosti ili opreme
  */
+const numericInput = (schema) => z.preprocess(
+  (value) => typeof value === "string" && value.trim() !== "" ? Number(value) : value,
+  schema,
+);
+const storageUpdateSchema = z.object({
+  chamberId: z.string().min(1).nullable().optional(),
+  locationOrChamber: z.string().trim().min(1).optional(),
+  hasEquipment: z.boolean().optional(),
+  boxCount: numericInput(z.number().int().min(0).max(2147483647).nullable().optional()),
+  currentQuantityKg: numericInput(z.number().nonnegative().optional()),
+  temperatureC: numericInput(z.number().nullable().optional()),
+  humidityPercent: numericInput(z.number().min(0).max(100).nullable().optional()),
+  notes: z.string().max(2000).nullable().optional(),
+  correctionReason: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+
 router.put("/storage/:id", inventoryMutation("onion", async (req, res, prisma) => {
   try {
+    const parsed = storageUpdateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const data = parsed.data;
     const { id } = req.params;
     const existing = await prisma.onionStorageEntry.findUnique({ where: { id } });
     if (!existing) {
@@ -1082,68 +1120,48 @@ router.put("/storage/:id", inventoryMutation("onion", async (req, res, prisma) =
 
     // An explicit ID wins over a stale display name. Legacy clients changing
     // only the name are resolved once at the boundary and stored with an ID.
-    const changesLocation = req.body.chamberId !== undefined || req.body.locationOrChamber !== undefined;
+    const changesLocation = data.chamberId !== undefined || data.locationOrChamber !== undefined;
     const chamber = changesLocation ? await resolveStorageChamber(prisma, {
       ...existing,
-      ...req.body,
-      chamberId: req.body.chamberId !== undefined ? req.body.chamberId : null,
-    }) : null;
+      ...data,
+      chamberId: data.chamberId !== undefined ? data.chamberId : null,
+    }, { allowInactive: true }) : null;
 
-    const newCurKg =
-      req.body.currentQuantityKg !== undefined
-        ? Number(req.body.currentQuantityKg)
-        : existing.currentQuantityKg;
+    const newCurKg = data.currentQuantityKg ?? existing.currentQuantityKg;
     const diffKg = newCurKg - existing.currentQuantityKg;
+    if (diffKg !== 0) {
+      if (!data.correctionReason) return res.status(400).json({ error: "Unesite razlog korekcije rasporeda luka u skladištu." });
+      const lot = await prisma.onionLot.findUnique({ where: { id: existing.lotId }, include: { storageEntries: true } });
+      if (!lot) return res.status(404).json({ error: "LOT nije pronađen." });
+      const otherStoredKg = lot.storageEntries.filter((entry) => entry.id !== id)
+        .reduce((sum, entry) => sum + entry.currentQuantityKg, 0);
+      const availableKg = Math.max(0, lot.rawStockKg - otherStoredKg);
+      if (newCurKg > availableKg) return res.status(400).json({
+        error: `Za predloženo stanje od ${newCurKg} kg na ovoj lokaciji raspoloživo je ${availableKg} kg; nedostaje ${Number((newCurKg - availableKg).toFixed(2))} kg neraspoređenog sirovog luka istog LOT-a. Ako je luk novoprimljen, prvo evidentirajte dovoz — izmena komore ne povećava ukupan lager LOT-a.`,
+      });
+    }
+    const { correctionReason, ...fields } = data;
+    await validateStorageCapacity(prisma, { ...existing, ...fields, ...(chamber || {}), currentQuantityKg: newCurKg }, existing);
 
-    const [updated] = await prisma.$transaction([
-      prisma.onionStorageEntry.update({
-        where: { id },
-        data: {
-          ...(chamber || {}),
-          ...(req.body.hasEquipment !== undefined && {
-            hasEquipment: Boolean(req.body.hasEquipment),
-          }),
-          ...(req.body.boxCount !== undefined && {
-            boxCount: req.body.boxCount !== null && req.body.boxCount !== "" ? Number(req.body.boxCount) : null,
-          }),
-          ...(req.body.currentQuantityKg !== undefined && {
-            currentQuantityKg: newCurKg,
-            quantityKg: newCurKg,
-          }),
-          ...(req.body.temperatureC !== undefined && {
-            temperatureC:
-              req.body.temperatureC !== null && req.body.temperatureC !== ""
-                ? Number(req.body.temperatureC)
-                : null,
-          }),
-          ...(req.body.humidityPercent !== undefined && {
-            humidityPercent:
-              req.body.humidityPercent !== null && req.body.humidityPercent !== ""
-                ? Number(req.body.humidityPercent)
-                : null,
-          }),
-          ...(req.body.notes !== undefined && { notes: req.body.notes || null }),
-        },
-        include: {
-          lot: { include: { parcel: true } },
-          supervisor: { select: { id: true, name: true } },
-        },
-      }),
-      ...(diffKg !== 0 && existing.lotId
-        ? [
-            prisma.onionLot.update({
-              where: { id: existing.lotId },
-              data: {
-                rawStockKg: {
-                  increment: diffKg,
-                },
-              },
-            }),
-          ]
-        : []),
-    ]);
+    const updated = await prisma.onionStorageEntry.update({
+      where: { id },
+      data: {
+        ...fields,
+        ...(chamber || {}),
+      },
+      include: {
+        lot: { include: { parcel: true } },
+        supervisor: { select: { id: true, name: true } },
+      },
+    });
 
-    await writeAudit(prisma, req, { entityType: "OnionStorageEntry", entityId: updated.id, action: "IZMENA", description: "Izmena: skladisni zapis luka", oldValues: existing, newValues: updated });
+    await writeAudit(prisma, req, {
+      entityType: "OnionStorageEntry", entityId: updated.id,
+      action: diffKg !== 0 ? "KOREKCIJA" : "IZMENA",
+      description: diffKg !== 0 ? `Korekcija rasporeda sirovog luka: ${diffKg} kg. Razlog: ${correctionReason}` : "Izmena: skladisni zapis luka",
+      context: diffKg !== 0 ? { reason: correctionReason, deltaKg: diffKg, lotId: existing.lotId, rawStockChanged: false } : undefined,
+      oldValues: existing, newValues: updated,
+    });
     res.json({
       entry: updated,
       message: `Podaci za ${updated.locationOrChamber} uspešno ažurirani.`,
@@ -1409,6 +1427,13 @@ const packagingSchema = z.object({
   notes: z.string().optional().nullable(),
 });
 
+const packagingUpdateSchema = packagingSchema.omit({ date: true, lotId: true }).partial().extend({
+  unitWeightKg: numericInput(z.number().positive().optional()),
+  packageCount: numericInput(z.number().int().positive().max(2147483647).optional()),
+  palletsCount: numericInput(z.number().positive().nullable().optional()),
+  packerCount: numericInput(z.number().int().positive().max(2147483647).optional()),
+}).strict();
+
 router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) => {
   try {
     const pkgType = req.body.packageType || "DZAK_10KG";
@@ -1455,7 +1480,7 @@ router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) =>
       const alreadyPackagedKg = lot.packagings.reduce((sum, p) => sum + (p.totalWeightKg || 0), 0);
       const availableSortedQualityKg = Math.max(0, lot.sortedQualityKg - alreadyPackagedKg);
 
-      if (totalWeightKg > availableSortedQualityKg + 0.5) {
+      if (totalWeightKg > availableSortedQualityKg + 0.000001) {
         throw new Error(
           `Na LOT-u ${lot.lotNumber} ima ${availableSortedQualityKg.toLocaleString("sr-RS")} kg nespakovanog luka I klase, a pokušavate da spakujete ${totalWeightKg.toLocaleString("sr-RS")} kg.`
         );
@@ -1513,27 +1538,28 @@ router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) =>
  */
 router.put("/packaging/:id", inventoryMutation("onion", async (req, res, prisma) => {
   try {
+    const parsed = packagingUpdateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const data = parsed.data;
     const { id } = req.params;
     const existing = await prisma.onionPackaging.findUnique({
       where: { id },
-      include: { lot: true },
+      include: { lot: { include: { packagings: true } }, shipmentItems: true },
     });
 
     if (!existing) {
       return res.status(404).json({ error: "Zapis o pakovanju nije pronađen." });
     }
 
-    const newPackageType = req.body.packageType || existing.packageType;
-    const newUnitWeightKg =
-      req.body.unitWeightKg !== undefined && req.body.unitWeightKg !== ""
-        ? Number(req.body.unitWeightKg)
-        : existing.unitWeightKg;
-    const newPackageCount =
-      req.body.packageCount !== undefined && req.body.packageCount !== ""
-        ? Number(req.body.packageCount)
-        : existing.packageCount;
+    const newPackageType = data.packageType ?? existing.packageType;
+    const newUnitWeightKg = data.unitWeightKg ?? existing.unitWeightKg;
+    const newPackageCount = data.packageCount ?? existing.packageCount;
 
-    const shippedCountAlready = Math.max(0, existing.packageCount - existing.availableCount);
+    const shippedCountAlready = Math.max(0, existing.packageCount - existing.availableCount,
+      existing.shipmentItems.reduce((sum, item) => sum + item.packageCount, 0));
+    if (shippedCountAlready > 0 && (newUnitWeightKg !== existing.unitWeightKg || newPackageType !== existing.packageType)) {
+      return res.status(400).json({ error: "Težina i tip pakovanja ne mogu se menjati nakon otpreme. Prepakivanje preostalog luka evidentirajte zasebno." });
+    }
     if (newPackageCount < shippedCountAlready) {
       return res.status(400).json({
         error: `Sa ove partije je već isporučeno ${shippedCountAlready} komada, pa ukupan broj ne može biti manji od toga.`,
@@ -1541,13 +1567,23 @@ router.put("/packaging/:id", inventoryMutation("onion", async (req, res, prisma)
     }
 
     const newTotalWeightKg = Number((newUnitWeightKg * newPackageCount).toFixed(2));
+    if (!Number.isFinite(newTotalWeightKg) || newTotalWeightKg <= 0) {
+      return res.status(400).json({ error: "Ukupna masa pakovanja mora biti pozitivan konačan broj, najmanje 0,01 kg." });
+    }
+    if (newTotalWeightKg !== existing.totalWeightKg) {
+      const otherPackedKg = existing.lot.packagings.filter((pkg) => pkg.id !== id)
+        .reduce((sum, pkg) => sum + pkg.totalWeightKg, 0);
+      const availableKg = Math.max(0, existing.lot.sortedQualityKg - otherPackedKg);
+      if (newTotalWeightKg > availableKg + 0.000001) return res.status(400).json({
+        error: `Za ${newPackageCount} komada po ${newUnitWeightKg} kg potrebno je ${newTotalWeightKg} kg, a za ovo pakovanje raspoloživo je ${availableKg} kg; nedostaje ${Number((newTotalWeightKg - availableKg).toFixed(2))} kg luka I klase. Prvo evidentirajte stvarno sortiranje ili ispravite raniju evidenciju sortiranja ako je pogrešna.`,
+      });
+    }
     const newAvailableCount = newPackageCount - shippedCountAlready;
     const newAvailableWeightKg = Number((newAvailableCount * newUnitWeightKg).toFixed(2));
     const weightDiffKg = newAvailableWeightKg - existing.availableWeightKg;
-    const newPalletsCount =
-      req.body.palletsCount !== undefined && req.body.palletsCount !== ""
-        ? Number(req.body.palletsCount)
-        : Number((newTotalWeightKg / 1000).toFixed(2));
+    const massChanged = newTotalWeightKg !== existing.totalWeightKg;
+    const newPalletsCount = massChanged ? newTotalWeightKg / 1000
+      : data.palletsCount !== undefined ? data.palletsCount : existing.palletsCount;
 
     const updated = await prisma.$transaction(async (tx) => {
       const pkg = await tx.onionPackaging.update({
@@ -1560,20 +1596,20 @@ router.put("/packaging/:id", inventoryMutation("onion", async (req, res, prisma)
           availableCount: newAvailableCount,
           availableWeightKg: newAvailableWeightKg,
           palletsCount: newPalletsCount,
-          ...(req.body.palletNumber !== undefined && {
-            palletNumber: req.body.palletNumber || null,
+          ...(data.palletNumber !== undefined && {
+            palletNumber: data.palletNumber || null,
           }),
-          ...(req.body.packerCount !== undefined && {
-            packerCount: Number(req.body.packerCount) || 4,
+          ...(data.packerCount !== undefined && {
+            packerCount: data.packerCount,
           }),
-          ...(req.body.packerNotes !== undefined && {
-            packerNotes: req.body.packerNotes || null,
+          ...(data.packerNotes !== undefined && {
+            packerNotes: data.packerNotes || null,
           }),
-          ...(req.body.responsiblePerson !== undefined && {
-            responsiblePerson: req.body.responsiblePerson || BOX_PALLET_SPEC.defaultResponsiblePerson,
+          ...(data.responsiblePerson !== undefined && {
+            responsiblePerson: data.responsiblePerson || BOX_PALLET_SPEC.defaultResponsiblePerson,
           }),
-          ...(req.body.notes !== undefined && {
-            notes: req.body.notes || null,
+          ...(data.notes !== undefined && {
+            notes: data.notes || null,
           }),
         },
         include: {
@@ -1582,7 +1618,7 @@ router.put("/packaging/:id", inventoryMutation("onion", async (req, res, prisma)
         },
       });
 
-      if (Math.abs(weightDiffKg) > 0.01) {
+      if (Math.abs(weightDiffKg) > 0.000001) {
         await tx.onionLot.update({
           where: { id: existing.lotId },
           data: {
@@ -1838,9 +1874,17 @@ router.post("/shipment", inventoryMutation("onion", async (req, res, prisma) => 
       });
 
       const lot = packaging.lot;
-      const newPackagedStockKg = Math.max(0, lot.packagedStockKg - totalWeightKg);
+      const { _sum: packageTotals } = await tx.onionPackaging.aggregate({
+        where: { lotId: lot.id },
+        _sum: { totalWeightKg: true, availableWeightKg: true },
+      });
+      const newPackagedStockKg = packageTotals.availableWeightKg ?? 0;
+      const unpackedQualityKg = lot.sortedQualityKg - (packageTotals.totalWeightKg ?? 0);
       const newShippedKg = lot.shippedKg + totalWeightKg;
-      const isCompletelyShipped = lot.rawStockKg <= 0.1 && newPackagedStockKg <= 0.1;
+      // A dispatched tura is complete independently of its LOT. The LOT may
+      // still contain raw, unpacked I-class, small onions or other packages.
+      const isCompletelyShipped = [lot.rawStockKg, unpackedQualityKg, lot.sortedSmallKg ?? 0, newPackagedStockKg]
+        .every((remaining) => Number.isFinite(remaining) && Math.abs(remaining) <= 0.000001);
 
       await tx.onionLot.update({
         where: { id: lot.id },
@@ -2265,7 +2309,7 @@ router.get("/traceability/:lotQuery", async (req, res) => {
     });
 
     // Izgradnja pojedinačnih tura pod istim LOT-om (Tura 1, Tura 2, ...)
-    // Svaka realizovana isporuka kupcu je isporučena tura sa statusom 'ISPORUCENO'
+    // Svaka realizovana isporuka kupcu je isporučena tura sa statusom 'ISPORUCEN'
     // Svako preostalo spakovano na stanju je tura sa statusom 'SPAKOVANO'
     const turas = [];
     let turaIndex = 1;
@@ -2276,7 +2320,7 @@ router.get("/traceability/:lotQuery", async (req, res) => {
         id: `tura-sh-${sh.id}`,
         index: turaIndex++,
         type: "ISPORUKA",
-        status: "ISPORUCENO",
+        status: "ISPORUCEN",
         statusLabel: "Isporučeno",
         title: `Tura ${turaIndex - 1}: Isporuka kupcu ${sh.buyer?.name || "Kupac"}`,
         date: sh.date,

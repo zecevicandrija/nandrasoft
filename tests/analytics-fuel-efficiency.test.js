@@ -18,6 +18,19 @@ test('balance includes refills and detects >25% deviation', () => {
   assert.ok(Math.abs(r.operations[0].variancePercent - 30) < 1e-8);
   assert.equal(r.operations[0].status, 'ANOMALIJA'); assert.equal(r.criticalWorks[0].machine, 'M');
 });
+
+test('two refills for one 10 ha work count its area once', () => {
+  const r = calculateFuelEfficiency({ ...input,
+    assignments: [{ ...assignment, startFuelLiters: 100, endFuelLiters: 100 }],
+    entries: [{ ...refill, liters: 40 }, { ...refill, date: new Date('2026-10-02T10:00Z'), liters: 60 }],
+  });
+  assert.equal(r.summary.totalLiters, 100);
+  assert.equal(r.summary.totalHa, 10);
+  assert.equal(r.summary.coveredHa, 10);
+  assert.equal(r.summary.actualLPerHa, 10);
+  assert.equal(r.operations[0].worksCount, 1);
+  assert.equal(r.operations[0].status, 'OPTIMALNO');
+});
 test('thresholds and missing norm/coverage', () => {
   for (const [liters, status] of [[110, 'OPTIMALNO'], [110.1, 'UPOZORENJE'], [125, 'UPOZORENJE'], [126, 'ANOMALIJA']]) {
     assert.equal(efficiency(liters, 10, 10).status, status);

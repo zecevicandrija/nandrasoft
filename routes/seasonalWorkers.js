@@ -1,6 +1,6 @@
 import { writeAudit, writeAuditBatch } from "../lib/audit.js";
-import { addMoney } from "../lib/money.js";
-import { seasonalLogInput, validateWorkHours, validateAppliedWage } from "../lib/seasonalWorkValidation.js";
+import { addMoney, money } from "../lib/money.js";
+import { seasonalLogInput, validateWorkHours, seasonalEarnings } from "../lib/seasonalWorkValidation.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -30,7 +30,7 @@ function calculateHoursWorked(startTime, endTime, breakMinutes = 0) {
   }
 
   const netMinutes = Math.max(0, endTotal - startTotal - (Number(breakMinutes) || 0));
-  return Number((netMinutes / 60).toFixed(2));
+  return netMinutes / 60;
 }
 
 // =========================================================================
@@ -43,7 +43,7 @@ const seasonalWorkerSchema = z.object({
   phone: z.string().trim().optional().nullable(),
   city: z.string().trim().optional().nullable(),
   groupName: z.string().trim().optional().nullable(),
-  dailyWage: z.number().finite().positive().optional().nullable(),
+  hourlyRate: z.number().finite().min(0.01).max(9999999999999.99).optional().nullable(),
   notes: z.string().trim().optional().nullable(),
   isActive: z.boolean().optional(),
 });
@@ -137,7 +137,7 @@ router.post("/workers", inventoryMutation("workers", async (req, res, prisma) =>
         phone: data.phone || null,
         city: data.city || null,
         groupName: data.groupName || null,
-        dailyWage: data.dailyWage !== undefined && data.dailyWage !== null ? Number(data.dailyWage) : null,
+        hourlyRate: data.hourlyRate != null ? money(data.hourlyRate) : null,
         notes: data.notes || null,
         isActive: data.isActive !== undefined ? data.isActive : true,
       },
@@ -151,7 +151,7 @@ router.post("/workers", inventoryMutation("workers", async (req, res, prisma) =>
           type: "SEZONAC",
           phone: worker.phone,
           city: worker.city,
-          dailyWage: worker.dailyWage,
+          hourlyRate: worker.hourlyRate,
           isActive: worker.isActive,
         },
       });
@@ -188,8 +188,8 @@ router.put("/workers/:id", inventoryMutation("workers", async (req, res, prisma)
         ...(data.phone !== undefined && { phone: data.phone || null }),
         ...(data.city !== undefined && { city: data.city || null }),
         ...(data.groupName !== undefined && { groupName: data.groupName || null }),
-        ...(data.dailyWage !== undefined && {
-          dailyWage: data.dailyWage !== null ? Number(data.dailyWage) : null,
+        ...(data.hourlyRate !== undefined && {
+          hourlyRate: data.hourlyRate !== null ? money(data.hourlyRate) : null,
         }),
         ...(data.notes !== undefined && { notes: data.notes || null }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
@@ -208,7 +208,7 @@ router.put("/workers/:id", inventoryMutation("workers", async (req, res, prisma)
             name: worker.name,
             phone: worker.phone,
             city: worker.city,
-            dailyWage: worker.dailyWage,
+            hourlyRate: worker.hourlyRate,
             isActive: worker.isActive,
           },
         });
@@ -288,7 +288,7 @@ router.get("/groups", async (req, res) => {
         name: true,
         phone: true,
         city: true,
-        dailyWage: true,
+        hourlyRate: true,
         groupName: true,
         isActive: true,
       },
@@ -581,7 +581,7 @@ router.post("/logs", inventoryMutation("seasonal", async (req, res, prisma) => {
       endTime,
       breakMinutes = 0,
       hoursWorked,
-      dailyWageApplied,
+      hourlyRateApplied,
       groupName,
       groupCount,
       notes,
@@ -608,12 +608,9 @@ router.post("/logs", inventoryMutation("seasonal", async (req, res, prisma) => {
         : calculateHoursWorked(startTime, endTime, breakMinutes);
     validateWorkHours(computedHours);
 
-    // Dnevnica: ako je prosleđena u zahtevu koristi se ona, inače radnikova default dnevnica
-    const finalWage =
-      dailyWageApplied !== undefined && dailyWageApplied !== null && dailyWageApplied !== ""
-        ? Number(dailyWageApplied)
-        : worker.dailyWage || null;
-    validateAppliedWage(finalWage);
+    const appliedRate = hourlyRateApplied ?? worker.hourlyRate;
+    if (appliedRate == null) return res.status(400).json({ error: "Unesite satnicu za izabranog radnika." });
+    const earnings = seasonalEarnings(computedHours, Number(appliedRate));
 
     const log = await prisma.seasonalWorkLog.create({
       data: {
@@ -625,7 +622,7 @@ router.post("/logs", inventoryMutation("seasonal", async (req, res, prisma) => {
         endTime: endTime || null,
         breakMinutes: Number(breakMinutes) || 0,
         hoursWorked: computedHours,
-        dailyWageApplied: finalWage,
+        ...earnings,
         supervisorId: req.user.id,
         groupName: groupName || worker.groupName || null,
         groupCount: groupCount ? Number(groupCount) : null,
@@ -664,7 +661,7 @@ router.post("/logs/group", inventoryMutation("seasonal", async (req, res, prisma
       endTime,
       breakMinutes = 0,
       hoursWorked,
-      dailyWage,
+      hourlyRate,
       groupName,
       notes,
     } = seasonalLogInput.parse(req.body);
@@ -680,8 +677,8 @@ router.post("/logs/group", inventoryMutation("seasonal", async (req, res, prisma
       where: { id: { in: workerIds } },
     });
 
-    if (workers.length === 0) {
-      return res.status(400).json({ error: "Nijedan izabrani radnik nije pronađen." });
+    if (workers.length !== new Set(workerIds).size) {
+      return res.status(400).json({ error: "Neki od izabranih radnika nisu pronađeni." });
     }
 
     const computedHours =
@@ -694,11 +691,13 @@ router.post("/logs/group", inventoryMutation("seasonal", async (req, res, prisma
     const groupCount = workers.length;
 
     // Validate every worker's effective wage before starting any group writes.
+    const missingRate = workers.find((w) => hourlyRate == null && w.hourlyRate == null);
+    if (missingRate) return res.status(400).json({ error: `Unesite satnicu za radnika ${missingRate.name} ili zajedničku satnicu grupe.` });
     const preparedWorkers = workers.map((w) => ({
       worker: w,
-      finalWage: validateAppliedWage(dailyWage !== undefined && dailyWage !== null ? dailyWage : w.dailyWage || null),
+      earnings: seasonalEarnings(computedHours, Number(hourlyRate ?? w.hourlyRate)),
     }));
-    const logsData = preparedWorkers.map(({ worker: w, finalWage }) => ({
+    const logsData = preparedWorkers.map(({ worker: w, earnings }) => ({
       date: logDate,
       seasonalWorkerId: w.id,
       parcelId: parcelId || null,
@@ -707,7 +706,7 @@ router.post("/logs/group", inventoryMutation("seasonal", async (req, res, prisma
       endTime: endTime || null,
       breakMinutes: Number(breakMinutes) || 0,
       hoursWorked: computedHours,
-      dailyWageApplied: finalWage,
+      ...earnings,
       supervisorId: req.user.id,
       groupName: groupName || w.groupName || null,
       groupCount,
@@ -718,10 +717,10 @@ router.post("/logs/group", inventoryMutation("seasonal", async (req, res, prisma
       ? await prisma.seasonalWorkLog.createManyAndReturn({ data: logsData })
       : await prisma.$transaction(logsData.map((data) => prisma.seasonalWorkLog.create({ data })));
 
-    await writeAuditBatch(prisma, req, createdLogs.map((log, index) => ({
+    await writeAuditBatch(prisma, req, createdLogs.map((log) => ({
       entityType: "SeasonalWorkLog", entityId: log.id, action: "KREIRANJE",
       description: "Grupni unos rada i dnevnica", newValues: log,
-      context: { workerName: preparedWorkers[index].worker.name, groupSize: createdLogs.length },
+      context: { workerName: workers.find((worker) => worker.id === log.seasonalWorkerId)?.name, groupSize: createdLogs.length },
     })));
     res.status(201).json({
       success: true,
@@ -753,7 +752,7 @@ router.put("/logs/:id", inventoryMutation("seasonal", async (req, res, prisma) =
       endTime,
       breakMinutes,
       hoursWorked,
-      dailyWageApplied,
+      hourlyRateApplied,
       groupName,
       groupCount,
       notes,
@@ -765,12 +764,14 @@ router.put("/logs/:id", inventoryMutation("seasonal", async (req, res, prisma) =
     }
 
     let workerGroupName = existing.groupName;
+    let changedWorker;
     if (seasonalWorkerId && seasonalWorkerId !== existing.seasonalWorkerId) {
       const worker = await prisma.seasonalWorker.findUnique({ where: { id: seasonalWorkerId } });
       if (!worker) {
         return res.status(404).json({ error: "Izabrani sezonac ne postoji." });
       }
       workerGroupName = worker.groupName;
+      changedWorker = worker;
     }
 
     if (jobDescription !== undefined && !jobDescription.trim()) {
@@ -788,7 +789,10 @@ router.put("/logs/:id", inventoryMutation("seasonal", async (req, res, prisma) =
           ? calculateHoursWorked(newStartTime, newEndTime, newBreak)
           : existing.hoursWorked;
     validateWorkHours(computedHours);
-    if (dailyWageApplied !== undefined && dailyWageApplied !== null) validateAppliedWage(dailyWageApplied);
+    const appliedRate = hourlyRateApplied ?? (changedWorker ? changedWorker.hourlyRate : existing.hourlyRateApplied);
+    const changesPay = (hourlyRateApplied != null && Number(hourlyRateApplied) !== Number(existing.hourlyRateApplied)) || changedWorker || computedHours !== existing.hoursWorked;
+    if (changesPay && appliedRate == null) return res.status(400).json({ error: "Unesite satnicu za obračun zarade." });
+    const earnings = changesPay ? seasonalEarnings(computedHours, Number(appliedRate)) : {};
 
     const updatedLog = await prisma.seasonalWorkLog.update({
       where: { id },
@@ -801,9 +805,7 @@ router.put("/logs/:id", inventoryMutation("seasonal", async (req, res, prisma) =
         ...(endTime !== undefined && { endTime: endTime || null }),
         breakMinutes: newBreak,
         hoursWorked: computedHours,
-        ...(dailyWageApplied !== undefined && {
-          dailyWageApplied: dailyWageApplied !== null && dailyWageApplied !== "" ? Number(dailyWageApplied) : null,
-        }),
+        ...earnings,
         ...(groupName !== undefined ? { groupName: groupName || null } : (workerGroupName ? { groupName: workerGroupName } : {})),
         ...(groupCount !== undefined && { groupCount: groupCount ? Number(groupCount) : null }),
         ...(notes !== undefined && { notes: notes || null }),
@@ -1119,7 +1121,7 @@ router.get("/export-excel", async (req, res) => {
     });
 
     // 1. Glavno zaglavlje
-    worksheet.mergeCells("A1:N1");
+    worksheet.mergeCells("A1:P1");
     const titleCell = worksheet.getCell("A1");
     titleCell.value = "NANDRA — EVIDENCIJA RADA SEZONSKIH RADNIKA I BLAGAJNIČKI LIST";
     titleCell.font = { name: "Arial", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
@@ -1132,7 +1134,7 @@ router.get("/export-excel", async (req, res) => {
     worksheet.getRow(1).height = 32;
 
     // 2. Podnaslov sa periodom
-    worksheet.mergeCells("A2:N2");
+    worksheet.mergeCells("A2:P2");
     const subCell = worksheet.getCell("A2");
     const periodStr =
       dateFrom && dateTo
@@ -1164,6 +1166,7 @@ router.get("/export-excel", async (req, res) => {
       "Kraj",
       "Pauza (min)",
       "Radni Sati",
+      "Satnica (RSD/h)",
       "Dnevnica (RSD)",
       "Nadzor (Poslovođa)",
       "Potpis Radnika",
@@ -1215,6 +1218,7 @@ router.get("/export-excel", async (req, res) => {
         log.endTime || "—",
         log.breakMinutes || 0,
         hours,
+        log.hourlyRateApplied != null ? Number(log.hourlyRateApplied) : "—",
         wage > 0 ? wage : "—",
         log.supervisor?.name || "—",
         "", // Prazno polje za svojeručni potpis radnika
@@ -1230,7 +1234,7 @@ router.get("/export-excel", async (req, res) => {
           vertical: "middle",
           horizontal: [1, 2, 9, 10, 11].includes(colNum)
             ? "center"
-            : [12, 13].includes(colNum)
+            : [12, 13, 14].includes(colNum)
             ? "right"
             : "left",
         };
@@ -1249,7 +1253,7 @@ router.get("/export-excel", async (req, res) => {
         if (colNum === 12 && hours > 0) {
           cell.numFmt = "#,##0.00";
         }
-        if (colNum === 13 && wage > 0) {
+        if ([13, 14].includes(colNum)) {
           cell.numFmt = "#,##0.00";
         }
       });
@@ -1269,6 +1273,7 @@ router.get("/export-excel", async (req, res) => {
       "",
       "",
       totalHoursSum,
+      "",
       totalWageSum > 0 ? totalWageSum : "—",
       "",
       "",
@@ -1292,7 +1297,7 @@ router.get("/export-excel", async (req, res) => {
         cell.alignment = { horizontal: "right", vertical: "middle" };
         cell.numFmt = "#,##0.00";
       }
-      if (colNum === 13) {
+      if (colNum === 14) {
         cell.alignment = { horizontal: "right", vertical: "middle" };
         cell.numFmt = "#,##0.00";
       }
@@ -1312,6 +1317,7 @@ router.get("/export-excel", async (req, res) => {
       { width: 10 }, // Kraj
       { width: 12 }, // Pauza
       { width: 13 }, // Radni sati
+      { width: 16 }, // Satnica
       { width: 16 }, // Dnevnica
       { width: 18 }, // Nadzor
       { width: 20 }, // Potpis radnika
