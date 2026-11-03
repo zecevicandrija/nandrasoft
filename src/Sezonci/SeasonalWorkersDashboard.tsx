@@ -1,3 +1,4 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -32,6 +33,7 @@ import AppLayout from '../components/Layout/AppLayout';
 import { TablePagination } from '../components/TablePagination/TablePagination';
 import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import styles from './SeasonalWorkers.module.css';
+import { workHours, earnings } from './hourlyPay';
 
 const API = 'http://localhost:5000/api';
 const PAGE_SIZE = 25;
@@ -52,7 +54,7 @@ interface SeasonalWorker {
   phone: string | null;
   city: string | null;
   groupName: string | null;
-  dailyWage: number | null;
+  hourlyRate: number | null;
   isActive: boolean;
   notes: string | null;
   createdAt: string;
@@ -69,6 +71,7 @@ interface SeasonalWorkLog {
   breakMinutes: number;
   hoursWorked: number;
   dailyWageApplied: number | null;
+  hourlyRateApplied: number | null;
   supervisorId: string;
   groupName: string | null;
   groupCount: number | null;
@@ -226,7 +229,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
   const [wFormPhone, setWFormPhone] = useState('');
   const [wFormCity, setWFormCity] = useState('');
   const [wFormGroup, setWFormGroup] = useState('');
-  const [wFormDailyWage, setWFormDailyWage] = useState<string>('');
+  const [wFormHourlyRate, setWFormHourlyRate] = useState<string>('');
   const [wFormNotes, setWFormNotes] = useState('');
   const [wFormIsActive, setWFormIsActive] = useState(true);
 
@@ -242,6 +245,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
   const [sLogEndTime, setSLogEndTime] = useState('15:30');
   const [sLogBreak, setSLogBreak] = useState('30');
   const [sLogWage, setSLogWage] = useState('');
+  const [sLogHours, setSLogHours] = useState('');
   const [sLogNotes, setSLogNotes] = useState('');
 
   // Grupni unos rada po grupama modal
@@ -255,6 +259,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
   const [gEndTime, setGEndTime] = useState('15:30');
   const [gBreak, setGBreak] = useState('30');
   const [gUnifiedWage, setGUnifiedWage] = useState('');
+  const [gHours, setGHours] = useState('');
   const [gNotes, setGNotes] = useState('');
 
   // Grupe sezonaca modal
@@ -291,7 +296,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
 
   // 2. Parcele iz šifarnika
   const { data: parcelsData } = useQuery({
-    queryKey: ['master-parcels'],
+    queryKey: masterQueryKeys.parcels,
     queryFn: async () => {
       const res = await fetch(`${API}/master/parcels`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri dohvatanju parcela.');
@@ -479,7 +484,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
     return allActiveWorkers.map((w) => ({
       value: w.id,
       label: w.name,
-      subLabel: `${w.groupName ? `Grupa: ${w.groupName} • ` : ''}${w.dailyWage ? `${w.dailyWage} RSD` : 'Bez dnevnice'}`,
+      subLabel: `${w.groupName ? `Grupa: ${w.groupName} • ` : ''}${w.hourlyRate ? `${w.hourlyRate} RSD/h` : 'Bez satnice'}`,
     }));
   }, [allActiveWorkers]);
 
@@ -737,7 +742,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
     setWFormPhone('');
     setWFormCity('');
     setWFormGroup('');
-    setWFormDailyWage('');
+    setWFormHourlyRate('');
     setWFormNotes('');
     setWFormIsActive(true);
     setWorkerModalOpen(true);
@@ -749,7 +754,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
     setWFormPhone(w.phone || '');
     setWFormCity(w.city || '');
     setWFormGroup(w.groupName || '');
-    setWFormDailyWage(w.dailyWage ? String(w.dailyWage) : '');
+    setWFormHourlyRate(w.hourlyRate ? String(w.hourlyRate) : '');
     setWFormNotes(w.notes || '');
     setWFormIsActive(w.isActive);
     setWorkerModalOpen(true);
@@ -766,7 +771,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
       phone: wFormPhone.trim() || null,
       city: wFormCity.trim() || null,
       groupName: wFormGroup.trim() || null,
-      dailyWage: wFormDailyWage ? parseFloat(wFormDailyWage) : null,
+      hourlyRate: wFormHourlyRate ? parseFloat(wFormHourlyRate) : null,
       notes: wFormNotes.trim() || null,
       isActive: wFormIsActive,
     });
@@ -781,7 +786,8 @@ const SeasonalWorkersDashboard: React.FC = () => {
     setSLogStartTime('07:00');
     setSLogEndTime('15:30');
     setSLogBreak('30');
-    setSLogWage(allActiveWorkers[0]?.dailyWage ? String(allActiveWorkers[0].dailyWage) : '');
+    setSLogHours('');
+    setSLogWage(allActiveWorkers[0]?.hourlyRate ? String(allActiveWorkers[0].hourlyRate) : '');
     setSLogNotes('');
     setSingleLogModalOpen(true);
   };
@@ -792,21 +798,21 @@ const SeasonalWorkersDashboard: React.FC = () => {
     setSLogParcelId(log.parcelId || '');
     setSLogJob(log.jobDescription || '');
     setSLogDate(log.date ? new Date(log.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
-    setSLogStartTime(log.startTime || '07:00');
-    setSLogEndTime(log.endTime || '15:30');
+    setSLogStartTime(log.startTime || '');
+    setSLogEndTime(log.endTime || '');
+    const recordedHours = workHours(log.startTime || '', log.endTime || '', String(log.breakMinutes ?? 0));
+    setSLogHours(Math.abs(recordedHours - log.hoursWorked) < 0.000001 ? '' : String(log.hoursWorked));
     setSLogBreak(String(log.breakMinutes ?? 0));
-    setSLogWage(log.dailyWageApplied !== null && log.dailyWageApplied !== undefined ? String(log.dailyWageApplied) : '');
+    setSLogWage(log.hourlyRateApplied != null ? String(log.hourlyRateApplied) : '');
     setSLogNotes(log.notes || '');
     setSingleLogModalOpen(true);
   };
 
-  // Kada izabere radnika u single modal-u, predloži njegovu dnevnicu
+  // Kada izabere radnika, predloži njegovu satnicu.
   const handleSingleWorkerChange = (wId: string) => {
     setSLogWorkerId(wId);
     const worker = allActiveWorkers.find((w) => w.id === wId);
-    if (worker?.dailyWage) {
-      setSLogWage(String(worker.dailyWage));
-    }
+    setSLogWage(worker?.hourlyRate != null ? String(worker.hourlyRate) : '');
   };
 
   const handleSingleLogSubmit = (e: React.FormEvent) => {
@@ -826,10 +832,11 @@ const SeasonalWorkersDashboard: React.FC = () => {
       parcelId: sLogParcelId || null,
       jobDescription: sLogJob.trim(),
       date: sLogDate,
-      startTime: sLogStartTime,
-      endTime: sLogEndTime,
-      breakMinutes: parseInt(sLogBreak, 10) || 0,
-      dailyWageApplied: sLogWage ? parseFloat(sLogWage) : null,
+      startTime: sLogHours ? null : sLogStartTime,
+      endTime: sLogHours ? null : sLogEndTime,
+      breakMinutes: sLogHours ? 0 : parseInt(sLogBreak, 10) || 0,
+      hoursWorked: sLogHours ? Number(sLogHours) : undefined,
+      hourlyRateApplied: sLogWage ? parseFloat(sLogWage) : null,
       notes: sLogNotes.trim() || null,
     };
 
@@ -849,6 +856,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
     setGStartTime('07:00');
     setGEndTime('15:30');
     setGBreak('30');
+    setGHours('');
     setGUnifiedWage('');
     setGNotes('');
     setGroupLogModalOpen(true);
@@ -890,10 +898,11 @@ const SeasonalWorkersDashboard: React.FC = () => {
       parcelId: gParcelId || null,
       jobDescription: gJob.trim(),
       date: gDate,
-      startTime: gStartTime,
-      endTime: gEndTime,
-      breakMinutes: parseInt(gBreak, 10) || 0,
-      dailyWage: gUnifiedWage ? parseFloat(gUnifiedWage) : undefined,
+      startTime: gHours ? null : gStartTime,
+      endTime: gHours ? null : gEndTime,
+      breakMinutes: gHours ? 0 : parseInt(gBreak, 10) || 0,
+      hoursWorked: gHours ? Number(gHours) : undefined,
+      hourlyRate: gUnifiedWage ? parseFloat(gUnifiedWage) : undefined,
       groupName: gQuickGroupSelect !== 'ALL' && gQuickGroupSelect !== 'NONE' ? gQuickGroupSelect : undefined,
       notes: gNotes.trim() || null,
     });
@@ -1189,28 +1198,6 @@ const SeasonalWorkersDashboard: React.FC = () => {
           </div>
 
           <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.statIconBlue}`}>
-              <Clock size={24} />
-            </div>
-            <div className={styles.statInfo}>
-              <div className={styles.statValue}>{summaryData?.totals?.totalHours || 0} h</div>
-              <div className={styles.statLabel}>Ukupno radnih sati</div>
-              <div className={styles.statSubtext}>Efektivno vreme rada</div>
-            </div>
-          </div>
-
-          <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.statIconAmber}`}>
-              <Sprout size={24} />
-            </div>
-            <div className={styles.statInfo}>
-              <div className={styles.statValue}>{summaryData?.byParcel?.length || 0}</div>
-              <div className={styles.statLabel}>Obrađenih parcela</div>
-              <div className={styles.statSubtext}>Lokacije pod ručnim radom</div>
-            </div>
-          </div>
-
-          <div className={styles.statCard}>
             <div className={`${styles.statIcon} ${styles.statIconPurple}`}>
               <ClipboardList size={24} />
             </div>
@@ -1428,7 +1415,8 @@ const SeasonalWorkersDashboard: React.FC = () => {
                         <th>Vrsta Posla</th>
                         <th>Vreme Rada</th>
                         <th>Sati</th>
-                        <th>Dnevnica (RSD)</th>
+                        <th>Satnica</th>
+                        <th>Dnevnica</th>
                         <th>Nadzor</th>
                         <th style={{ textAlign: 'right' }}>Akcije</th>
                       </tr>
@@ -1485,12 +1473,13 @@ const SeasonalWorkersDashboard: React.FC = () => {
                             )}
                           </td>
                           <td>
-                            <span className={styles.hoursValue}>{log.hoursWorked} h</span>
+                            <span className={styles.hoursValue}>{log.hoursWorked.toLocaleString('sr-RS', { maximumFractionDigits: 2 })} h</span>
                           </td>
+                          <td>{log.hourlyRateApplied != null ? `${Number(log.hourlyRateApplied).toLocaleString('sr-RS')}rsd` : '—'}</td>
                           <td>
-                            {log.dailyWageApplied ? (
+                            {log.dailyWageApplied != null ? (
                               <span className={styles.wageValue}>
-                                {log.dailyWageApplied.toLocaleString('sr-RS')}
+                                {log.dailyWageApplied.toLocaleString('sr-RS')}rsd
                               </span>
                             ) : (
                               <span style={{ color: 'var(--text-muted)' }}>—</span>
@@ -2518,7 +2507,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                         <th>Grad / Mesto</th>
                         <th>Telefon</th>
                         <th>Grupa</th>
-                        <th>Dnevnica (RSD)</th>
+                        <th>Satnica</th>
                         <th>Status</th>
                         <th>Registrovan</th>
                         <th style={{ textAlign: 'right' }}>Akcije</th>
@@ -2556,9 +2545,9 @@ const SeasonalWorkersDashboard: React.FC = () => {
                             )}
                           </td>
                           <td>
-                            {w.dailyWage ? (
+                            {w.hourlyRate ? (
                               <span className={styles.wageValue}>
-                                {w.dailyWage.toLocaleString('sr-RS')}
+                                {w.hourlyRate.toLocaleString('sr-RS')}rsd
                               </span>
                             ) : (
                               <span style={{ color: 'var(--text-muted)' }}>—</span>
@@ -2688,16 +2677,17 @@ const SeasonalWorkersDashboard: React.FC = () => {
                     </div>
 
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Dnevnica u RSD (opciono)</label>
+                      <label className={styles.formLabel}>Satnica (RSD/h, opciono)</label>
                       <input
                         type="number"
-                        step="50"
-                        min="0"
+                        step="0.01"
+                        min="0.01"
                         className={styles.formInput}
-                        placeholder="npr. 3000"
-                        value={wFormDailyWage}
-                        onChange={(e) => setWFormDailyWage(e.target.value)}
+                        placeholder="npr. 450"
+                        value={wFormHourlyRate}
+                        onChange={(e) => setWFormHourlyRate(e.target.value)}
                       />
+                      <small>Osnovna satnica za nove prijave rada. Raniji obračuni zadržavaju primenjenu satnicu.</small>
                     </div>
                   </div>
 
@@ -2865,19 +2855,29 @@ const SeasonalWorkersDashboard: React.FC = () => {
                       />
                     </div>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Dnevnica za ovaj dan (RSD)</label>
+                      <label className={styles.formLabel}>Satnica za ovaj rad (RSD/h) *</label>
                       <input
                         type="number"
-                        step="50"
-                        min="0"
+                        step="0.01"
+                        min="0.01"
                         className={styles.formInput}
-                        placeholder="npr. 3000"
+                        placeholder="npr. 450"
+                        required
                         value={sLogWage}
                         onChange={(e) => setSLogWage(e.target.value)}
                       />
                     </div>
                   </div>
 
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Efektivni sati (opciono, umesto početka i kraja)</label>
+                    <input type="number" min="0.01" max="24" step="any" className={styles.formInput} value={sLogHours} onChange={(e) => setSLogHours(e.target.value)} placeholder="Automatski iz vremena rada i pauze" />
+                    <small>Pri direktnom unosu unesite sate bez pauze.</small>
+                  </div>
+                  <div className={styles.formGroup} aria-live="polite">
+                    <strong>{(sLogHours ? Number(sLogHours) : workHours(sLogStartTime, sLogEndTime, sLogBreak)).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} h × {Number(sLogWage || 0).toLocaleString('sr-RS')} RSD/h = {earnings((sLogHours ? Number(sLogHours) : workHours(sLogStartTime, sLogEndTime, sLogBreak)), Number(sLogWage || 0)).toLocaleString('sr-RS')} RSD</strong>
+                    <small> Zarada za ovaj rad računa se automatski iz efektivnih sati.</small>
+                  </div>
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel}>Napomena</label>
                     <input
@@ -3096,11 +3096,11 @@ const SeasonalWorkersDashboard: React.FC = () => {
                       />
                     </div>
                     <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Jedinstvena dnevnica za sve (RSD, opciono)</label>
+                      <label className={styles.formLabel}>Jedinstvena satnica za sve (RSD/h, opciono)</label>
                       <input
                         type="number"
-                        step="50"
-                        min="0"
+                        step="0.01"
+                        min="0.01"
                         className={styles.formInput}
                         placeholder="Ostavi prazno za podrazumevanu svakog radnika"
                         value={gUnifiedWage}
@@ -3109,6 +3109,20 @@ const SeasonalWorkersDashboard: React.FC = () => {
                     </div>
                   </div>
 
+                  <div className={styles.formGroup} aria-live="polite">
+                    <label className={styles.formLabel}>Efektivni sati po radniku (opciono, umesto vremena rada)</label>
+                    <input type="number" min="0.01" max="24" step="any" className={styles.formInput} value={gHours} onChange={(e) => setGHours(e.target.value)} placeholder="Automatski iz vremena rada i pauze" />
+                    <small>Pri direktnom unosu unesite sate bez pauze.</small>
+                    <strong>Obračun za {(gHours ? Number(gHours) : workHours(gStartTime, gEndTime, gBreak)).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} h po radniku</strong>
+                    <small> Prazna zajednička satnica koristi osnovnu satnicu svakog radnika.</small>
+                    {allActiveWorkers.filter((w) => gSelectedWorkerIds.includes(w.id)).map((w) => {
+                      const appliedRate = gUnifiedWage ? Number(gUnifiedWage) : w.hourlyRate;
+                      return <div key={w.id}>{w.name}: {appliedRate != null
+                        ? `${Number(appliedRate).toLocaleString('sr-RS')} RSD/h = ${earnings((gHours ? Number(gHours) : workHours(gStartTime, gEndTime, gBreak)), Number(appliedRate)).toLocaleString('sr-RS')} RSD`
+                        : 'Unesite satnicu radnika ili zajedničku satnicu'}</div>;
+                    })}
+                    <strong>Ukupno: {allActiveWorkers.filter((w) => gSelectedWorkerIds.includes(w.id)).reduce((sum, w) => sum + earnings((gHours ? Number(gHours) : workHours(gStartTime, gEndTime, gBreak)), Number(gUnifiedWage || w.hourlyRate || 0)), 0).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} RSD</strong>
+                  </div>
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel}>Napomena grupe</label>
                     <input

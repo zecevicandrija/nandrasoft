@@ -88,6 +88,7 @@ interface WorkOrder {
   machineId?: string;
   machine?: {
     id: string;
+    updatedAt?: string;
     name: string;
     tankCapacityLiters?: number;
     currentFuelLiters?: number;
@@ -308,19 +309,7 @@ const RadniNaloziDashboard: React.FC = () => {
   const handleOpenAcceptModal = (order: WorkOrder) => {
     setSelectedOrderToAccept(order);
     setAcceptError('');
-    const hasTank =
-      order.machine?.tankCapacityLiters !== undefined &&
-      order.machine.tankCapacityLiters !== null &&
-      order.machine.tankCapacityLiters > 0;
-    const cap = hasTank ? (order.machine?.tankCapacityLiters as number) : 0;
-    const curFuel =
-      hasTank &&
-        order.machine?.currentFuelLiters !== undefined &&
-        order.machine.currentFuelLiters !== null &&
-        order.machine.currentFuelLiters > 0
-        ? order.machine.currentFuelLiters
-        : cap;
-    setAcceptFuelLiters(curFuel);
+    setAcceptFuelLiters(order.machine?.currentFuelLiters ?? '');
     setAcceptHours(order.machine?.currentHours || 0);
     setAcceptNotes('');
   };
@@ -347,6 +336,7 @@ const RadniNaloziDashboard: React.FC = () => {
         credentials: 'include',
         body: JSON.stringify({
           startFuelLiters: parseFloat(String(acceptFuelLiters)) || 0,
+          expectedMachineUpdatedAt: selectedOrderToAccept.machine?.updatedAt,
           startHours: acceptHours !== '' ? parseFloat(String(acceptHours)) : null,
           notes: acceptNotes,
         }),

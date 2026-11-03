@@ -1,3 +1,4 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
@@ -257,7 +258,7 @@ const FertilizerDashboard: React.FC = () => {
 
   // 2. Dohvatanje šifarnika: Parcele, Radnici, Partneri (Dobavljači)
   const { data: parcelsData } = useQuery({
-    queryKey: ['master-parcels-fert'],
+    queryKey: masterQueryKeys.parcels,
     queryFn: async () => {
       const res = await fetch(`${API}/master/parcels`, { credentials: 'include' });
       return res.json();
@@ -321,6 +322,7 @@ const FertilizerDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri učitavanju kretanja đubriva.');
       return res.json();
     },
+    enabled: activeTab === 'analytics',
   });
   const movements: FertilizerMovement[] = movementsData?.movements || [];
   const histTotalItems: number = movementsData?.total || 0;
@@ -336,6 +338,7 @@ const FertilizerDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri učitavanju skorašnjih kretanja.');
       return res.json();
     },
+    enabled: activeTab === 'receive' || activeTab === 'issue',
   });
   const recentMovements: FertilizerMovement[] = recentMovementsData?.movements || [];
 
@@ -347,6 +350,7 @@ const FertilizerDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri učitavanju utroška po parcelama.');
       return res.json();
     },
+    enabled: activeTab === 'analytics',
   });
   const parcelSummary: ParcelSummaryItem[] = parcelSummaryData?.parcelSummary || [];
 

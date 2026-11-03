@@ -10,7 +10,6 @@ import {
   MapPin,
   AlertTriangle,
   CheckCircle2,
-  BarChart3,
   RefreshCw,
   Trash2,
   Pencil,
@@ -467,9 +466,6 @@ const GorivoDashboard: React.FC = () => {
                   </div>
                 </div>
 
-                {userRole === 'DIREKTOR' && <a className={styles.kpiCard} href="/analitika?tab=gorivo">
-                  <BarChart3 size={26} /><span>Efikasnost goriva i normativi u analitici direktora</span>
-                </a>}
               </div>
             </div>}
 
@@ -538,6 +534,7 @@ const GorivoDashboard: React.FC = () => {
                   <span>Od:</span>
                   <input
                     type="date"
+                    aria-label="Datum od"
                     className={styles.dateInput}
                     value={dateFrom}
                     onChange={(e) => {
@@ -552,6 +549,7 @@ const GorivoDashboard: React.FC = () => {
                   <span>Do:</span>
                   <input
                     type="date"
+                    aria-label="Datum do"
                     className={styles.dateInput}
                     value={dateTo}
                     onChange={(e) => {
@@ -578,7 +576,7 @@ const GorivoDashboard: React.FC = () => {
                     className={styles.filterInput}
                     value={searchFilter}
                     onChange={(e) => setSearchFilter(e.target.value)}
-                    style={{ flex: '1 1 200px', minWidth: '180px' }}
+                    aria-label="Pretraga točenja po mašini ili radniku"
                   />
 
                   <div className={styles.filterSelectWrapper}>

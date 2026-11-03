@@ -1,5 +1,8 @@
 import { useDurableSubmission } from '../lib/useDurableSubmission';
+import { remainingLotStock } from './onionStock';
 import SubmissionRecovery from '../components/SubmissionRecovery';
+import QueryErrorNotice from '../components/QueryErrorNotice';
+import { onionRequest } from './onionRequest';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -73,15 +76,6 @@ const BAGS_PER_PALLET: Record<string, number> = {
   DZAMBO_VRECA: 1,
   BOKS_PALETA: 1,
 };
-
-const STANDARD_CHAMBER_NAMES = [
-  'Komora 1',
-  'Komora 2',
-  'Komora 3',
-  'Komora 4',
-  'Komora 5',
-  'Komora 6',
-];
 
 const WASTE_REASON_LABELS: Record<string, string> = {
   TRULEZ: 'Trulež i bakterijsko propadanje',
@@ -316,121 +310,102 @@ const OnionDashboard: React.FC = () => {
   // ==========================================
   // DATA QUERIES
   // ==========================================
-  const { data: lookupData } = useQuery({
+  const lookupQuery = useQuery({
     queryKey: ['onion-lookup'],
     staleTime: 30_000,
-    queryFn: async () => {
-      const res = await fetch(`${API}/lookup`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju šifarnika.');
-      return res.json();
-    },
+    queryFn: ({ signal }) => onionRequest('/lookup', signal),
   });
+  const { data: lookupData } = lookupQuery;
 
-  const { data: dashboardData, isFetching: loadingDashboard } = useQuery({
+  const dashboardQuery = useQuery({
     queryKey: ['onion-dashboard'],
     staleTime: 30_000,
-    queryFn: async () => {
-      const res = await fetch(`${API}/dashboard`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju KPI stanja.');
-      return res.json();
-    },
+    queryFn: ({ signal }) => onionRequest('/dashboard', signal),
   });
+  const { data: dashboardData, isFetching: loadingDashboard } = dashboardQuery;
 
-  const { data: lotsData } = useQuery({
+  const lotsQuery = useQuery({
     queryKey: ['onion-lots', lotsPage],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-lots', activeTab),
-    queryFn: async () => {
-      const res = await fetch(`${API}/lots?page=${lotsPage}&limit=${PAGE_SIZE}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju LOT-ova.');
-      return res.json();
-    },
+    queryFn: ({ signal }) => onionRequest(`/lots?page=${lotsPage}&limit=${PAGE_SIZE}`, signal),
   });
+  const { data: lotsData } = lotsQuery;
 
-  const { data: harvestData } = useQuery({
+  const harvestQuery = useQuery({
     queryKey: ['onion-harvest', harvestParcelFilter, harvestSearch, harvestPage],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-harvest', activeTab),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (harvestParcelFilter !== 'ALL') params.set('parcelId', harvestParcelFilter);
       if (harvestSearch.trim()) params.set('search', harvestSearch.trim());
       params.set('page', String(harvestPage));
       params.set('limit', String(PAGE_SIZE));
-      const res = await fetch(`${API}/harvest?${params.toString()}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju dovoza.');
-      return res.json();
+      return onionRequest(`/harvest?${params.toString()}`, signal);
     },
   });
+  const { data: harvestData } = harvestQuery;
 
-  const { data: storageData } = useQuery({
+  const storageQuery = useQuery({
     queryKey: ['onion-storage', storageTypeFilter, storagePage],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-storage', activeTab),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (storageTypeFilter !== 'ALL') params.set('storageType', storageTypeFilter);
       params.set('page', String(storagePage));
       params.set('limit', String(PAGE_SIZE));
-      const res = await fetch(`${API}/storage?${params.toString()}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju skladišta.');
-      return res.json();
+      return onionRequest(`/storage?${params.toString()}`, signal);
     },
   });
+  const { data: storageData } = storageQuery;
 
-  const { data: sortingData } = useQuery({
+  const sortingQuery = useQuery({
     queryKey: ['onion-sorting', sortingPage],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-sorting', activeTab),
-    queryFn: async () => {
-      const res = await fetch(`${API}/sorting?page=${sortingPage}&limit=${PAGE_SIZE}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju sortiranja.');
-      return res.json();
-    },
+    queryFn: ({ signal }) => onionRequest(`/sorting?page=${sortingPage}&limit=${PAGE_SIZE}`, signal),
   });
+  const { data: sortingData } = sortingQuery;
 
-  const { data: packagingData } = useQuery({
+  const packagingQuery = useQuery({
     queryKey: ['onion-packaging', packagingTypeFilter, packagingParcelFilter, packagingPage],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-packaging', activeTab),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (packagingTypeFilter !== 'ALL') params.set('packageType', packagingTypeFilter);
       if (packagingParcelFilter !== 'ALL') params.set('parcelId', packagingParcelFilter);
       params.set('page', String(packagingPage));
       params.set('limit', String(PAGE_SIZE));
-      const res = await fetch(`${API}/packaging?${params.toString()}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju pakovanja.');
-      return res.json();
+      return onionRequest(`/packaging?${params.toString()}`, signal);
     },
   });
+  const { data: packagingData } = packagingQuery;
 
-  const { data: shipmentData } = useQuery({
+  const shipmentQuery = useQuery({
     queryKey: ['onion-shipment', shipmentBuyerFilter, shipmentSearch, shipmentPage],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-shipment', activeTab),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (shipmentBuyerFilter !== 'ALL') params.set('buyerId', shipmentBuyerFilter);
       if (shipmentSearch.trim()) params.set('search', shipmentSearch.trim());
       params.set('page', String(shipmentPage));
       params.set('limit', String(PAGE_SIZE));
-      const res = await fetch(`${API}/shipment?${params.toString()}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju isporuka.');
-      return res.json();
+      return onionRequest(`/shipment?${params.toString()}`, signal);
     },
   });
+  const { data: shipmentData } = shipmentQuery;
 
-  const { data: wasteData } = useQuery({
+  const wasteQuery = useQuery({
     queryKey: ['onion-waste', wastePage],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-waste', activeTab),
-    queryFn: async () => {
-      const res = await fetch(`${API}/waste?page=${wastePage}&limit=${PAGE_SIZE}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Greška pri učitavanju otpisa.');
-      return res.json();
-    },
+    queryFn: ({ signal }) => onionRequest(`/waste?page=${wastePage}&limit=${PAGE_SIZE}`, signal),
   });
+  const { data: wasteData } = wasteQuery;
 
   const lots = lotsData?.lots || [];
   const allSelectableLots = lookupData?.allLots || lookupData?.activeLots || lookupData?.lots || lots;
@@ -440,22 +415,13 @@ const OnionDashboard: React.FC = () => {
     setSelectedTuraId('ALL');
   }, [activeLotNumberForTrace]);
 
-  const { data: traceData, isFetching: loadingTrace } = useQuery({
+  const traceQuery = useQuery({
     queryKey: ['onion-traceability', activeLotNumberForTrace],
     staleTime: 30_000,
     enabled: onionQueryEnabled('onion-traceability', activeTab) && Boolean(activeLotNumberForTrace),
-    queryFn: async () => {
-      const res = await fetch(
-        `${API}/traceability/${encodeURIComponent(activeLotNumberForTrace)}`,
-        { credentials: 'include' }
-      );
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'LOT nije pronađen.');
-      }
-      return res.json();
-    },
+    queryFn: ({ signal }) => onionRequest(`/traceability/${encodeURIComponent(activeLotNumberForTrace)}`, signal),
   });
+  const { data: traceData, isFetching: loadingTrace } = traceQuery;
 
   const refreshCurrentTab = () => { void refreshOnionTab(queryClient, activeTab); };
 
@@ -464,11 +430,11 @@ const OnionDashboard: React.FC = () => {
     totalRawStockKg: 0,
     inColdStorageKg: 0,
     totalColdStorageBoxes: 0,
-    maxColdStorageBoxes: 4320,
-    maxColdStorageKg: 4800000,
-    equippedChambersCount: 3,
-    unequippedChambersCount: 3,
-    totalChambersCount: 6,
+    maxColdStorageBoxes: 0,
+    maxColdStorageKg: 0,
+    equippedChambersCount: 0,
+    unequippedChambersCount: 0,
+    totalChambersCount: 0,
     inWarehouseKg: 0,
     totalSortedQualityKg: 0,
     unpackedQualityKg: 0,
@@ -658,7 +624,7 @@ const OnionDashboard: React.FC = () => {
 
   const availableChambers = useMemo(() => {
     if (dashboardData?.chambersSummary && dashboardData.chambersSummary.length > 0) {
-      return dashboardData.chambersSummary.map((ch: any) => ({
+      return dashboardData.chambersSummary.filter((ch: any) => ch.isActive !== false).map((ch: any) => ({
         id: ch.id || ch.locationOrChamber,
         name: ch.locationOrChamber,
         storageType: ch.storageType || 'HLADNJACA',
@@ -667,15 +633,9 @@ const OnionDashboard: React.FC = () => {
       }));
     }
     if (lookupData?.chambers && lookupData.chambers.length > 0) {
-      return lookupData.chambers;
+      return lookupData.chambers.filter((ch: any) => ch.isActive !== false);
     }
-    return STANDARD_CHAMBER_NAMES.map((name) => ({
-      id: name,
-      name,
-      storageType: 'HLADNJACA',
-      hasEquipment: name === 'Komora 1' || name === 'Komora 2' || name === 'Komora 3',
-      maxBoxes: 720,
-    }));
+    return [];
   }, [dashboardData?.chambersSummary, lookupData?.chambers]);
 
   const chamberIdForName = (name: string): string | undefined => {
@@ -948,6 +908,10 @@ const OnionDashboard: React.FC = () => {
   const handleUpdateStorage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingStorage) return;
+    if (String(editingStorage.currentQuantityKg).trim() === '') {
+      showToast('Unesite trenutnu količinu u komori.', 'error');
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch(`${API}/storage/${editingStorage.id}`, {
@@ -960,6 +924,7 @@ const OnionDashboard: React.FC = () => {
           hasEquipment: editingStorage.hasEquipment,
           boxCount: editingStorage.boxCount ? Number(editingStorage.boxCount) : null,
           currentQuantityKg: Number(editingStorage.currentQuantityKg),
+          correctionReason: editingStorage.correctionReason?.trim() || undefined,
           notes: editingStorage.notes,
         }),
       });
@@ -1039,12 +1004,12 @@ const OnionDashboard: React.FC = () => {
       if (!res.ok) {
         const errorMsg =
           data.error ||
-          `Nije moguće obrisati komoru "${chamberToDelete.locationOrChamber || chamberToDelete.name}" jer se u njoj trenutno nalazi ${Number(chamberToDelete.currentQuantityKg || 0).toLocaleString('sr-RS')} kg luka. Prvo ispraznite ili sortirajte luk.`;
+          `Nije moguće arhivirati komoru "${chamberToDelete.locationOrChamber || chamberToDelete.name}". Prvo ispraznite ili sortirajte luk.`;
         setDeleteChamberError(errorMsg);
         showToast(errorMsg, 'error');
         return;
       }
-      showToast(data.message || 'Komora je uspešno obrisana.');
+      showToast(data.message || 'Komora je arhivirana. Istorija je sačuvana.');
       setChamberToDelete(null);
       setDeleteChamberError(null);
       void invalidateOnionMutation(queryClient, 'chamber');
@@ -1394,9 +1359,36 @@ const OnionDashboard: React.FC = () => {
     }
   };
 
+  const tabQueryStates = {
+    dovoz: [{ title: 'LOT zapisi', query: lotsQuery }, { title: 'Dovoz', query: harvestQuery }],
+    skladiste: [{ title: 'Skladištenje', query: storageQuery }],
+    sortiranje: [{ title: 'Sortiranje', query: sortingQuery }],
+    pakovanje: [{ title: 'Pakovanje', query: packagingQuery }],
+    isporuka: [{ title: 'Isporuke', query: shipmentQuery }],
+    otpis: [{ title: 'Otpis', query: wasteQuery }],
+    sledljivost: [{ title: 'LOT sledljivost', query: traceQuery }],
+  };
+  const sharedQueryStates = [{ title: 'Šifarnici luka', query: lookupQuery }, { title: 'Stanje lagera i komora', query: dashboardQuery }];
+  const sharedUnavailable = sharedQueryStates.some(({ query }) => query.data === undefined);
+  const tabUnavailable = tabQueryStates[activeTab].some(({ query }) => query.data === undefined && (query.isFetching || query.isError));
+  const queryFeedback = <>{[...sharedQueryStates, ...tabQueryStates[activeTab]].map(({ title, query }) => query.isError ? (
+    <QueryErrorNotice key={title} title={`${title}: ${query.data === undefined ? 'podaci nisu učitani.' : 'osvežavanje nije uspelo; prikazani su poslednji učitani podaci.'}`}
+      error={query.error} pending={query.isFetching} onRetry={() => { void query.refetch(); }} />
+  ) : null)}</>;
+
+  if (sharedUnavailable) return (
+    <AppLayout pageTitle="Modul Luk & Hladnjača — Tok Robe i Sledljivost">
+      <div className={styles.container}>
+        {queryFeedback}
+        {sharedQueryStates.some(({ query }) => query.isFetching) && <p role="status">Učitavanje šifarnika, lagera i komora…</p>}
+      </div>
+    </AppLayout>
+  );
+
   return (
     <AppLayout pageTitle="Modul Luk & Hladnjača — Tok Robe i Sledljivost">
       <div className={styles.container}>
+        {queryFeedback}
         {!isShipmentModalOpen && <SubmissionRecovery pending={!!shipmentDraft.pending} busy={submitting} error={shipmentDraft.storageError || shipmentError}
                 onRetry={() => void handleCreateShipment(undefined, true)} />}
 
@@ -1483,11 +1475,11 @@ const OnionDashboard: React.FC = () => {
             </div>
             <div className={styles.kpiContent}>
               <span className={styles.kpiLabel}>
-                2. U hladnjači ({kpi.totalChambersCount || (dashboardData?.chambersSummary || []).length || 6} komora)
+                2. U hladnjači ({kpi.totalChambersCount ?? 0} komora)
               </span>
               <span className={styles.kpiValue}>{formatKgAndTons(kpi.inColdStorageKg)}</span>
               <span className={styles.kpiSub}>
-                <strong>{(kpi.totalColdStorageBoxes || 0).toLocaleString('sr-RS')}</strong> / {(kpi.maxColdStorageBoxes || 4320).toLocaleString('sr-RS')}{' '}
+                <strong>{(kpi.totalColdStorageBoxes || 0).toLocaleString('sr-RS')}</strong> / {(kpi.maxColdStorageBoxes ?? 0).toLocaleString('sr-RS')}{' '}
                 boks paleta (160x120x120)
               </span>
             </div>
@@ -1502,10 +1494,10 @@ const OnionDashboard: React.FC = () => {
               <span className={styles.kpiValue}>
                 {kpi.equippedChambersCount !== undefined
                   ? `${kpi.equippedChambersCount} + ${kpi.unequippedChambersCount} komora`
-                  : '3 + 3 komore'}
+                  : '0 + 0 komora'}
               </span>
               <span className={styles.kpiSub}>
-                Ukupno {(kpi.maxColdStorageBoxes || 4320).toLocaleString('sr-RS')} boksova ({formatKgAndTons(kpi.maxColdStorageKg || 4800000)})
+                Ukupno {(kpi.maxColdStorageBoxes ?? 0).toLocaleString('sr-RS')} boksova ({formatKgAndTons(kpi.maxColdStorageKg ?? 0)})
               </span>
             </div>
           </div>
@@ -1636,7 +1628,8 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 2: SKLADIŠTE & DINAMIČKE KOMORE HLADNJAČE */}
         {/* ============================================================ */}
-        {activeTab === 'skladiste' && (
+        {tabUnavailable && tabQueryStates[activeTab].some(({ query }) => query.isFetching) && <p role="status">Učitavanje podataka…</p>}
+        {!tabUnavailable && activeTab === 'skladiste' && (
           <>
             <div className={styles.sectionCard}>
               <div className={styles.sectionHeader}>
@@ -1644,7 +1637,7 @@ const OnionDashboard: React.FC = () => {
                   <h3 className={styles.sectionTitle}>
                     <Snowflake size={20} color="#0891b2" />
                     <span>
-                      Pregled komora hladnjače ({dashboardData?.chambersSummary?.length || 6} komora • Kapacitet: {(kpi.maxColdStorageBoxes || 4320).toLocaleString('sr-RS')} boksova / {formatKgAndTons(kpi.maxColdStorageKg || 4800000)})
+                      Pregled komora hladnjače ({dashboardData?.chambersSummary?.length ?? 0} komora • Kapacitet: {(kpi.maxColdStorageBoxes ?? 0).toLocaleString('sr-RS')} boksova / {formatKgAndTons(kpi.maxColdStorageKg ?? 0)})
                     </span>
                   </h3>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
@@ -1820,11 +1813,11 @@ const OnionDashboard: React.FC = () => {
                         <button
                           type="button"
                           className={styles.chamberActionDeleteBtn}
-                          title="Obriši komoru iz sistema"
+                          title="Arhiviraj komoru; istorija ostaje sačuvana"
                           onClick={() => handleOpenDeleteChamberModal(ch)}
                         >
                           <Trash2 size={14} />
-                          <span>Obriši</span>
+                          <span>Arhiviraj</span>
                         </button>
                       </div>
                     </div>
@@ -1932,6 +1925,8 @@ const OnionDashboard: React.FC = () => {
                                   setEditingStorage({
                                     ...st,
                                     boxCount: boxes,
+                                    originalCurrentQuantityKg: st.currentQuantityKg,
+                                    correctionReason: '',
                                   })
                                 }
                               >
@@ -1962,7 +1957,7 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 4: PAKOVANJE, PAKERICA & DŽAKOVI 10KG / 5KG */}
         {/* ============================================================ */}
-        {activeTab === 'pakovanje' && (
+        {!tabUnavailable && activeTab === 'pakovanje' && (
           <>
             <div className={styles.sectionCard}>
               <div className={styles.sectionHeader}>
@@ -2387,6 +2382,7 @@ const OnionDashboard: React.FC = () => {
                                   onClick={() =>
                                     setEditingPackaging({
                                       ...pk,
+                                      shippedCountAlready: Math.max(0, pk.packageCount - pk.availableCount),
                                       packerCount: pk.packerCount || 4,
                                       responsiblePerson: pk.responsiblePerson || 'Bojan Ćorović',
                                       palletsCount: pallets,
@@ -2432,7 +2428,7 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 1: DOVOZ SA NJIVE & AKTIVNI LOT-OVI */}
         {/* ============================================================ */}
-        {activeTab === 'dovoz' && (
+        {!tabUnavailable && activeTab === 'dovoz' && (
           <>
             <div className={styles.sectionCard}>
               <div className={styles.sectionHeader}>
@@ -2693,7 +2689,7 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 3: SORTIRANJE & KALIBRACIJA */}
         {/* ============================================================ */}
-        {activeTab === 'sortiranje' && (
+        {!tabUnavailable && activeTab === 'sortiranje' && (
           <div className={styles.sectionCard}>
             <div className={styles.sectionHeader}>
               <h3 className={styles.sectionTitle}>
@@ -2802,7 +2798,7 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 5: ISPORUKA KUPCU & OTPREMNICE */}
         {/* ============================================================ */}
-        {activeTab === 'isporuka' && (
+        {!tabUnavailable && activeTab === 'isporuka' && (
           <div className={styles.sectionCard}>
             <div className={styles.sectionHeader}>
               <h3 className={styles.sectionTitle}>
@@ -2998,7 +2994,7 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 6: OTPIS & KALO */}
         {/* ============================================================ */}
-        {activeTab === 'otpis' && (
+        {!tabUnavailable && activeTab === 'otpis' && (
           <>
             <div className={styles.sectionCard}>
               <div className={styles.sectionHeader}>
@@ -3117,7 +3113,7 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 7: 360° LOT SLEDLJIVOST (TRACEABILITY OD NJIVE DO KUPCA) */}
         {/* ============================================================ */}
-        {activeTab === 'sledljivost' && (
+        {!tabUnavailable && activeTab === 'sledljivost' && (
           <div className={styles.sectionCard}>
             <div className={styles.sectionHeader}>
               <h3 className={styles.sectionTitle}>
@@ -3182,6 +3178,7 @@ const OnionDashboard: React.FC = () => {
             ) : (() => {
               const turas: any[] = traceData.turas || [];
               const activeTura = turas.find((t: any) => t.id === selectedTuraId);
+              const remaining = remainingLotStock(traceData.lot);
 
               // Filtriranje hronologije po turi:
               // Ako je izabrana tura (npr. Tura 1), prikazuju se bazni koraci (dovoz, hladnjača, sortiranje)
@@ -3330,6 +3327,30 @@ const OnionDashboard: React.FC = () => {
                               <span>{LOT_STATUS_LABELS[traceData.lot.status] || traceData.lot.status}</span>
                             </span>
                           )}
+                        </div>
+                      </div>
+
+                      <div className={styles.traceHeroCard}>
+                        <div className={styles.traceHeroHeader}>
+                          <Warehouse size={16} />
+                          <span>Ukupno preostalo za LOT</span>
+                        </div>
+                        <div className={styles.traceHeroValue}>{formatKgAndTons(remaining.totalKg)}</div>
+                        <div className={styles.traceInfoGrid}>
+                          {[
+                            ['Sirovo, nesortirano', remaining.rawKg],
+                            ['I klasa, neupakovano', remaining.unpackedQualityKg],
+                            ['Sitan luk / II klasa', remaining.smallKg],
+                            ['Spakovano, neisporučeno', remaining.packagedKg],
+                          ].map(([label, kg]) => (
+                            <div className={styles.traceInfoItem} key={label}>
+                              <span className={styles.traceInfoLabel}>{label}</span>
+                              <strong className={styles.traceInfoVal}>{formatKgAndTons(Number(kg))}</strong>
+                            </div>
+                          ))}
+                        </div>
+                        <div className={styles.traceBalanceSub}>
+                          Stanje celog LOT-a posle svih isporuka; otpis i kalo nisu uključeni.
                         </div>
                       </div>
 
@@ -3998,16 +4019,14 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         value={editingStorage.boxCount || ''}
                         onChange={(e) => {
-                          const b = Number(e.target.value || 0);
                           setEditingStorage({
                             ...editingStorage,
                             boxCount: e.target.value,
-                            currentQuantityKg: b > 0 ? b * 1100 : editingStorage.currentQuantityKg,
                           });
                         }}
                       />
                       <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                        Automatski proračun: 1 boks = 1.100 kg luka
+                        Broj boksova i izmerena količina menjaju se odvojeno.
                       </div>
                     </div>
 
@@ -4019,6 +4038,7 @@ const OnionDashboard: React.FC = () => {
                         min="0"
                         className={styles.input}
                         value={editingStorage.currentQuantityKg}
+                        required
                         onChange={(e) =>
                           setEditingStorage({
                             ...editingStorage,
@@ -4027,6 +4047,25 @@ const OnionDashboard: React.FC = () => {
                         }
                       />
                     </div>
+                  </div>
+                  <p aria-live="polite">
+                    {Number(editingStorage.currentQuantityKg) > Number(editingStorage.originalCurrentQuantityKg)
+                      ? `Povećanje za ${(Number(editingStorage.currentQuantityKg) - Number(editingStorage.originalCurrentQuantityKg)).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} kg zahteva toliko neraspoređenog sirovog luka istog LOT-a i slobodan kapacitet komore. Ako je luk novoprimljen, prvo evidentirajte dovoz; luk već automatski uskladišten pri dovozu ne dodajte ponovo.`
+                      : Number(editingStorage.currentQuantityKg) < Number(editingStorage.originalCurrentQuantityKg)
+                        ? 'Smanjenje količine oslobađa neraspoređeni sirovi luk i ne smanjuje ukupan lager LOT-a. Ako je luk stvarno izgubljen ili oštećen, evidentirajte otpis.'
+                        : 'Količinu možete povećati samo ako postoji neraspoređeni sirovi luk istog LOT-a i slobodan kapacitet komore. Novi luk evidentirajte kroz dovoz, a stvarni gubitak kroz otpis.'}
+                  </p>
+                  <div className={styles.formGroup}>
+                    <label>Razlog korekcije količine</label>
+                    <input
+                      type="text"
+                      className={styles.input}
+                      maxLength={1000}
+                      value={editingStorage.correctionReason || ''}
+                      required={Number(editingStorage.currentQuantityKg) !== Number(editingStorage.originalCurrentQuantityKg)}
+                      onChange={(e) => setEditingStorage({ ...editingStorage, correctionReason: e.target.value })}
+                      placeholder="Obavezno ako menjate trenutnu količinu"
+                    />
                   </div>
                 </div>
 
@@ -4453,11 +4492,13 @@ const OnionDashboard: React.FC = () => {
                       <label>Tip džaka (10 kg ili 5 kg)</label>
                       <CustomSelect
                         value={editingPackaging.packageType}
+                        disabled={editingPackaging.shippedCountAlready > 0}
                         onChange={(t) => {
                           setEditingPackaging({
                             ...editingPackaging,
                             packageType: t,
                             unitWeightKg: PACKAGE_WEIGHTS[t] || 10,
+                            palletsCount: Number(editingPackaging.packageCount) * (PACKAGE_WEIGHTS[t] || 10) / 1000,
                           });
                         }}
                         options={packageTypeOptions}
@@ -4470,18 +4511,34 @@ const OnionDashboard: React.FC = () => {
                       <input
                         type="number"
                         step="1"
-                        min="1"
+                        min={Math.max(1, editingPackaging.shippedCountAlready)}
                         className={styles.input}
                         value={editingPackaging.packageCount}
                         onChange={(e) =>
                           setEditingPackaging({
                             ...editingPackaging,
                             packageCount: e.target.value,
+                            palletsCount: Number(e.target.value) * Number(editingPackaging.unitWeightKg) / 1000,
                           })
                         }
+                        required
                       />
                     </div>
                   </div>
+
+                  <p>
+                    Broj paleta (1.000 kg/paleta): {editingPackaging.palletsCount}.
+                    Pri promeni količine proverite i oznake paleta.
+                    {editingPackaging.shippedCountAlready > 0 &&
+                      ' Tip i težina pakovanja zaključani su jer već postoji otprema.'}
+                  </p>
+                  <p aria-live="polite">
+                    {Number(editingPackaging.packageCount) * Number(editingPackaging.unitWeightKg) > Number(editingPackaging.totalWeightKg)
+                      ? `Povećanje zahteva dodatnih ${(Number(editingPackaging.packageCount) * Number(editingPackaging.unitWeightKg) - Number(editingPackaging.totalWeightKg)).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} kg slobodnog sortiranog luka I klase istog LOT-a. Ako ga nema dovoljno, prvo evidentirajte stvarno sortiranje ili ispravite pogrešnu raniju evidenciju sortiranja.`
+                      : Number(editingPackaging.packageCount) * Number(editingPackaging.unitWeightKg) < Number(editingPackaging.totalWeightKg)
+                        ? 'Smanjenje mase oslobađa sortirani luk I klase za drugo pakovanje. Ukupan broj komada ne može biti manji od već otpremljenog.'
+                        : 'Povećanje mase zahteva slobodan sortirani luk I klase istog LOT-a. Ako ga nema dovoljno, prvo evidentirajte stvarno sortiranje; sirovi luk u komori još nije raspoloživ za pakovanje.'}
+                  </p>
 
                   <div className={styles.formGrid2}>
                     <div className={styles.formGroup}>
@@ -5024,7 +5081,7 @@ const OnionDashboard: React.FC = () => {
               <div className={styles.modalHeader}>
                 <h3 style={{ color: '#dc2626' }}>
                   <AlertTriangle size={20} color="#dc2626" />
-                  <span>Potvrda brisanja komore</span>
+                  <span>Potvrda arhiviranja komore</span>
                 </h3>
                 <button
                   type="button"
@@ -5040,9 +5097,10 @@ const OnionDashboard: React.FC = () => {
 
               <div className={styles.modalBody}>
                 <p style={{ fontSize: '0.95rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.5 }}>
-                  Da li ste sigurni da želite da obrišete komoru{' '}
+                  Da li želite da arhivirate komoru{' '}
                   <strong>"{chamberToDelete.locationOrChamber || chamberToDelete.name}"</strong>?
                 </p>
+                <p>Komora više neće biti dostupna za novo skladištenje. Istorijski skladišni zapisi i LOT sledljivost ostaju sačuvani.</p>
 
                 <div className={styles.chamberDeleteInfoCard}>
                   <div className={styles.chamberDeleteInfoRow}>
@@ -5088,7 +5146,7 @@ const OnionDashboard: React.FC = () => {
                   <div className={styles.modalAlertDanger}>
                     <AlertCircle size={22} className={styles.modalAlertDangerIcon} />
                     <div className={styles.modalAlertContent}>
-                      <div className={styles.modalAlertTitle}>Nije moguće obrisati komoru</div>
+                      <div className={styles.modalAlertTitle}>Nije moguće arhivirati komoru</div>
                       <div className={styles.modalAlertText}>{deleteChamberError}</div>
                     </div>
                   </div>
@@ -5113,7 +5171,7 @@ const OnionDashboard: React.FC = () => {
                   onClick={handleConfirmDeleteChamber}
                 >
                   <Trash2 size={16} />
-                  <span>{isDeletingChamber ? 'Brisanje...' : 'Potvrdi brisanje'}</span>
+                  <span>{isDeletingChamber ? 'Arhiviranje...' : 'Potvrdi arhiviranje'}</span>
                 </button>
               </div>
             </div>

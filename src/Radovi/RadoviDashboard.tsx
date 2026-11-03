@@ -1,3 +1,4 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
@@ -155,7 +156,7 @@ const RadoviDashboard: React.FC = () => {
 
   // 2. ŠIFARNICI ZA FILTERE I MODALE
   const { data: parcelsData } = useQuery({
-    queryKey: ['parcels-lite'],
+    queryKey: masterQueryKeys.parcels,
     queryFn: async () => {
       const res = await fetch(`${API}/master/parcels`, { credentials: 'include' });
       return res.json();
@@ -163,7 +164,7 @@ const RadoviDashboard: React.FC = () => {
   });
 
   const { data: machinesData } = useQuery({
-    queryKey: ['machines-lite'],
+    queryKey: masterQueryKeys.machines,
     queryFn: async () => {
       const res = await fetch(`${API}/master/machines`, { credentials: 'include' });
       return res.json();

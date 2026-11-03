@@ -1,4 +1,6 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
+import { refreshMachineFuel } from '../lib/machineFuel';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -66,6 +68,7 @@ const BrziUnosRada: React.FC = () => {
 
   // Razduženje mašine i gorivo states
   const [endFuelLiters, setEndFuelLiters] = useState<string | number>('');
+  const [fuelSnapshot, setFuelSnapshot] = useState<{ machineId: string; updatedAt: string } | null>(null);
   const [endHours, setEndHours] = useState<string | number>('');
   const [isOperational, setIsOperational] = useState<boolean>(true);
   const [returnNotes, setReturnNotes] = useState('');
@@ -75,12 +78,13 @@ const BrziUnosRada: React.FC = () => {
   const [submittedData, setSubmittedData] = useState<any | null>(null);
 
   const durable = useDurableSubmission(`field-work:${orderIdParam || 'manual'}`, currentUser?.id,
-    { shift, parcelId, machineId, attachmentId, workerId, workTypeId, areaDoneHa, startTime, endTime, notes, endFuelLiters, endHours, isOperational, returnNotes },
+    { shift, parcelId, machineId, attachmentId, workerId, workTypeId, areaDoneHa, startTime, endTime, notes, endFuelLiters, endHours, isOperational, returnNotes, fuelSnapshot },
     (draft) => {
       setShift(draft.shift); setParcelId(draft.parcelId); setMachineId(draft.machineId);
       setAttachmentId(draft.attachmentId); setWorkerId(draft.workerId); setWorkTypeId(draft.workTypeId);
       setAreaDoneHa(draft.areaDoneHa); setStartTime(draft.startTime); setEndTime(draft.endTime);
       setNotes(draft.notes); setEndFuelLiters(draft.endFuelLiters); setEndHours(draft.endHours);
+      setFuelSnapshot(draft.fuelSnapshot ?? null);
       setIsOperational(draft.isOperational); setReturnNotes(draft.returnNotes);
     });
 
@@ -97,7 +101,7 @@ const BrziUnosRada: React.FC = () => {
 
   // 1. DOHVATANJE ŠIFARNIKA
   const { data: parcelsData, isLoading: loadingParcels } = useQuery({
-    queryKey: ['parcels-lite'],
+    queryKey: masterQueryKeys.parcels,
     queryFn: async () => {
       const res = await fetch(`${API}/master/parcels`, { credentials: 'include' });
       return res.json();
@@ -105,7 +109,7 @@ const BrziUnosRada: React.FC = () => {
   });
 
   const { data: machinesData, isLoading: loadingMachines } = useQuery({
-    queryKey: ['machines-lite'],
+    queryKey: masterQueryKeys.machines,
     queryFn: async () => {
       const res = await fetch(`${API}/master/machines`, { credentials: 'include' });
       return res.json();
@@ -201,6 +205,13 @@ const BrziUnosRada: React.FC = () => {
   // Pronađi trenutno izabranu parcelu za kalkulaciju
   const selectedParcelObj = parcelsData?.parcels?.find((p: any) => p.id === parcelId);
   const selectedMachineObj = machinesData?.machines?.find((m: any) => m.id === machineId);
+  useEffect(() => {
+    if (!selectedMachineObj?.updatedAt || fuelSnapshot?.machineId === machineId) return;
+    setFuelSnapshot({ machineId, updatedAt: selectedMachineObj.updatedAt });
+    // A measurement restored without a version, or entered for a different
+    // machine, must be entered again rather than paired with a fresh token.
+    setEndFuelLiters('');
+  }, [machineId, selectedMachineObj?.updatedAt, fuelSnapshot?.machineId]);
   const linkedAssignment = orderData?.workOrder?.machineAssignments?.[0] || userActiveAssignment;
   const baselineHours = linkedAssignment?.startHours ?? selectedMachineObj?.currentHours;
   const isEndHoursInvalid =
@@ -320,7 +331,7 @@ const BrziUnosRada: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: ['machines-all'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       setSubmittedData(data.work);
       setErrorMsg('');
     },
@@ -372,6 +383,7 @@ const BrziUnosRada: React.FC = () => {
 
     if (endFuelLiters !== '') {
       payload.endFuelLiters = parseFloat(String(endFuelLiters));
+      payload.expectedMachineUpdatedAt = fuelSnapshot?.machineId === machineId ? fuelSnapshot.updatedAt : undefined;
     }
     if (endHours !== '') {
       payload.endHours = parseFloat(String(endHours));
@@ -966,6 +978,16 @@ const BrziUnosRada: React.FC = () => {
                             value={endFuelLiters}
                             onChange={(e) => setEndFuelLiters(e.target.value)}
                           />
+                          <p>Izmereno gorivo zamenjuje trenutno stanje. Posle naknadnog sipanja osvežite podatke i proverite merenje.</p>
+                          <button type="button" className={styles.btnSecondary} disabled={!!durable.pending} onClick={async () => {
+                            try {
+                              const machine = await refreshMachineFuel(machineId);
+                              setFuelSnapshot({ machineId, updatedAt: machine.updatedAt });
+                              setEndFuelLiters('');
+                              setErrorMsg(`Poslednje stanje: ${machine.currentFuelLiters ?? 0} L. Ponovo unesite izmereno gorivo.`);
+                              void queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
+                            } catch (error: any) { setErrorMsg(error.message); }
+                          }}>Osveži stanje mašine</button>
                           {selectedWorkTypeObj?.fuelNormLitersPerHa && (
                             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                               Planirani normativ posla: {selectedWorkTypeObj.fuelNormLitersPerHa} L/ha

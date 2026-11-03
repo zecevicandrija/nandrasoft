@@ -64,7 +64,7 @@ export default function AuditDetails({ id, onClose }: { id: string; onClose: () 
   const log = data?.log;
   const fields = [...new Set([...Object.keys(log?.oldValues || {}), ...Object.keys(log?.newValues || {})])];
   const context = Object.fromEntries(Object.entries(log?.context || {}).filter(([key]) => key !== 'operationId'));
-  const actionLabel = ({ KREIRANJE: 'Kreiranje', IZMENA: 'Izmena', BRISANJE: 'Brisanje', STORNO: 'Storniranje', DEAKTIVACIJA: 'Deaktivacija' } as Record<string, string>)[log?.action] || log?.action;
+  const actionLabel = ({ KREIRANJE: 'Kreiranje', IZMENA: 'Izmena', KOREKCIJA: 'Korekcija', BRISANJE: 'Brisanje', STORNO: 'Storniranje', DEAKTIVACIJA: 'Deaktivacija' } as Record<string, string>)[log?.action] || log?.action;
   return createPortal(<div className={styles.overlay} onClick={onClose}>
     <section ref={dialog} role="dialog" aria-modal="true" aria-labelledby="audit-detail-title" className={styles.modal} onClick={(e) => e.stopPropagation()}>
       <header className={styles.header}>

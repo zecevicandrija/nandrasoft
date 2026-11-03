@@ -105,15 +105,12 @@ const PocetniEkran: React.FC = () => {
     }
   }, [session, navigate]);
 
+  const [acceptFuelVersion, setAcceptFuelVersion] = useState<string | undefined>();
   const handleOpenAcceptModal = (order: any) => {
     setIsAcceptOpen(true);
+    setAcceptFuelVersion(order.machine?.updatedAt);
     setAcceptError('');
-    const cap = order.machine?.tankCapacityLiters || 200;
-    const curFuel =
-      order.machine?.currentFuelLiters !== undefined && order.machine.currentFuelLiters > 0
-        ? order.machine.currentFuelLiters
-        : cap;
-    setAcceptFuelLiters(curFuel);
+    setAcceptFuelLiters(order.machine?.currentFuelLiters ?? '');
     setAcceptHours(order.machine?.currentHours || 0);
     setAcceptNotes('');
   };
@@ -139,6 +136,7 @@ const PocetniEkran: React.FC = () => {
         credentials: 'include',
         body: JSON.stringify({
           startFuelLiters: parseFloat(String(acceptFuelLiters)) || 0,
+          expectedMachineUpdatedAt: acceptFuelVersion,
           startHours: acceptHours !== '' ? parseFloat(String(acceptHours)) : null,
           notes: acceptNotes,
         }),

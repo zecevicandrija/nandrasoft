@@ -296,15 +296,19 @@ export const AnalitikaDashboard: React.FC = () => {
     critical: table === 'critical' ? page : fuelCriticalPage,
   });
 
-  // Osvežavanje svih podataka
-  const handleRefreshAll = () => {
+  // Osvežavanje podataka samo za aktivni tab
+  const handleRefreshActiveTab = () => {
     if (activeTab === 'gorivo') { void fuelQuery.refetch(); return; }
-    refetchOverview();
-    refetchTopMachines();
-    refetchMachines();
-    refetchWorkers();
-    refetchParcels();
-    refetchFinancial();
+    switch (activeTab) {
+      case 'pregled':
+        void refetchOverview();
+        void refetchTopMachines();
+        break;
+      case 'masine': void refetchMachines(); break;
+      case 'radnici': void refetchWorkers(); break;
+      case 'parcele': void refetchParcels(); break;
+      case 'troskovi': void refetchFinancial(); break;
+    }
   };
 
   // Izračunavanje ukupnih operativnih troškova
@@ -754,7 +758,7 @@ export const AnalitikaDashboard: React.FC = () => {
 
             <button
               className={styles.btnSecondary}
-              onClick={handleRefreshAll}
+              onClick={handleRefreshActiveTab}
               title="Osveži sve podatke sa servera"
             >
               <RotateCcw size={16} />

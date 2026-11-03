@@ -1,3 +1,4 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import React, { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, X, MapPin, Loader2, AlertCircle } from 'lucide-react';
@@ -99,8 +100,7 @@ export const ParcelQuickModal: React.FC<ParcelQuickModalProps> = ({
       }
 
       // Osveži sve relevantne keševe u aplikaciji
-      queryClient.invalidateQueries({ queryKey: ['parcels'] });
-      queryClient.invalidateQueries({ queryKey: ['parcels-lite'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.parcels });
       queryClient.invalidateQueries({ queryKey: ['master-stats'] });
       queryClient.invalidateQueries({ queryKey: ['field-works'] });
 

@@ -8,7 +8,7 @@
     "test:fuel": "node --test tests/fuel-queries.test.ts tests/fuel-efficiency-queries.test.ts",
     "test:bundle": "npm run build && node --test tests/bundle-splitting.test.ts",
     "test:operational": "node --test tests/operational-queries.test.ts",
-    "test:onion": "node --test tests/onion-queries.test.ts",
+    "test:onion": "node --test tests/onion-queries.test.ts tests/onion-stock.test.ts tests/onion-request.test.ts",
     "test:submissions": "node --test tests/durable-submission.test.ts tests/critical-submissions.test.ts",
     "dev": "vite",
     "build": "tsc -b && vite build",

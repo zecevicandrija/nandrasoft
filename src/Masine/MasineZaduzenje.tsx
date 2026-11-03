@@ -1,4 +1,6 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
+import { refreshMachineFuel } from '../lib/machineFuel';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -59,6 +61,8 @@ const MasineZaduzenje: React.FC = () => {
 
   // Form states za novo zaduženje (Checkout)
   const [checkoutMachineId, setCheckoutMachineId] = useState('');
+  const [checkoutFuelVersion, setCheckoutFuelVersion] = useState<string | undefined>();
+  const [directFuelSnapshot, setDirectFuelSnapshot] = useState<{ machineId: string; updatedAt: string } | null>(null);
   const [checkoutWorkerId, setCheckoutWorkerId] = useState('');
   const [checkoutStartHours, setCheckoutStartHours] = useState<number | string>('');
   const [checkoutFuelLiters, setCheckoutFuelLiters] = useState<number | string>('');
@@ -216,7 +220,7 @@ const MasineZaduzenje: React.FC = () => {
 
   // 4. ŠIFARNICI
   const { data: machinesData } = useQuery({
-    queryKey: ['machines-all'],
+    queryKey: masterQueryKeys.machines,
     queryFn: async () => {
       const res = await fetch(`${API}/master/machines`, { credentials: 'include' });
       return res.json();
@@ -291,12 +295,9 @@ const MasineZaduzenje: React.FC = () => {
     setCheckoutMachineId(machineId);
     const m = machinesData?.machines?.find((item: any) => item.id === machineId);
     if (m) {
+      setCheckoutFuelVersion(m.updatedAt);
       setCheckoutStartHours(m.currentHours || 0);
-      setCheckoutFuelLiters(
-        m.currentFuelLiters !== undefined && m.currentFuelLiters !== null && m.currentFuelLiters > 0
-          ? m.currentFuelLiters
-          : m.tankCapacityLiters || ''
-      );
+      setCheckoutFuelLiters(m.currentFuelLiters ?? '');
     }
   };
 
@@ -319,7 +320,7 @@ const MasineZaduzenje: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: ['machines-all'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
 
       // Reset form
       setCheckoutMachineId('');
@@ -347,7 +348,7 @@ const MasineZaduzenje: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: ['machines-all'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
 
       setCheckinModalOpen(false);
       setSelectedAssignment(null);
@@ -405,6 +406,7 @@ const MasineZaduzenje: React.FC = () => {
       workerId: isOperator ? null : checkoutWorkerId,
       startHours: Number(checkoutStartHours),
       startFuelLiters: checkoutFuelLiters !== '' ? fuelVal : null,
+      expectedMachineUpdatedAt: checkoutFuelVersion,
       assignNotes: checkoutNotes || null,
     });
   };
@@ -437,6 +439,7 @@ const MasineZaduzenje: React.FC = () => {
       assignmentId: selectedAssignment.id,
       endHours: endH,
       endFuelLiters: checkinFuelLiters !== '' ? endFuelVal : null,
+      expectedMachineUpdatedAt: selectedAssignment.machine?.updatedAt,
       isOperational: checkinOperational,
       returnNotes: checkinNotes || null,
     });
@@ -481,7 +484,7 @@ const MasineZaduzenje: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: ['machines-all'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       setEditModalOpen(false);
       setEditingAssignment(null);
       showToast(data.message || 'Zaduženje uspešno izmenjeno.', 'success');
@@ -603,6 +606,9 @@ const MasineZaduzenje: React.FC = () => {
   }, [isCheckinParam, paramMachineId, activeData, loadingActive]);
 
   const handleSelectDirectMachine = (id: string) => {
+    if (id !== directMachineId) { setDirectStartFuelLiters(''); setDirectEndFuelLiters(''); }
+    const selected = machinesData?.machines?.find((m: any) => m.id === id);
+    setDirectFuelSnapshot(selected?.updatedAt ? { machineId: id, updatedAt: selected.updatedAt } : null);
     setDirectMachineId(id);
     const m = machinesData?.machines?.find((item: any) => item.id === id);
     if (m) {
@@ -636,7 +642,7 @@ const MasineZaduzenje: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
       queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: ['machines-all'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       queryClient.invalidateQueries({ queryKey: ['unassigned-warnings'] });
       queryClient.invalidateQueries({ queryKey: ['field-work-stats'] });
       showToast(data.message || 'Zaduženje i razduženje uspešno završeno!', 'success');
@@ -686,10 +692,17 @@ const MasineZaduzenje: React.FC = () => {
       endHours: endH,
       startFuelLiters: directStartFuelLiters !== '' ? startFuelVal : null,
       endFuelLiters: directEndFuelLiters !== '' ? endFuelVal : null,
+      expectedMachineUpdatedAt: directFuelSnapshot?.machineId === directMachineId ? directFuelSnapshot.updatedAt : undefined,
       isOperational: directOperational,
       notes: directNotes,
     });
   };
+
+  useEffect(() => {
+    const machine = machinesData?.machines?.find((m: any) => m.id === directMachineId);
+    if (machine?.updatedAt) setDirectFuelSnapshot((previous) => previous?.machineId === directMachineId
+      ? previous : { machineId: directMachineId, updatedAt: machine.updatedAt });
+  }, [directMachineId, machinesData?.machines]);
 
   const activeAssignments = activeData?.assignments || [];
   const activeTotal = activeData?.total || 0;
@@ -972,6 +985,14 @@ const MasineZaduzenje: React.FC = () => {
             </div>
 
             <form onSubmit={handleCheckoutSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+              {checkoutMachineId && <button type="button" className={styles.btnSecondary} onClick={async () => {
+                try {
+                  const machine = await refreshMachineFuel(checkoutMachineId);
+                  setCheckoutFuelVersion(machine.updatedAt);
+                  setCheckoutFuelLiters('');
+                  showToast(`Poslednje stanje: ${machine.currentFuelLiters ?? 0} L. Ponovo unesite izmereno gorivo.`, 'success');
+                } catch (error: any) { showToast(error.message, 'error'); }
+              }}>Osveži stanje mašine</button>}
               {/* Izbor mašine (isključivo slobodne mašine) */}
               <div className={styles.formGroup}>
                 <label className={styles.formLabel}>
@@ -1154,6 +1175,14 @@ const MasineZaduzenje: React.FC = () => {
             )}
 
             <form onSubmit={handleDirectSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+              {directMachineId && <button type="button" className={styles.btnSecondary} onClick={async () => {
+                try {
+                  const machine = await refreshMachineFuel(directMachineId);
+                  setDirectFuelSnapshot({ machineId: directMachineId, updatedAt: machine.updatedAt });
+                  setDirectStartFuelLiters(''); setDirectEndFuelLiters('');
+                  showToast(`Poslednje stanje: ${machine.currentFuelLiters ?? 0} L. Ponovo unesite izmereno gorivo.`, 'success');
+                } catch (error: any) { showToast(error.message, 'error'); }
+              }}>Osveži stanje mašine</button>}
               {/* Izbor radnika */}
               <div className={styles.formGroup}>
                 <label className={styles.formLabel}>
@@ -1789,6 +1818,15 @@ const MasineZaduzenje: React.FC = () => {
               </div>
 
               <form onSubmit={handleCheckinSubmit}>
+                <p>Izmereno gorivo zamenjuje trenutno stanje. Ako je u međuvremenu evidentirano sipanje, osvežite podatke i ponovo proverite merenje.</p>
+                <button type="button" className={styles.btnSecondary} disabled={!!checkinDraft.pending || checkinMutation.isPending} onClick={async () => {
+                  try {
+                    const machine = await refreshMachineFuel(selectedAssignment.machineId);
+                    setSelectedAssignment({ ...selectedAssignment, machine });
+                    setCheckinFuelLiters('');
+                    showToast(`Poslednje stanje: ${machine.currentFuelLiters ?? 0} L. Ponovo unesite izmereno gorivo.`, 'success');
+                  } catch (error: any) { showToast(error.message, 'error'); }
+                }}>Osveži stanje mašine</button>
                 <div className={styles.modalBody}>
                   <SubmissionRecovery pending={!!checkinDraft.pending} busy={checkinMutation.isPending} error={checkinDraft.storageError}
                     onRetry={() => checkinDraft.pending && checkinMutation.mutate(checkinDraft.pending.payload)} />

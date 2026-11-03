@@ -1,3 +1,4 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -385,8 +386,7 @@ const PutarineDashboard: React.FC = () => {
       }
 
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
-      queryClient.invalidateQueries({ queryKey: ['machines'] });
-      queryClient.invalidateQueries({ queryKey: ['machines-lite'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
 
       setEntryModalOpen(false);
       showToast(isEdit ? 'Putarina je uspešno izmenjena.' : 'Putarina je uspešno evidentirana.');
@@ -416,7 +416,7 @@ const PutarineDashboard: React.FC = () => {
       if (!res.ok) throw new Error(data.error || 'Greška pri brisanju.');
 
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
-      queryClient.invalidateQueries({ queryKey: ['machines'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       showToast('Putarina je obrisana.');
     } catch (err: any) {
       showToast(err.message || 'Greška pri brisanju.', 'error');
@@ -482,7 +482,7 @@ const PutarineDashboard: React.FC = () => {
       topUpAcknowledged.current = currentUser.id;
       setTopUpForm(prev => ({ ...prev, amount: '', paymentReference: '', notes: '' }));
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
-      queryClient.invalidateQueries({ queryKey: ['machines'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       setTopUpModalOpen(false);
       showToast('Dopuna ENP taga je uspešno evidentirana.');
     } catch (err: any) {
@@ -508,7 +508,7 @@ const PutarineDashboard: React.FC = () => {
       });
       if (!res.ok) throw new Error('Greška pri brisanju dopune.');
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
-      queryClient.invalidateQueries({ queryKey: ['machines'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       showToast('Dopuna ENP taga je obrisana.');
     } catch (err: any) {
       showToast(err.message || 'Greška pri brisanju.', 'error');
@@ -580,7 +580,7 @@ const PutarineDashboard: React.FC = () => {
       if (!res.ok) throw new Error(data.error || 'Greška pri čuvanju ENP taga.');
 
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
-      queryClient.invalidateQueries({ queryKey: ['machines'] });
+      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       setTagConfigModalOpen(false);
       showToast('Podaci o ENP tagu vozila su sačuvani.');
     } catch (err: any) {

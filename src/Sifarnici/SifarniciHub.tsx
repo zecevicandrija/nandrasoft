@@ -1,3 +1,4 @@
+import { masterQueryKeys } from '../lib/masterQueryKeys';
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -169,7 +170,7 @@ const SifarniciHub: React.FC = () => {
 
   // 2. DATA QUERIES
   const { data: parcelsData, isLoading: loadingParcels } = useQuery({
-    queryKey: ['parcels'],
+    queryKey: masterQueryKeys.parcels,
     queryFn: async () => {
       const res = await fetch(`${API}/master/parcels`, { credentials: 'include' });
       return res.json();
@@ -177,7 +178,7 @@ const SifarniciHub: React.FC = () => {
   });
 
   const { data: machinesData, isLoading: loadingMachines } = useQuery({
-    queryKey: ['machines'],
+    queryKey: masterQueryKeys.machines,
     queryFn: async () => {
       const res = await fetch(`${API}/master/machines`, { credentials: 'include' });
       return res.json();
@@ -252,8 +253,8 @@ const SifarniciHub: React.FC = () => {
       if (!res.ok) throw new Error(resData.error || 'Greška pri brisanju');
       return resData;
     },
-    onSuccess: (_, variables) => {
-      showToast('Uspešno obrisano!', 'success');
+    onSuccess: (data, variables) => {
+      showToast(data.message || 'Uspešno obrisano!', 'success');
       queryClient.invalidateQueries({ queryKey: [variables.endpoint] });
       queryClient.invalidateQueries({ queryKey: ['master-stats'] });
       setItemToDelete(null);
@@ -313,6 +314,7 @@ const SifarniciHub: React.FC = () => {
     // Parsiranje brojeva
     if (activeTab === 'parcele' && payload.areaHa) payload.areaHa = parseFloat(payload.areaHa);
     if (activeTab === 'masine') {
+      if (editingItem) payload.expectedMachineUpdatedAt = editingItem.updatedAt;
       if (payload.year) payload.year = parseInt(payload.year, 10);
       if (payload.currentHours !== undefined) payload.currentHours = parseFloat(payload.currentHours);
       if (payload.tankCapacityLiters !== undefined && payload.tankCapacityLiters !== '') {
@@ -870,7 +872,7 @@ const SifarniciHub: React.FC = () => {
                                   ],
                                 })
                               }
-                              title="Obriši"
+                              title="Arhiviraj mašinu; istorija ostaje sačuvana"
                             >
                               <Trash2 size={15} />
                             </button>
@@ -1476,7 +1478,7 @@ const SifarniciHub: React.FC = () => {
                 <div className={styles.deleteModalIcon}>
                   <Trash2 size={20} />
                 </div>
-                <span>Potvrda brisanja</span>
+                <span>{itemToDelete.tab === 'masine' ? 'Potvrda arhiviranja' : 'Potvrda brisanja'}</span>
               </div>
               <button
                 type="button"
@@ -1491,7 +1493,7 @@ const SifarniciHub: React.FC = () => {
 
             <div className={styles.deleteModalBody}>
               <p className={styles.deleteModalPrompt}>
-                Da li ste sigurni da želite da obrišete {getTabSingular(itemToDelete.tab)}?
+                Da li želite da {itemToDelete.tab === 'masine' ? 'arhivirate' : 'obrišete'} {getTabSingular(itemToDelete.tab)}?
               </p>
 
               <div className={styles.deleteTargetCard}>
@@ -1511,7 +1513,9 @@ const SifarniciHub: React.FC = () => {
               <div className={styles.deleteWarningBox}>
                 <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: 1 }} />
                 <span>
-                  Ova radnja je nepovratna. Podaci će biti trajno uklonjeni iz šifarnika.
+                  {itemToDelete.tab === 'masine'
+                    ? 'Mašina više neće biti dostupna za nove unose. Putarine, gorivo i istorija radova ostaju sačuvani.'
+                    : 'Ova radnja je nepovratna. Podaci će biti trajno uklonjeni iz šifarnika.'}
                 </span>
               </div>
 
@@ -1533,12 +1537,12 @@ const SifarniciHub: React.FC = () => {
                   {deleteMutation.isPending ? (
                     <>
                       <Loader2 size={16} className={styles.spinner} />
-                      <span>Brisanje...</span>
+                      <span>{itemToDelete.tab === 'masine' ? 'Arhiviranje...' : 'Brisanje...'}</span>
                     </>
                   ) : (
                     <>
                       <Trash2 size={16} />
-                      <span>Potvrdi brisanje</span>
+                      <span>{itemToDelete.tab === 'masine' ? 'Potvrdi arhiviranje' : 'Potvrdi brisanje'}</span>
                     </>
                   )}
                 </button>

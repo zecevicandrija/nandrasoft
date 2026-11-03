@@ -10,7 +10,7 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
 
 test("lost response and page reload retain exactly the same payload and request key", async () => {
   const storage = memory(), key = submissionKey("worker", "field-work:order");
-  const payload = { machineId: "m", endHours: 12, notes: "Repaired" };
+  const payload = { machineId: "m", endHours: 12, endFuelLiters: 40, expectedMachineUpdatedAt: "2026-11-01T00:00:00.000Z", notes: "Repaired" };
   let sent;
   await assert.rejects(sendDurably(storage, key, "/api/field-work", payload, async (url, options) => {
     sent = { url, options }; throw new TypeError("Network lost after commit");

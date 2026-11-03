@@ -35,9 +35,10 @@ type TabType = 'kvarovi' | 'nalozi' | 'istorijat';
 
 const LUBRICANT_OPTIONS = [
   'BEZ MAZIVA / NIJE POTREBNO',
-  'HIDROL-46 (Hidraulično ulje)',
-  'TOTAL DYNATRANS MPV (Transmisija i hidraulika)',
-  'MOTORNO 15W-40 (Motorno ulje)',
+  'HIDROL-46',
+  'MOTORNO ULJE 10W-40',
+  'MOTORNO ULJE 15W-40',
+  'ULJE TOTAL DYNATRANS MPV-TRAKTORI',
   'HIPENOL 90 (Menjačko ulje)',
   'LITIJUMSKA MAST EP-2 (Ležajevi i zglobovi)',
   'OSTALO',
@@ -580,7 +581,11 @@ const RadionicaKvarovi: React.FC = () => {
     { value: 'KVAR_NJIVA', label: 'Vanredni kvar sa terena/njive', badge: 'KVAR', badgeType: 'danger' },
   ];
 
-  const lubricantSelectOptions: CustomSelectOption[] = LUBRICANT_OPTIONS.map((opt) => ({
+  // Keep previously saved lubricant descriptions selectable when editing history.
+  const lubricantSelectOptions: CustomSelectOption[] = Array.from(new Set([
+    ...LUBRICANT_OPTIONS,
+    ...(resolveLubricantType ? [resolveLubricantType] : []),
+  ])).map((opt) => ({
     value: opt,
     label: opt,
     badge: opt.startsWith('BEZ') ? 'BEZ MAZIVA' : 'ULJE / MAST',

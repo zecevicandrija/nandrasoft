@@ -23,6 +23,7 @@ const ACTION_OPTIONS: CustomSelectOption[] = [
   { value: 'KREIRANJE', label: 'Samo kreiranja' },
   { value: 'DEAKTIVACIJA', label: 'Samo deaktivacije' },
   { value: 'IZMENA', label: 'Samo Izmene (UPDATE)' },
+  { value: 'KOREKCIJA', label: 'Samo korekcije' },
   { value: 'STORNO', label: 'Samo Storniranja (STORNO)' },
   { value: 'BRISANJE', label: 'Samo Brisanja (DELETE)' },
 ];
