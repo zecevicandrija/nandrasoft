@@ -20,7 +20,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
   let state;
   let failOrderUpdate = false;
   let beforeTransaction = null;
-  const originals = Object.fromEntries(["maintenanceIssue", "$queryRaw", "$executeRaw", "worker", "workOrder", "machine", "machineAssignment", "fieldWork", "parcel", "auditLog", "$transaction"].map((key) => [key, prisma[key]]));
+  const originals = Object.fromEntries(["workType", "contractor", "maintenanceIssue", "$queryRaw", "$executeRaw", "worker", "workOrder", "machine", "machineAssignment", "fieldWork", "parcel", "auditLog", "$transaction"].map((key) => [key, prisma[key]]));
   const sessionMock = mock.method(auth.api, "getSession", async () => ({ user, session: {} }));
   const logMock = mock.method(console, "error", () => {});
   const reset = () => {
@@ -85,12 +85,24 @@ test("work orders enforce ownership and field-work consistency before mutations"
     },
     async update(args) { return update(state.assignments, args); },
   };
-  prisma.fieldWork = { async create({ data }) {
+  prisma.fieldWork = {
+    async findUnique({ where }) {
+      const work = state.works.find(work => work.id === where.id);
+      return work ? { ...work, contractor: work.contractorId ? { name: "Kooperant A" } : null } : null;
+    },
+    async update({ where, data }) {
+      const { contractor, ...fields } = data;
+      if (contractor) fields.contractorId = contractor.connect?.id ?? null;
+      return update(state.works, { where, data: fields });
+    },
+    async create({ data }) {
     const work = { id: `work-${state.works.length}`, ...data };
     state.works.push(work);
     return work;
   } };
+  prisma.workType = { async findUnique() { return { materialKind: null, materialRequired: false }; } };
   prisma.parcel = { async findUnique({ where }) { return { id: where.id, name: where.id, areaHa: 100 }; } };
+  prisma.contractor = { async findUnique({ where }) { return where.id === "contractor-a" ? { id: where.id, name: "Kooperant A" } : null; } };
   prisma.auditLog = { async create({ data }) { state.audit.push(data); return data; } };
   prisma.$transaction = async (operations) => {
     if (Array.isArray(operations)) return Promise.all(operations);
@@ -100,6 +112,68 @@ test("work orders enforce ownership and field-work consistency before mutations"
   };
   const workBody = { workOrderId: "own", machineId: "machine-a", parcelId: "parcel-a", workTypeId: "type-a", areaDoneHa: 1, status: "ZAVRSENO" };
   try {
+    await t.test("order photo can be replaced and cleared; field completion also keeps its photo on checkin", async () => {
+      const photoUrl = `https://${process.env.BUNNY_PULL_ZONE_HOSTNAME || 'nandra.b-cdn.net'}/fotografije/2026/11/foto_12345678-1234-1234-1234-123456789abc.jpg`;
+      reset(); user.role = "RUKOVODILAC";
+      assert.equal((await request(ordersRouter, "PUT", "/own", { photoUrl })).status, 200);
+      assert.equal(state.orders[0].photoUrl, photoUrl);
+      assert.equal((await request(ordersRouter, "PUT", "/own", { instructions: "Updated" })).status, 200);
+      assert.equal(state.orders[0].photoUrl, photoUrl);
+      assert.equal((await request(ordersRouter, "PUT", "/own", { photoUrl: "https://untrusted.test/a.jpg" })).status, 400);
+      assert.equal((await request(ordersRouter, "PUT", "/own", { photoUrl: null })).status, 200);
+      assert.equal(state.orders[0].photoUrl, null);
+      for (const existing of [false, true]) {
+        reset(); user.role = "OPERATER";
+        if (existing) state.assignments.push({ id: "a", workerId: "worker-a", machineId: "machine-a", workOrderId: "own", parcelId: "parcel-a", startHours: 10, status: "ZADUZENA" });
+        assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, photoUrl })).status, 201);
+        assert.equal(state.works[0].photoUrl, photoUrl);
+        assert.equal(state.assignments[0].photoUrl, photoUrl);
+      }
+    });
+    await t.test("manager can choose, replace, and clear the optional contractor on a field order", async () => {
+      reset(); user.role = "RUKOVODILAC";
+      state.orders[0].orderType = "RAD_NJIVA";
+      assert.equal((await request(ordersRouter, "PUT", "/own", { contractorId: "contractor-a" })).status, 200);
+      assert.equal(state.orders[0].contractorId, "contractor-a");
+      assert.equal((await request(ordersRouter, "PUT", "/own", { instructions: "Promena napomene" })).status, 200);
+      assert.equal(state.orders[0].contractorId, "contractor-a");
+      assert.equal((await request(ordersRouter, "PUT", "/own", { contractorId: null })).status, 200);
+      assert.equal(state.orders[0].contractorId, null);
+      const before = structuredClone(state);
+      assert.equal((await request(ordersRouter, "PUT", "/own", { contractorId: "missing" })).status, 400);
+      assert.deepEqual(state, before);
+    });
+
+    await t.test("manager can add and remove a contractor on recorded work", async () => {
+      reset(); user.role = "OPERATER";
+      assert.equal((await request(fieldRouter, "POST", "/", workBody)).status, 201);
+      user.role = "RUKOVODILAC";
+      const url = `/${state.works[0].id}`;
+      assert.equal((await request(fieldRouter, "PUT", url, { contractorId: "contractor-a" })).status, 200);
+      assert.equal(state.works[0].contractorId, "contractor-a");
+      assert.equal((await request(fieldRouter, "PUT", url, { contractorId: null })).status, 200);
+      assert.equal(state.works[0].contractorId, null);
+    });
+
+    await t.test("field work inherits a contractor from the order, supports no contractor, and validates explicit choices", async () => {
+      user.role = "OPERATER";
+      reset();
+      state.orders[0].contractorId = "contractor-a";
+      assert.equal((await request(fieldRouter, "POST", "/", workBody)).status, 201);
+      assert.equal(state.works[0].contractorId, "contractor-a");
+      reset();
+      state.orders[0].contractorId = "contractor-a";
+      assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, contractorId: null })).status, 201);
+      assert.equal(state.works[0].contractorId, null);
+      reset();
+      assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, contractorId: "contractor-a" })).status, 201);
+      assert.equal(state.works[0].contractorId, "contractor-a");
+      reset();
+      const before = structuredClone(state);
+      assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, contractorId: "missing" })).status, 400);
+      assert.deepEqual(state, before);
+    });
+
     await t.test("each worker role is denied another worker's detail, acceptance and status endpoints", async () => {
       for (const role of ["OPERATER", "MEHANICAR", "MAGACIN"]) {
         reset();

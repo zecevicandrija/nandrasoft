@@ -1,7 +1,10 @@
+import { materialsSchema, materialsInclude, prepareMaterials } from "../lib/workMaterials.js";
+import { optionalContractorId, validateContractor } from "../lib/contractors.js";
 import { generateOrderNumber } from "../lib/documentNumbers.js";
 import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
 import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker, canAccessWorkerRecord } from "../lib/workerIdentity.js";
+import { photoUrlSchema } from "../lib/photoUrl.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -26,11 +29,14 @@ const createWorkOrderSchema = z.object({
   workerId: z.string().min(1, "Radnik je obavezan"),
   machineId: z.string().optional().nullable(),
   attachmentId: z.string().optional().nullable(),
+  contractorId: optionalContractorId,
+  materials: materialsSchema.optional(),
   parcelId: z.string().optional().nullable(),
   workTypeId: z.string().optional().nullable(),
   plannedAreaHa: z.number().positive("Površina mora biti pozitivna").optional().nullable(),
   shift: shiftTypeEnum.default("PRVA"),
   instructions: z.string().max(500).optional().nullable(),
+  photoUrl: photoUrlSchema,
 });
 
 // ==========================================
@@ -52,8 +58,8 @@ router.get("/my-today", async (req, res) => {
     const orderInclude = {
       machine: true,
       attachment: true,
-      parcel: true,
-      workType: true,
+      parcel: true, contractor: true,
+      workType: true, materials: materialsInclude,
       machineAssignments: {
         where: { status: "ZADUZENA" },
         orderBy: { assignedAt: "desc" },
@@ -178,14 +184,14 @@ router.get("/", async (req, res) => {
           worker: true,
           machine: true,
           attachment: true,
-          parcel: true,
-          workType: true,
+          parcel: true, contractor: true,
+          workType: true, materials: materialsInclude,
           machineAssignments: {
             orderBy: { assignedAt: "desc" },
             take: 1,
           },
           fieldWork: {
-            select: { id: true, areaDoneHa: true, workHours: true, status: true },
+            select: { id: true, areaDoneHa: true, workHours: true, status: true, photoUrl: true },
           },
           issuedBy: {
             select: { id: true, name: true, role: true },
@@ -231,8 +237,8 @@ router.get("/:id", async (req, res) => {
         worker: true,
         machine: true,
         attachment: true,
-        parcel: true,
-        workType: true,
+        parcel: true, contractor: true,
+        workType: true, materials: materialsInclude,
         machineAssignments: {
           orderBy: { assignedAt: "desc" },
           take: 1,
@@ -327,7 +333,7 @@ router.post("/:id/accept", machineMutation(async (req, res, prisma) => {
       const updated = await prisma.workOrder.update({
         where: { id: order.id, workerId: order.workerId, status: order.status },
         data: { status: "U_TOKU" },
-        include: { worker: true, parcel: true, workType: true },
+        include: { worker: true, parcel: true, contractor: true, workType: true },
       });
       return res.json({
         message: `Radni nalog ${order.orderNumber} je prihvaćen i stavljen u rad.`,
@@ -401,8 +407,8 @@ router.post("/:id/accept", machineMutation(async (req, res, prisma) => {
           worker: true,
           machine: true,
           attachment: true,
-          parcel: true,
-          workType: true,
+          parcel: true, contractor: true,
+          workType: true, materials: materialsInclude,
           machineAssignments: {
             where: { status: "ZADUZENA" },
             take: 1,
@@ -462,6 +468,8 @@ router.post("/", requireManager, machineMutation(async (req, res, prisma) => {
       if (!selected) return res.status(404).json({ error: "Izabrana mašina ili priključak nije pronađen." });
       if (selected.isActive === false) return res.status(409).json({ error: "Arhivirana mašina ili priključak ne može se koristiti na novom nalogu." });
     }
+    const materialRows = await prepareMaterials(prisma,
+      parsed.data.orderType === "RAD_NJIVA" ? parsed.data.workTypeId : null, parsed.data.materials);
     const orderNumber = await generateOrderNumber(prisma);
 
     let maintenanceId = null;
@@ -497,20 +505,25 @@ router.post("/", requireManager, machineMutation(async (req, res, prisma) => {
       });
     }
 
+    const contractorId = parsed.data.orderType === "RAD_NJIVA" ? parsed.data.contractorId ?? null : null;
+    await validateContractor(prisma, contractorId);
     const workOrder = await prisma.workOrder.create({
       data: {
         orderNumber,
+        ...(materialRows.length && { materials: { createMany: { data: materialRows } } }),
         orderDate: new Date(parsed.data.orderDate),
         orderType: parsed.data.orderType,
         priority: parsed.data.priority,
         workerId: parsed.data.workerId,
         machineId: parsed.data.machineId || null,
         attachmentId: parsed.data.attachmentId || null,
+        contractorId,
         parcelId: parsed.data.parcelId || null,
         workTypeId: parsed.data.workTypeId || null,
         plannedAreaHa: parsed.data.plannedAreaHa || null,
         shift: parsed.data.shift,
         instructions: parsed.data.instructions || null,
+        photoUrl: parsed.data.photoUrl || null,
         status: "DODELJEN", // automatski dodeljen radniku
         maintenanceId,
         issuedById: req.user.id,
@@ -519,8 +532,8 @@ router.post("/", requireManager, machineMutation(async (req, res, prisma) => {
         worker: true,
         machine: true,
         attachment: true,
-        parcel: true,
-        workType: true,
+        parcel: true, contractor: true,
+        workType: true, materials: materialsInclude,
       },
     });
 
@@ -543,6 +556,7 @@ router.post("/", requireManager, machineMutation(async (req, res, prisma) => {
 
     res.status(201).json({ workOrder });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
     console.error("Greška pri kreiranju radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
@@ -650,8 +664,8 @@ router.patch("/:id/status", machineMutation(async (req, res, prisma) => {
         worker: true,
         machine: true,
         attachment: true,
-        parcel: true,
-        workType: true,
+        parcel: true, contractor: true,
+        workType: true, materials: materialsInclude,
       },
     });
 
@@ -710,8 +724,8 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
         worker: true,
         machine: true,
         attachment: true,
-        parcel: true,
-        workType: true,
+        parcel: true, contractor: true,
+        workType: true, materials: materialsInclude,
       },
     });
 
@@ -735,6 +749,19 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
       }
     }
     const dataToUpdate = {};
+    if ((parsed.data.orderType ?? existing.orderType) !== "RAD_NJIVA") dataToUpdate.contractorId = null;
+    else if (parsed.data.contractorId !== undefined) {
+      await validateContractor(prisma, parsed.data.contractorId);
+      dataToUpdate.contractorId = parsed.data.contractorId;
+    }
+    const targetType = parsed.data.orderType ?? existing.orderType;
+    const workTypeChanged = parsed.data.workTypeId !== undefined && parsed.data.workTypeId !== existing.workTypeId;
+    if (parsed.data.materials !== undefined || workTypeChanged || (parsed.data.orderType !== undefined && targetType !== existing.orderType)) {
+      const submitted = parsed.data.materials ?? (workTypeChanged || targetType !== "RAD_NJIVA" ? [] : existing.materials ?? []);
+      const rows = await prepareMaterials(prisma, targetType === "RAD_NJIVA" ? parsed.data.workTypeId ?? existing.workTypeId : null,
+        submitted, existing.materials ?? []);
+      dataToUpdate.materials = { deleteMany: {}, ...(rows.length && { createMany: { data: rows } }) };
+    }
     if (parsed.data.orderDate !== undefined) dataToUpdate.orderDate = new Date(parsed.data.orderDate);
     if (parsed.data.orderType !== undefined) dataToUpdate.orderType = parsed.data.orderType;
     if (parsed.data.priority !== undefined) dataToUpdate.priority = parsed.data.priority;
@@ -746,6 +773,7 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
     if (parsed.data.plannedAreaHa !== undefined) dataToUpdate.plannedAreaHa = parsed.data.plannedAreaHa || null;
     if (parsed.data.shift !== undefined) dataToUpdate.shift = parsed.data.shift;
     if (parsed.data.instructions !== undefined) dataToUpdate.instructions = parsed.data.instructions || null;
+    if (parsed.data.photoUrl !== undefined) dataToUpdate.photoUrl = parsed.data.photoUrl;
     if (parsed.data.status !== undefined) dataToUpdate.status = parsed.data.status;
 
     const updated = await prisma.workOrder.update({
@@ -755,8 +783,8 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
         worker: true,
         machine: true,
         attachment: true,
-        parcel: true,
-        workType: true,
+        parcel: true, contractor: true,
+        workType: true, materials: materialsInclude,
         machineAssignments: {
           where: { status: "ZADUZENA" },
           orderBy: { assignedAt: "desc" },
@@ -789,6 +817,7 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
 
     res.json({ workOrder: updated });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
     console.error("Greška pri izmeni radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }

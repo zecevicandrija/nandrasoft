@@ -21,7 +21,7 @@ const fertilizerTypeEnum = z.enum([
   "ORGANSKO_PELETIRANO",
 ]);
 
-const fertilizerUnitEnum = z.enum(["KG", "L", "TONA"]);
+const fertilizerUnitEnum = z.enum(["KG", "L", "TONA", "KOM"]);
 
 const movementTypeEnum = z.enum([
   "PRIJEM_NABAVKA",
@@ -168,6 +168,7 @@ router.post("/seed-catalog", requireRole(["DIREKTOR"]), inventoryMutation("ferti
 // 2. DODAVANJE NOVOG ARTIKLA ĐUBRIVA U ŠIFARNIK
 // ==========================================
 const createProductSchema = z.object({
+  code: z.string().trim().max(40).optional().nullable(),
   name: z.string().min(2, "Naziv đubriva mora imati najmanje 2 karaktera").max(120),
   type: fertilizerTypeEnum.default("MINERALNO_GRANULISANO"),
   unit: fertilizerUnitEnum.default("KG"),
@@ -199,9 +200,21 @@ router.post("/products", requireWarehouseAccess, inventoryMutation("fertilizer",
       });
     }
 
+    if (data.code && data.code.trim()) {
+      const existingCode = await prisma.fertilizerProduct.findUnique({
+        where: { code: data.code.trim() },
+      });
+      if (existingCode) {
+        return res.status(409).json({
+          error: `Artikal đubriva sa šifrom „${data.code.trim()}” već postoji u magacinu.`,
+        });
+      }
+    }
+
     const product = await prisma.$transaction(async (tx) => {
       const created = await tx.fertilizerProduct.create({
         data: {
+          code: data.code?.trim() || null,
           name: data.name.trim(),
           type: data.type,
           unit: data.unit,
@@ -263,6 +276,7 @@ router.post("/products", requireWarehouseAccess, inventoryMutation("fertilizer",
 // 3. IZMENA ARTIKLA ĐUBRIVA (PRAG, CENA, LOKACIJA)
 // ==========================================
 const updateProductSchema = z.object({
+  code: z.string().trim().max(40).optional().nullable(),
   name: z.string().min(2).max(120).optional(),
   type: fertilizerTypeEnum.optional(),
   unit: fertilizerUnitEnum.optional(),
@@ -291,10 +305,22 @@ router.put("/products/:id", requireWarehouseAccess, inventoryMutation("fertilize
 
     const data = parsed.data;
 
+    if (data.code !== undefined && data.code !== null && data.code.trim() !== (existing.code || "")) {
+      const existingCode = await prisma.fertilizerProduct.findUnique({
+        where: { code: data.code.trim() },
+      });
+      if (existingCode && existingCode.id !== existing.id) {
+        return res.status(409).json({
+          error: `Artikal đubriva sa šifrom „${data.code.trim()}” već postoji u magacinu.`,
+        });
+      }
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       const prod = await tx.fertilizerProduct.update({
         where: { id: existing.id },
         data: {
+          ...(data.code !== undefined && { code: data.code?.trim() || null }),
           ...(data.name !== undefined && { name: data.name.trim() }),
           ...(data.type !== undefined && { type: data.type }),
           ...(data.unit !== undefined && { unit: data.unit }),

@@ -293,7 +293,7 @@ router.get("/machines", async (req, res) => {
           totalCost: maintenance._sum.totalCost || 0,
           partsCost: maintenance._sum.partsCost || 0,
           laborCost: maintenance._sum.laborCost || 0,
-          downtimeHours: maintenance._sum.downtimeHours || 0,
+          downtimeHours: Math.round((maintenance._sum.downtimeHours || 0) * 10) / 10,
           count: maintenance._count,
           recentRepairs,
         },

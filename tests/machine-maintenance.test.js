@@ -18,7 +18,7 @@ function request(router, method, url, body) {
 }
 
 test("workshop and checkout lifecycle preserve machine availability", async (t) => {
-  const keys = ["machine", "machineAssignment", "maintenanceIssue", "workOrder", "worker", "auditLog", "parcel", "$transaction", "$executeRaw", "$queryRaw"];
+  const keys = ["workType", "machine", "machineAssignment", "maintenanceIssue", "workOrder", "worker", "auditLog", "parcel", "$transaction", "$executeRaw", "$queryRaw"];
   const originals = Object.fromEntries(keys.map((key) => [key, prisma[key]]));
   const session = mock.method(auth.api, "getSession", async () => ({ user: { id: "manager", name: "Manager", role: "DIREKTOR", isActive: true }, session: {} }));
   const logging = mock.method(console, "error", () => {});
@@ -55,6 +55,7 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
     async update({ data }) { assert.equal(locked, true); Object.assign(state.machine, data); return structuredClone(state.machine); },
   };
   prisma.worker = { async findUnique() { return { id: "w", isActive: true }; } };
+  prisma.workType = { async findUnique() { return { materialKind: null, materialRequired: false }; } };
   prisma.parcel = { async findUnique() { return { id: "p", name: "Field", areaHa: 10 }; } };
   prisma.machineAssignment = delegate("assignments");
   prisma.maintenanceIssue = delegate("issues");
@@ -84,6 +85,24 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
   const resolve = (id) => request(maintenance, "POST", `/issues/${id}/resolve`, { repairNotes: "Repaired" });
   const cancel = (id) => request(maintenance, "PUT", `/issues/${id}/status`, { status: "OTKAZAN" });
   try {
+    await t.test("optional photos persist on orders, issues, and damaged checkin", async () => {
+      const photoUrl = `https://${process.env.BUNNY_PULL_ZONE_HOSTNAME || 'nandra.b-cdn.net'}/fotografije/2026/11/foto_12345678-1234-1234-1234-123456789abc.jpg`;
+      reset();
+      assert.equal((await request(orders, "POST", "/", { workerId: "w", orderType: "OSTALO", orderDate: "2026-11-04", photoUrl })).status, 201);
+      assert.equal(state.orders[0].photoUrl, photoUrl);
+      reset();
+      assert.equal((await request(maintenance, "POST", "/issues", { machineId: "m", title: "Curenje ulja", photoUrl })).status, 201);
+      assert.equal(state.issues[0].photoUrl, photoUrl);
+      reset();
+      assert.equal((await request(maintenance, "POST", "/remont-order", { machineId: "m", workerId: "w", orderDate: "2026-11-04", instructions: "Provera", photoUrl })).status, 201);
+      assert.equal(state.orders[0].photoUrl, photoUrl);
+      assert.equal(state.issues[0].photoUrl, photoUrl);
+      reset();
+      state.assignments.push({ id: "a", machineId: "m", workerId: "w", status: "ZADUZENA", startHours: 10 });
+      assert.equal((await request(assignments, "POST", "/checkin", { assignmentId: "a", endHours: 12, isOperational: false, photoUrl })).status, 200);
+      assert.equal(state.assignments[0].photoUrl, photoUrl);
+      assert.equal(state.issues[0].photoUrl, photoUrl);
+    });
     await t.test("ordinary and workshop creation share one transactional RN counter past 9999", async () => {
       reset();
       const prefix = `RN-${new Date().getFullYear()}-`;

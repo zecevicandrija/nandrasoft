@@ -5,9 +5,45 @@ import { readFile } from "node:fs/promises";
 import pg from "pg";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { Prisma } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { databasePoolConfig } from "../lib/databaseConfig.js";
 import { enqueueWorkOrderPush, claimPushJobs, processPushJob, startPushOutboxWorker } from "../lib/pushOutbox.js";
 import "dotenv/config";
+
+test("Prisma preserves UTC instants and claims due pushes without a timezone delay", {
+  skip: process.env.TEST_ASSIGNMENT_DB !== "1", timeout: 30000,
+}, async () => {
+  const client = new PrismaClient({ adapter: new PrismaPg(databasePoolConfig()) });
+  try {
+    await client.$transaction(async (tx) => {
+      const [session] = await tx.$queryRaw`SELECT current_setting('TimeZone') AS timezone`;
+      assert.equal(session.timezone, "UTC");
+      for (const value of ["2026-11-04T22:10:51.823Z", "2026-07-04T22:10:51.823Z"]) {
+        const instant = new Date(value);
+        const [result] = await tx.$queryRaw`SELECT ${instant}::timestamptz AS instant,
+          EXTRACT(EPOCH FROM ${instant}::timestamptz)::double precision AS epoch`;
+        assert.equal(result.instant.toISOString(), value);
+        assert.equal(Math.round(result.epoch * 1000), instant.getTime());
+      }
+      // Connection-local shadow table: never claim or send real notifications.
+      await tx.$executeRawUnsafe(`CREATE TEMP TABLE push_outbox
+        (LIKE public.push_outbox INCLUDING DEFAULTS) ON COMMIT DROP`);
+      await tx.$executeRawUnsafe(`INSERT INTO push_outbox
+        (id, "workOrderId", "workerId", "userId", "subscriptionId", status, "nextAttemptAt", "lockedUntil") VALUES
+        ('due', 'order', 'worker', 'user', 'phone', 'PENDING', NOW() - INTERVAL '1 second', NULL),
+        ('future', 'order', 'worker', 'user', 'phone', 'PENDING', NOW() + INTERVAL '30 seconds', NULL),
+        ('expired-lease', 'order', 'worker', 'user', 'phone', 'PROCESSING', NOW(), NOW() - INTERVAL '1 second')`);
+      const jobs = await claimPushJobs(tx);
+      assert.deepEqual(jobs.map((job) => job.id).sort(), ["due", "expired-lease"]);
+      for (const job of jobs) {
+        assert.ok(Math.abs(job.createdAt.getTime() - Date.now()) < 5000);
+        assert.ok(Math.abs(job.lockedUntil.getTime() - Date.now() - 60000) < 5000);
+      }
+      assert.equal((await claimPushJobs(tx)).length, 0);
+    });
+  } finally { await client.$disconnect(); }
+});
 
 function fixture() {
   const now = new Date("2026-10-31T10:00:00Z");

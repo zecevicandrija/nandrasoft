@@ -12,6 +12,7 @@ test("database pool has a bounded size and finite connection/acquisition timeout
   assert.equal(config.max, 8);
   assert.equal(config.connectionTimeoutMillis, 5000);
   assert.equal(config.idleTimeoutMillis, 10000);
+  assert.equal(config.options, "-c timezone=UTC");
   assert.equal(databasePoolConfig({ DB_POOL_MAX: "6" }).max, 6);
   assert.equal(databasePoolConfig({ DB_POOL_MAX: "10" }).max, 10);
   for (const value of ["0", "-1", "11", "12", "1.5", "8oops", "", "Infinity"]) {

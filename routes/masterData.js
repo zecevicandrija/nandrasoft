@@ -1,4 +1,6 @@
+import { materialKindSchema } from "../lib/workMaterials.js";
 import { writeAudit } from "../lib/audit.js";
+import { contractorSchema } from "../lib/contractors.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { Router } from "express";
 import { machineMutation, hasOpenMaintenance, machineArchiveBlocker } from "../lib/machineAvailability.js";
@@ -15,6 +17,44 @@ router.use(requireAuth);
 // Helper za proveru rola za izmene (samo DIREKTOR i RUKOVODILAC smeju da menjaju šifarnike)
 const requireManager = requireRole(["DIREKTOR", "RUKOVODILAC"]);
 
+router.get("/contractors", async (req, res) => {
+  try {
+    res.json({ contractors: await prisma.contractor.findMany({ orderBy: { code: "asc" } }) });
+  } catch {
+    res.status(500).json({ error: "Kooperanti nisu učitani." });
+  }
+});
+
+function contractorError(res, error) {
+  if (error?.code === "P2002") return res.status(409).json({ error: "Šifra kooperanta već postoji." });
+  if (error?.code === "P2025") return res.status(404).json({ error: "Kooperant nije pronađen." });
+  if (error?.code === "P2003") return res.status(409).json({ error: "Kooperant se koristi u radovima ili radnim nalozima i ne može biti obrisan." });
+  return res.status(500).json({ error: "Greška pri čuvanju kooperanta." });
+}
+
+router.post("/contractors", requireManager, async (req, res) => {
+  const parsed = contractorSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join(". ") });
+  try {
+    res.status(201).json({ contractor: await prisma.contractor.create({ data: parsed.data }) });
+  } catch (error) { contractorError(res, error); }
+});
+
+router.put("/contractors/:id", requireManager, async (req, res) => {
+  const parsed = contractorSchema.partial().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join(". ") });
+  try {
+    res.json({ contractor: await prisma.contractor.update({ where: { id: req.params.id }, data: parsed.data }) });
+  } catch (error) { contractorError(res, error); }
+});
+
+router.delete("/contractors/:id", requireManager, async (req, res) => {
+  try {
+    await prisma.contractor.delete({ where: { id: req.params.id } });
+    res.json({ message: "Kooperant je obrisan." });
+  } catch (error) { contractorError(res, error); }
+});
+
 // ==========================================
 // 1. STATISTIKA ŠIFARNIKA
 // ==========================================
@@ -27,6 +67,7 @@ router.get("/stats", async (req, res) => {
       workTypes,
       crops,
       partners,
+      oilFuelCount,
     ] = await Promise.all([
       prisma.parcel.findMany({ where: { isActive: true } }),
       prisma.machine.findMany({ where: { isActive: true } }),
@@ -34,6 +75,7 @@ router.get("/stats", async (req, res) => {
       prisma.workType.count({ where: { isActive: true } }),
       prisma.crop.count({ where: { isActive: true } }),
       prisma.partner.count({ where: { isActive: true } }),
+      prisma.oilFuelProduct.count({ where: { isActive: true } }),
     ]);
 
     const totalAreaHa = parcels.reduce((sum, p) => sum + p.areaHa, 0);
@@ -50,6 +92,7 @@ router.get("/stats", async (req, res) => {
       workTypesCount: workTypes,
       cropsCount: crops,
       partnersCount: partners,
+      oilFuelCount,
     });
   } catch (error) {
     console.error("Greška pri dohvatanju statistike šifarnika:", error);
@@ -141,6 +184,7 @@ const machineSchema = z.object({
   currentHours: z.number().nonnegative().default(0),
   tankCapacityLiters: z.number().nonnegative().optional().nullable(),
   currentFuelLiters: z.number().nonnegative().optional().nullable(),
+  fuelType: z.string().max(100).optional().nullable(),
   enpTagNumber: z.string().max(80).optional().nullable(),
   enpTagBalance: z.number().optional().nullable(),
   status: machineStatusEnum.default("SLOBODNA"),
@@ -181,6 +225,7 @@ router.put("/machines/:id", requireManager, machineMutation(async (req, res, pri
     }
     let fuelData = {};
     let beforeActivation;
+    let currentMachine = null;
     if (parsed.data.isActive !== undefined) {
       beforeActivation = await prisma.machine.findUnique({ where: { id: req.params.id } });
       if (!beforeActivation) return res.status(404).json({ error: "Mašina nije pronađena." });
@@ -190,11 +235,11 @@ router.put("/machines/:id", requireManager, machineMutation(async (req, res, pri
       }
     }
     if (parsed.data.currentFuelLiters !== undefined) {
-      const current = await prisma.machine.findUnique({ where: { id: req.params.id } });
-      if (!current) return res.status(404).json({ error: "Mašina nije pronađena." });
-      const conflict = fuelSnapshotError(current, req.body.expectedMachineUpdatedAt);
+      currentMachine = await prisma.machine.findUnique({ where: { id: req.params.id } });
+      if (!currentMachine) return res.status(404).json({ error: "Mašina nije pronađena." });
+      const conflict = fuelSnapshotError(currentMachine, req.body.expectedMachineUpdatedAt);
       if (conflict) return res.status(409).json(conflict);
-      fuelData = measuredFuelData(current, parsed.data.currentFuelLiters);
+      fuelData = measuredFuelData(currentMachine, parsed.data.currentFuelLiters);
     }
     if (parsed.data.status === "SLOBODNA" &&
         (await hasOpenMaintenance(prisma, req.params.id) ||
@@ -205,6 +250,16 @@ router.put("/machines/:id", requireManager, machineMutation(async (req, res, pri
       where: { id: req.params.id },
       data: { ...parsed.data, ...fuelData },
     });
+    if (currentMachine && parsed.data.currentFuelLiters !== undefined && currentMachine.currentFuelLiters !== machine.currentFuelLiters) {
+      await writeAudit(prisma, req, {
+        entityType: "Machine",
+        entityId: machine.id,
+        action: "IZMENA",
+        description: `Ručna promena stanja goriva mašine "${machine.name}" sa ${currentMachine.currentFuelLiters ?? 0} L na ${machine.currentFuelLiters} L`,
+        oldValues: { currentFuelLiters: currentMachine.currentFuelLiters },
+        newValues: { currentFuelLiters: machine.currentFuelLiters },
+      });
+    }
     if (beforeActivation && beforeActivation.isActive !== machine.isActive) await writeAudit(prisma, req, {
       entityType: "Machine", entityId: machine.id, action: machine.isActive ? "IZMENA" : "DEAKTIVACIJA",
       description: machine.isActive ? "Ponovno aktiviranje mašine" : "Arhiviranje mašine; istorija je sačuvana",
@@ -553,6 +608,8 @@ router.delete("/workers/:id", requireManager, inventoryMutation("workers", async
 const workCategoryEnum = z.enum(["OBRADA", "ZASTITA", "SETVA", "ZETVA_BERBA", "TRANSPORT", "OSTALO"]);
 
 const workTypeSchema = z.object({
+  materialKind: materialKindSchema.nullable().optional(),
+  materialRequired: z.boolean().optional(),
   name: z.string().min(2, "Naziv operacije je obavezan").max(100),
   category: workCategoryEnum.default("OBRADA"),
   unit: z.string().max(20).default("ha"),
@@ -589,6 +646,7 @@ router.post("/work-types", requireManager, async (req, res) => {
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
     }
+    if (parsed.data.materialRequired && !parsed.data.materialKind) return res.status(400).json({ error: "Za obavezan materijal izaberite vrstu materijala." });
     const workType = await prisma.workType.create({ data: parsed.data });
     res.status(201).json({ workType });
   } catch (error) {
@@ -604,6 +662,12 @@ router.put("/work-types/:id", requireManager, async (req, res) => {
     const parsed = workTypeSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
+    }
+    if (parsed.data.materialKind !== undefined || parsed.data.materialRequired !== undefined) {
+      const current = await prisma.workType.findUnique({ where: { id: req.params.id }, select: { materialKind: true, materialRequired: true } });
+      if (!current) return res.status(404).json({ error: "Operacija nije pronađena." });
+      if ((parsed.data.materialRequired ?? current.materialRequired) && !(parsed.data.materialKind === undefined ? current.materialKind : parsed.data.materialKind))
+        return res.status(400).json({ error: "Za obavezan materijal izaberite vrstu materijala." });
     }
     const workType = await prisma.workType.update({
       where: { id: req.params.id },
@@ -744,6 +808,127 @@ router.delete("/partners/:id", requireManager, async (req, res) => {
     await prisma.partner.delete({ where: { id: req.params.id } });
     res.json({ message: "Partner uspešno obrisan." });
   } catch (error) {
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+});
+
+// ==========================================
+// 8. ULJA I GORIVO (OIL & FUEL MASTER DATA)
+// ==========================================
+const oilFuelSchema = z.object({
+  code: z.string().trim().min(1, "Šifra je obavezna.").max(40),
+  name: z.string().trim().min(2, "Naziv mora imati bar 2 karaktera.").max(160),
+  category: z.enum(["GORIVO", "MOTORNO_ULJE", "HIDRAULICNO_ULJE", "TRANSMISIONO_ULJE", "PUTARINA", "OSTALO"]).default("GORIVO"),
+  unit: z.enum(["L", "KOM", "KG", "LIT"]).default("L"),
+  notes: z.string().trim().max(500).nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+router.get("/oil-and-fuel", async (req, res) => {
+  try {
+    const { all, q, category, page = 1, limit = 10 } = req.query;
+
+    if (all === "true") {
+      const products = await prisma.oilFuelProduct.findMany({
+        where: { isActive: true },
+        orderBy: { code: "asc" },
+      });
+      return res.json({ products });
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const take = Math.max(1, Math.min(50, parseInt(limit, 10) || 10));
+    const skip = (pageNum - 1) * take;
+
+    const searchStr = typeof q === "string" ? q.trim() : "";
+    const catStr = typeof category === "string" ? category.trim() : "";
+
+    const where = {
+      isActive: true,
+      ...(catStr ? { category: catStr } : {}),
+      ...(searchStr
+        ? {
+            OR: [
+              { code: { contains: searchStr, mode: "insensitive" } },
+              { name: { contains: searchStr, mode: "insensitive" } },
+              { notes: { contains: searchStr, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+
+    const [totalItems, items] = await Promise.all([
+      prisma.oilFuelProduct.count({ where }),
+      prisma.oilFuelProduct.findMany({
+        where,
+        orderBy: { code: "asc" },
+        take,
+        skip,
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(totalItems / take));
+    res.json({
+      items,
+      totalItems,
+      totalPages,
+      page: pageNum,
+      pageSize: take,
+    });
+  } catch (error) {
+    console.error("Greška pri dohvatanju ulja i goriva:", error);
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+});
+
+router.post("/oil-and-fuel", requireManager, async (req, res) => {
+  try {
+    const parsed = oilFuelSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
+    }
+    const product = await prisma.oilFuelProduct.create({
+      data: parsed.data,
+    });
+    res.status(201).json({ product });
+  } catch (error) {
+    if (error?.code === "P2002") {
+      return res.status(409).json({ error: "Artikal sa ovom šifrom već postoji." });
+    }
+    console.error("Greška pri kreiranju ulja/goriva:", error);
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+});
+
+router.put("/oil-and-fuel/:id", requireManager, async (req, res) => {
+  try {
+    const parsed = oilFuelSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map((i) => i.message).join(". ") });
+    }
+    const product = await prisma.oilFuelProduct.update({
+      where: { id: req.params.id },
+      data: parsed.data,
+    });
+    res.json({ product });
+  } catch (error) {
+    if (error?.code === "P2002") {
+      return res.status(409).json({ error: "Artikal sa ovom šifrom već postoji." });
+    }
+    console.error("Greška pri izmeni ulja/goriva:", error);
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+});
+
+router.delete("/oil-and-fuel/:id", requireManager, async (req, res) => {
+  try {
+    await prisma.oilFuelProduct.update({
+      where: { id: req.params.id },
+      data: { isActive: false },
+    });
+    res.json({ message: "Artikal uspešno arhiviran." });
+  } catch (error) {
+    console.error("Greška pri arhiviranju ulja/goriva:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
 });

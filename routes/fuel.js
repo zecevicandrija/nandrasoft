@@ -176,6 +176,60 @@ router.get("/stats", async (req, res) => {
 });
 
 // ==========================================
+// 1.1 STANJE MAŠINA (KAPACITET, NIVO GORIVA, POSLEDNJE PUNJENJE)
+// ==========================================
+router.get("/machine-states", async (req, res) => {
+  try {
+    const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
+    if (!isManager) {
+      return res.status(403).json({ error: "Samo direktor i rukovodilac mogu videti stanje mašina." });
+    }
+
+    const machines = await prisma.machine.findMany({
+      where: { isActive: true },
+      orderBy: [{ type: "asc" }, { name: "asc" }],
+    });
+
+    const machineIds = machines.map((m) => m.id);
+    const lastFuelEntries = machineIds.length > 0
+      ? await prisma.fuelEntry.findMany({
+          where: { machineId: { in: machineIds } },
+          orderBy: { date: "desc" },
+          distinct: ["machineId"],
+          select: {
+            machineId: true,
+            date: true,
+            liters: true,
+            fuelType: true,
+            fuelSource: true,
+            gasStation: true,
+            worker: { select: { id: true, name: true } },
+          },
+        })
+      : [];
+
+    const lastRefuelMap = new Map(lastFuelEntries.map((e) => [e.machineId, e]));
+
+    const machineStates = machines.map((m) => {
+      const last = lastRefuelMap.get(m.id);
+      return {
+        ...m,
+        fuelType: m.fuelType || last?.fuelType || (m.type === "PRIKLJUCAK" ? "BEZ_GORIVA" : "EURODIZEL"),
+        lastRefueledDate: last?.date || null,
+        lastRefueledLiters: last?.liters || null,
+        lastRefueledSource: last?.fuelSource || null,
+        lastRefueledWorker: last?.worker?.name || null,
+      };
+    });
+
+    res.json({ machines: machineStates });
+  } catch (error) {
+    console.error("Greška pri dohvatanju stanja mašina:", error);
+    res.status(500).json({ error: "Greška pri učitavanju stanja mašina." });
+  }
+});
+
+// ==========================================
 // 2. SPISAK TOČENJA SA FILTERIMA (DNEVNIK)
 // ==========================================
 router.get("/entries", async (req, res) => {

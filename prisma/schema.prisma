@@ -206,6 +206,7 @@ model Machine {
   // Faza 3: Rezervoar goriva u litrima
   tankCapacityLiters Float?  @default(200)
   currentFuelLiters  Float?  @default(0)
+  fuelType           String? @default("EURODIZEL")
 
   // ENP Tag za putarine (kamioni i prevozna sredstva)
   enpTagNumber       String?
@@ -238,7 +239,92 @@ enum WorkCategory {
   OSTALO
 }
 
+enum MaterialKind {
+  FERTILIZER
+  CHEMICAL
+  SEED
+}
+
+model ChemicalProduct {
+  id               String         @id @default(cuid())
+  code             String         @unique
+  name             String
+  activeIngredient String?
+  unit             String         @default("L")
+  notes            String?
+  isActive         Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  workMaterials    WorkMaterial[]
+
+  @@index([isActive, code, id])
+  @@map("chemical_product")
+}
+
+model SeedProduct {
+  id            String         @id @default(cuid())
+  code          String         @unique
+  name          String
+  crop          String         @default("Luk")
+  variety       String?
+  manufacturer  String?
+  unit          String         @default("SEME")
+  notes         String?
+  isActive      Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  workMaterials WorkMaterial[]
+
+  @@index([isActive, code, id])
+  @@map("seed_product")
+}
+
+model OilFuelProduct {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  category  String   @default("GORIVO") // GORIVO, MOTORNO_ULJE, HIDRAULICNO_ULJE, TRANSMISIONO_ULJE, PUTARINA
+  unit      String   @default("L")
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, code, id])
+  @@map("oil_fuel_product")
+}
+
+model WorkMaterial {
+  id           String             @id @default(cuid())
+  workOrderId  String?
+  workOrder    WorkOrder?          @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  fieldWorkId  String?
+  fieldWork    FieldWork?          @relation(fields: [fieldWorkId], references: [id], onDelete: Cascade)
+  kind         MaterialKind
+  productId    String
+  fertilizerId String?
+  fertilizer   FertilizerProduct?  @relation(fields: [fertilizerId], references: [id], onDelete: Restrict)
+  chemicalId   String?
+  chemical     ChemicalProduct?    @relation(fields: [chemicalId], references: [id], onDelete: Restrict)
+  seedId       String?
+  seed         SeedProduct?        @relation(fields: [seedId], references: [id], onDelete: Restrict)
+  code         String?
+  name         String
+  unit         String
+  dosePerHa    Float?
+  notes        String?
+
+  @@unique([workOrderId, kind, productId])
+  @@unique([fieldWorkId, kind, productId])
+  @@index([fertilizerId])
+  @@index([chemicalId])
+  @@index([seedId])
+  @@map("work_material")
+}
+
 model WorkType {
+  materialKind       MaterialKind?
+  materialRequired   Boolean      @default(false)
   id                 String       @id @default(cuid())
   name               String       @unique
   category           WorkCategory @default(OBRADA)
@@ -364,7 +450,24 @@ enum WorkStatus {
   STORNO
 }
 
+model Contractor {
+  id         String      @id @default(cuid())
+  code       String      @unique
+  name       String
+  phone      String?
+  notes      String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  fieldWorks FieldWork[]
+  workOrders WorkOrder[]
+
+  @@map("contractor")
+}
+
 model FieldWork {
+  materials    WorkMaterial[]
+  contractorId String?
+  contractor   Contractor? @relation(fields: [contractorId], references: [id], onDelete: Restrict)
   id           String      @id @default(cuid())
   date         DateTime    @default(now())
   shift        ShiftType   @default(PRVA)
@@ -444,6 +547,7 @@ model MachineAssignment {
   endFuelLiters   Float?           // Faza 3: Tačan nivo u litrima
   endHours        Float?           // Krajnji radni sati (rh) -> ažurira Machine.currentHours
   isOperational   Boolean          @default(true) // Da li je vraćena ispravna
+  photoUrl        String?          // Fotografija pri razduženju
   returnNotes     String?          // Opis problema ako nije ispravna
   
   status          AssignmentStatus @default(ZADUZENA)
@@ -511,6 +615,9 @@ enum OrderStatus {
 }
 
 model WorkOrder {
+  materials       WorkMaterial[]
+  contractorId String?
+  contractor   Contractor? @relation(fields: [contractorId], references: [id], onDelete: Restrict)
   id              String       @id @default(cuid())
   orderNumber     String       @unique // npr. "RN-2026-0001"
   orderDate       DateTime     // Datum za koji je nalog planiran (npr. sutra)
@@ -538,6 +645,7 @@ model WorkOrder {
 
   plannedAreaHa   Float?       // Planirano hektara
   shift           ShiftType    @default(PRVA)
+  photoUrl        String?      // Fotografija uz uputstvo radniku
   instructions    String?      // Uputstvo poslovođe radniku
 
   // Povezivanje sa realizacijom kada radnik popuni unos rada
@@ -806,6 +914,7 @@ enum FertilizerUnit {
   KG
   L
   TONA
+  KOM
 }
 
 enum StockMovementType {
@@ -816,7 +925,9 @@ enum StockMovementType {
 }
 
 model FertilizerProduct {
+  workMaterials       WorkMaterial[]
   id                  String               @id @default(cuid())
+  code                String?              @unique
   name                String               @unique // npr. "YaraMila Complex 12-11-18"
   type                FertilizerType       @default(MINERALNO_GRANULISANO)
   unit                FertilizerUnit       @default(KG)

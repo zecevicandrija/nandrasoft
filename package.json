@@ -2,6 +2,7 @@
   "name": "nandra-backend",
   "type": "module",
   "scripts": {
+    "test:materials": "node --test tests/work-materials.test.js tests/work-materials-routes.test.js",
     "test:sentry": "node --test tests/sentry.test.js",
     "test:push": "node --test tests/push-outbox.test.js tests/push-recipient-identity.test.js",
     "test:rate-limits": "node --test tests/rate-limiting.test.js tests/auth-role.test.js",
@@ -34,7 +35,7 @@
     "test:fertilizer": "node --test tests/fertilizer-reporting.test.js tests/fertilizer-catalog-read.test.js",
     "inventory:audit": "node scripts/audit-inventory.js",
     "security:migrate-users": "node scripts/migrate-user-security.js",
-    "test:uploads": "node --test tests/receipt-upload.test.js",
+    "test:uploads": "node --test tests/receipt-upload.test.js tests/photo-upload.test.js",
     "dev": "node --watch-path=routes --watch-path=middlewares --watch-path=lib --watch-path=index.js index.js",
     "seed": "node seed.js",
     "db:migrate": "prisma migrate dev",

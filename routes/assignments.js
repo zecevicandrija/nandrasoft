@@ -1,6 +1,7 @@
 import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
 import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker, isManager as isManagerUser } from "../lib/workerIdentity.js";
+import { photoUrlSchema } from "../lib/photoUrl.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -305,6 +306,7 @@ router.post("/checkout", machineMutation(async (req, res, prisma) => {
 // 5. RAZDUŽIVANJE MAŠINE (CHECKIN)
 // ==========================================
 const checkinSchema = z.object({
+  photoUrl: photoUrlSchema,
   assignmentId: z.string().min(1, "ID zaduženja je obavezan"),
   endHours: z.number().nonnegative("Krajnji radni sati moraju biti pozitivan broj"),
   endFuelLevel: z.number().min(0).max(100).optional().nullable(),
@@ -322,7 +324,7 @@ router.post("/checkin", machineMutation(async (req, res, prisma) => {
       });
     }
 
-    const { assignmentId, endHours, endFuelLevel, endFuelLiters, isOperational, returnNotes } = parsed.data;
+    const { assignmentId, endHours, endFuelLevel, endFuelLiters, isOperational, returnNotes, photoUrl } = parsed.data;
 
     const assignment = await prisma.machineAssignment.findUnique({
       where: { id: assignmentId },
@@ -389,6 +391,7 @@ router.post("/checkin", machineMutation(async (req, res, prisma) => {
           endFuelLiters: calculatedEndFuelLiters,
           isOperational,
           returnNotes: returnNotes || null,
+          photoUrl: photoUrl || null,
         },
         include: {
           machine: true,
@@ -417,6 +420,7 @@ router.post("/checkin", machineMutation(async (req, res, prisma) => {
             reportedById: assignment.workerId,
             title: `Prijava kvara pri razduživanju: ${assignment.machine.name}`,
             description: returnNotes || "Radnik prijavio neispravnost prilikom razduživanja mašine.",
+            photoUrl: photoUrl || null,
             isMachineStopped: true,
             createdById: req.user.id,
           },

@@ -2,6 +2,7 @@ import { addMoney } from "../lib/money.js";
 import { generateOrderNumber } from "../lib/documentNumbers.js";
 import { machineMutation, syncMachineStatus } from "../lib/machineAvailability.js";
 import { requireWorkerIdentity, resolveWorkerForUser, getRequestWorker } from "../lib/workerIdentity.js";
+import { photoUrlSchema } from "../lib/photoUrl.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -186,6 +187,7 @@ router.get("/issues", async (req, res) => {
 // 3. RUČNA PRIJAVA KVARA
 // ==========================================
 const createIssueSchema = z.object({
+  photoUrl: photoUrlSchema,
   machineId: z.string().min(1, "Mašina je obavezna"),
   serviceType: z.enum(["KVAR_NJIVA", "REDOVAN_SERVIS", "GENERALNI_REMONT"]).default("KVAR_NJIVA"),
   priority: z.enum(["NISKA", "SREDNJA", "VISOKA", "KRITICNA"]).default("VISOKA"),
@@ -227,6 +229,7 @@ router.post("/issues", machineMutation(async (req, res, prisma) => {
           priority: parsed.data.priority,
           title: parsed.data.title,
           description: parsed.data.description || null,
+          photoUrl: parsed.data.photoUrl || null,
           parcelId: parsed.data.parcelId || null,
           servicePartnerId: parsed.data.servicePartnerId || null,
           reportedById: worker.id,
@@ -407,6 +410,7 @@ router.get("/remont-orders", machineMutation(async (req, res, prisma) => {
 // 5. IZDAVANJE NALOGA ZA REMONT (RUKOVODILAC & DIREKTOR)
 // ==========================================
 const createRemontOrderSchema = z.object({
+  photoUrl: photoUrlSchema,
   machineId: z.string().min(1, "Mašina je obavezna"),
   workerId: z.string().min(1, "Mehaničar je obavezan"),
   orderDate: z.string().or(z.date()),
@@ -424,7 +428,7 @@ router.post("/remont-order", requireManager, machineMutation(async (req, res, pr
       });
     }
 
-    const { machineId, workerId, orderDate, priority, serviceType, instructions } = parsed.data;
+    const { machineId, workerId, orderDate, priority, serviceType, instructions, photoUrl } = parsed.data;
 
     const machine = await prisma.machine.findUnique({ where: { id: machineId } });
     if (!machine) return res.status(404).json({ error: "Mašina nije pronađena." });
@@ -443,6 +447,7 @@ router.post("/remont-order", requireManager, machineMutation(async (req, res, pr
         mechanicId: workerId,
         title: `Radni nalog ${orderNumber}: ${instructions.slice(0, 50)}`,
         description: instructions,
+        photoUrl: photoUrl || null,
         isMachineStopped: true,
         createdById: req.user.id,
       },
@@ -458,6 +463,7 @@ router.post("/remont-order", requireManager, machineMutation(async (req, res, pr
         workerId,
         machineId,
         instructions,
+        photoUrl: photoUrl || null,
         maintenanceId: issue.id,
         issuedById: req.user.id,
       },

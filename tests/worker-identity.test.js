@@ -34,7 +34,7 @@ test("worker identity is based on immutable IDs across business routes", async (
   const assignedWorkerId = "other-worker";
   let activeAssignment = null;
   const machine = { id: "machine", name: "Truck", status: "SLOBODNA", type: "KAMION", currentHours: 10, tankCapacityLiters: 500 };
-  const originals = Object.fromEntries(["maintenanceIssue", "$executeRaw", "worker", "machine", "machineAssignment", "fuelEntry", "fieldWork", "workOrder", "parcel", "auditLog", "pushSubscription", "user", "$transaction", "$executeRaw"].map((key) => [key, prisma[key]]));
+  const originals = Object.fromEntries(["workType", "maintenanceIssue", "$executeRaw", "worker", "machine", "machineAssignment", "fuelEntry", "fieldWork", "workOrder", "parcel", "auditLog", "pushSubscription", "user", "$transaction", "$executeRaw"].map((key) => [key, prisma[key]]));
   prisma.$executeRaw = async () => 1;
   const sessionMock = mock.method(auth.api, "getSession", async () => ({ user, session: {} }));
   prisma.$executeRaw = async () => 1;
@@ -78,6 +78,7 @@ test("worker identity is based on immutable IDs across business routes", async (
     async findFirst() { return null; },
     async findUnique() { return { id: "other-order", workerId: "other-worker" }; },
   };
+  prisma.workType = { async findUnique() { return { materialKind: null, materialRequired: false }; } };
   prisma.parcel = { async findUnique() { return { id: "parcel", areaHa: 10 }; } };
   prisma.auditLog = { async create() { return {}; } };
   prisma.pushSubscription = { async upsert() { return { id: "subscription" }; } };

@@ -61,6 +61,7 @@ test("fuel deltas and measured machine states coordinate across inventory domain
       return copy(row);
     };
     const tx = {
+      workType: { async findUnique() { return { materialKind: null, materialRequired: false }; } },
       async $executeRaw(strings, ...values) {
         const sql = strings.join("");
         if (sql.includes('FROM "machine"')) {

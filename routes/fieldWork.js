@@ -1,3 +1,5 @@
+import { materialsSchema, materialsInclude, prepareMaterials, materialText } from "../lib/workMaterials.js";
+import { optionalContractorId, validateContractor } from "../lib/contractors.js";
 import { reportingQuery, fieldWorkStats, unassignedWorkPage } from "../lib/fieldWorkReporting.js";
 import { machineMutation, hasOpenMaintenance } from "../lib/machineAvailability.js";
 import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
@@ -140,11 +142,11 @@ router.get("/", async (req, res) => {
       prisma.fieldWork.findMany({
         where,
         include: {
-          parcel: true,
+          parcel: true, contractor: true,
           machine: true,
           attachment: true,
           worker: true,
-          workType: true,
+          workType: true, materials: materialsInclude,
           createdBy: {
             select: { id: true, name: true, email: true, role: true },
           },
@@ -173,6 +175,8 @@ router.get("/", async (req, res) => {
 const fieldWorkSchema = z.object({
   date: z.string().optional(),
   shift: z.enum(["PRVA", "DRUGA", "TRECA"]).default("PRVA"),
+  contractorId: optionalContractorId,
+  materials: materialsSchema.optional(),
   parcelId: z.string().min(1, "Parcela je obavezna"),
   machineId: z.string().min(1, "Mašina je obavezna"),
   attachmentId: z.string().optional().nullable(),
@@ -281,7 +285,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
 
     let linkedOrder = null;
     if (parsed.data.workOrderId) {
-      linkedOrder = await prisma.workOrder.findUnique({ where: { id: parsed.data.workOrderId } });
+      linkedOrder = await prisma.workOrder.findUnique({ where: { id: parsed.data.workOrderId }, include: { materials: materialsInclude } });
       if (!linkedOrder) return res.status(404).json({ error: "Radni nalog nije pronađen." });
       if (!canAccessWorkerRecord(req, linkedOrder)) {
         return res.status(403).json({ error: "Radni nalog ne pripada vašem profilu." });
@@ -377,17 +381,21 @@ router.post("/", machineMutation(async (req, res, prisma) => {
         }
       }
       if (linkedOrder) {
-        const currentOrder = await tx.workOrder.findUnique({ where: { id: linkedOrder.id } });
-        if (!currentOrder || ["workerId", "machineId", "parcelId", "workTypeId", "attachmentId", "status"]
+        const currentOrder = await tx.workOrder.findUnique({ where: { id: linkedOrder.id }, include: { materials: materialsInclude } });
+        if (!currentOrder || ["workerId", "machineId", "parcelId", "contractorId", "workTypeId", "attachmentId", "status"]
           .some((key) => currentOrder[key] !== linkedOrder[key])) {
           throw Object.assign(new Error("Radni nalog je promenjen. Osvežite podatke i pokušajte ponovo."), { status: 409 });
         }
       }
+      await validateContractor(tx, parsed.data.contractorId === undefined ? linkedOrder?.contractorId : parsed.data.contractorId);
+      const materialRows = await prepareMaterials(tx, workTypeId, parsed.data.materials ?? linkedOrder?.materials,
+        linkedOrder?.materials ?? []);
       const work = await tx.fieldWork.create({
         data: {
           date: date ? new Date(date) : new Date(),
           shift,
           parcelId,
+          contractorId: parsed.data.contractorId === undefined ? linkedOrder?.contractorId ?? null : parsed.data.contractorId,
           machineId,
           attachmentId: attachmentId || null,
           workerId: finalWorkerId,
@@ -400,13 +408,14 @@ router.post("/", machineMutation(async (req, res, prisma) => {
           notes: notes || null,
           photoUrl: photoUrl || null,
           createdById: req.user.id,
+          ...(materialRows.length && { materials: { createMany: { data: materialRows } } }),
         },
         include: {
-          parcel: true,
+          parcel: true, contractor: true,
           machine: true,
           attachment: true,
           worker: true,
-          workType: true,
+          workType: true, materials: materialsInclude,
         },
       });
 
@@ -435,6 +444,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
             endFuelLiters: endFuel,
             isOperational,
             returnNotes: parsed.data.returnNotes || null,
+            photoUrl: photoUrl || null,
             status: isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM",
           },
         });
@@ -460,6 +470,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
               reportedById: finalWorkerId,
               title: `Prijava kvara pri radu na njivi: ${machineObj.name}`,
               description: parsed.data.returnNotes || "Radnik prijavio neispravnost prilikom završetka rada na njivi.",
+              photoUrl: photoUrl || null,
               isMachineStopped: true,
               createdById: req.user.id,
             },
@@ -481,6 +492,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
             endFuelLiters: endFuel,
             isOperational,
             returnNotes: parsed.data.returnNotes || null,
+            photoUrl: photoUrl || null,
             status: status === "ZAVRSENO" ? (isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM") : "ZADUZENA",
             assignNotes: `Automatski evidentirano uz rad na njivi`,
             createdById: req.user.id,
@@ -508,6 +520,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
                 reportedById: finalWorkerId,
                 title: `Prijava kvara pri radu na njivi: ${machineObj.name}`,
                 description: parsed.data.returnNotes || "Radnik prijavio neispravnost prilikom završetka rada na njivi.",
+              photoUrl: photoUrl || null,
                 isMachineStopped: true,
                 createdById: req.user.id,
               },
@@ -537,6 +550,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
       },
     });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
     console.error("Greška pri unosu rada na njivi:", error);
     if (error.status === 409 || ["P2025", "P2034"].includes(error.code)) {
       return res.status(409).json({ error: "Podaci su promenjeni. Osvežite podatke i pokušajte ponovo." });
@@ -553,7 +567,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
     const { id } = req.params;
     const existing = await prisma.fieldWork.findUnique({
       where: { id },
-      include: { parcel: true, worker: true, machine: true, attachment: true, workType: true },
+      include: { parcel: true, contractor: true, worker: true, machine: true, attachment: true, workType: true, materials: materialsInclude },
     });
 
     if (!existing) {
@@ -704,8 +718,30 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       newValues.attachment = newAtt ? newAtt.name : null;
     }
 
+    if (updateData.contractorId !== undefined) {
+      await validateContractor(prisma, updateData.contractorId);
+      if (updateData.contractorId !== existing.contractorId) {
+        const selected = updateData.contractorId ? await prisma.contractor.findUnique({ where: { id: updateData.contractorId } }) : null;
+        changes.push(`Kooperant: ${existing.contractor?.name || '—'} → ${selected?.name || '—'}`);
+        oldValues.contractor = existing.contractor?.name || null;
+        newValues.contractor = selected?.name || null;
+      }
+    }
     const prismaUpdateData = {};
+    if (updateData.contractorId !== undefined) prismaUpdateData.contractor = updateData.contractorId
+      ? { connect: { id: updateData.contractorId } } : { disconnect: true };
 
+    if (updateData.materials !== undefined || (updateData.workTypeId && updateData.workTypeId !== existing.workTypeId)) {
+      const rows = await prepareMaterials(prisma, updateData.workTypeId ?? existing.workTypeId,
+        updateData.materials ?? [], existing.materials ?? []);
+      prismaUpdateData.materials = { deleteMany: {}, ...(rows.length && { createMany: { data: rows } }) };
+      const snapshots = rows.map(({ fertilizerId, chemicalId, seedId, ...item }) => item);
+      if (JSON.stringify(snapshots) !== JSON.stringify(existing.materials ?? [])) {
+        changes.push("Materijali izmenjeni");
+        oldValues.materials = existing.materials ?? [];
+        newValues.materials = snapshots;
+      }
+    }
     if (updateData.date !== undefined) prismaUpdateData.date = updateData.date;
     if (updateData.shift !== undefined) prismaUpdateData.shift = updateData.shift;
     if (updateData.areaDoneHa !== undefined) prismaUpdateData.areaDoneHa = updateData.areaDoneHa;
@@ -738,11 +774,11 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       where: { id },
       data: prismaUpdateData,
       include: {
-        parcel: true,
+        parcel: true, contractor: true,
         machine: true,
         attachment: true,
         worker: true,
-        workType: true,
+        workType: true, materials: materialsInclude,
       },
     });
 
@@ -768,6 +804,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       work: updated,
     });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
     console.error("Greška pri ažuriranju rada:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
@@ -781,7 +818,7 @@ router.delete("/:id", machineMutation(async (req, res, prisma) => {
     const { id } = req.params;
     const existing = await prisma.fieldWork.findUnique({
       where: { id },
-      include: { parcel: true, worker: true },
+      include: { parcel: true, contractor: true, worker: true },
     });
 
     if (!existing) {
@@ -896,10 +933,10 @@ router.get("/export/excel", async (req, res) => {
     const works = await prisma.fieldWork.findMany({
       where,
       include: {
-        parcel: true,
+        parcel: true, contractor: true,
         machine: true,
         worker: true,
-        workType: true,
+        workType: true, materials: materialsInclude,
         createdBy: { select: { name: true } },
       },
       orderBy: { date: "desc" },
@@ -914,7 +951,7 @@ router.get("/export/excel", async (req, res) => {
     });
 
     // Naslov izveštaja
-    worksheet.mergeCells("A1:M1");
+    worksheet.mergeCells("A1:O1");
     const titleCell = worksheet.getCell("A1");
     titleCell.value = "NANDRA — ZVANIČNI DNEVNIK RADOVA NA NJIVI";
     titleCell.font = { name: "Arial", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
@@ -927,7 +964,7 @@ router.get("/export/excel", async (req, res) => {
     worksheet.getRow(1).height = 35;
 
     // Podnaslov
-    worksheet.mergeCells("A2:M2");
+    worksheet.mergeCells("A2:O2");
     const subtitleCell = worksheet.getCell("A2");
     subtitleCell.value = `Izveštaj generisan: ${new Date().toLocaleDateString("sr-RS")} | Ukupno zapisa: ${works.length}`;
     subtitleCell.font = { name: "Arial", size: 10, italic: true, color: { argb: "FF374151" } };
@@ -951,6 +988,8 @@ router.get("/export/excel", async (req, res) => {
       "Vreme",
       "Sati (rh)",
       "Napomena",
+      "Kooperant",
+      "Materijali",
     ]);
     headerRow.height = 24;
 
@@ -995,9 +1034,15 @@ router.get("/export/excel", async (req, res) => {
         timeRange,
         w.workHours || 0,
         w.notes || "-",
+        w.contractor?.name || "-",
+        materialText(w.materials) || "-",
       ]);
 
       row.height = 20;
+      if (w.materials?.length) {
+        row.height = Math.min(409, Math.max(32, materialText(w.materials).split("\n").reduce((lines, text) => lines + Math.ceil(text.length / 40), 0) * 15));
+        row.getCell(15).alignment = { vertical: "middle", wrapText: true };
+      }
       row.alignment = { vertical: "middle" };
 
       // Bojenje parnih redova za čitljivost
@@ -1063,6 +1108,8 @@ router.get("/export/excel", async (req, res) => {
       13,  // 11. Vreme (07:00 - 15:00)
       9,   // 12. Sati (rh) (kompaktno za 2-3 cifre)
       40,  // 13. Napomena (znatno prošireno)
+      28,  // 14. Kooperant
+      48,  // 15. Materijali i doze
     ];
 
     worksheet.columns.forEach((column, index) => {
