@@ -1,3 +1,5 @@
+import { PhotoUpload } from '../components/PhotoUpload';
+import PhotoAttachment from '../components/PhotoAttachment';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { operationalQueryOptions, operationalKey, cancelInactiveWorkshopQueries } from '../lib/operationalQueries';
 import QueryErrorNotice from '../components/QueryErrorNotice';
@@ -116,6 +118,8 @@ const RadionicaKvarovi: React.FC = () => {
   const [remontPriority, setRemontPriority] = useState('VISOKA');
   const [remontDate, setRemontDate] = useState(new Date().toISOString().split('T')[0]);
   const [remontInstructions, setRemontInstructions] = useState('');
+  const [remontPhoto, setRemontPhoto] = useState<string | null>(null);
+  const [remontPhotoUploading, setRemontPhotoUploading] = useState(false);
   const [submittingRemont, setSubmittingRemont] = useState(false);
 
   // New Defect / Service Modal State (Mehaničar / Rukovodilac)
@@ -125,6 +129,8 @@ const RadionicaKvarovi: React.FC = () => {
   const [newIssuePriority, setNewIssuePriority] = useState('VISOKA');
   const [newIssueTitle, setNewIssueTitle] = useState('');
   const [newIssueDesc, setNewIssueDesc] = useState('');
+  const [newIssuePhoto, setNewIssuePhoto] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [submittingNewIssue, setSubmittingNewIssue] = useState(false);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -158,21 +164,29 @@ const RadionicaKvarovi: React.FC = () => {
   const workersQuery = useQuery(operationalQueryOptions<{ workers: any[] }>(userId, userRole, 'workers'));
   const machines = machinesQuery.data?.machines || [];
   const workers = workersQuery.data?.workers || [];
-  const stats = statsQuery.data || { brokenIssues: 0, inRepairIssues: 0, waitingPartsIssues: 0, repairedIssues: 0,
-    totalActiveIssues: 0, freeMachines: 0, brokenMachines: 0, serviceMachines: 0, remontOrders: 0 };
+  const stats = statsQuery.data || {
+    brokenIssues: 0, inRepairIssues: 0, waitingPartsIssues: 0, repairedIssues: 0,
+    totalActiveIssues: 0, freeMachines: 0, brokenMachines: 0, serviceMachines: 0, remontOrders: 0
+  };
   const masterFeedback = <>{[machinesQuery, workersQuery].map((query, index) => query.isError ? <QueryErrorNotice key={index}
     title={index === 0 ? 'Mašine nisu učitane.' : 'Radnici nisu učitani.'} error={query.error} pending={query.isFetching}
     onRetry={() => { void query.refetch(); }} /> : null)}
     {(machinesQuery.isPending || workersQuery.isPending) && <p role="status">Učitavanje šifarnika...</p>}</>;
-  const issuesQuery = useQuery({ ...operationalQueryOptions<{ issues: any[]; total: number; totalPages: number }>(userId, userRole, 'issues', {
-    page: issuesPage, limit: PAGE_SIZE, status: issueStatusFilter, priority: issuePriorityFilter, machineId: issueMachineFilter, search: debouncedIssueSearch.trim(),
-  }), enabled: Boolean(userId) && activeTab === 'kvarovi' });
-  const remontQuery = useQuery({ ...operationalQueryOptions<{ orders: any[]; total: number; totalPages: number }>(userId, userRole, 'remont', {
-    page: remontPage, limit: PAGE_SIZE, machineId: remontMachineFilter, workerId: remontWorkerFilter, search: debouncedRemontSearch.trim(),
-  }), enabled: Boolean(userId) && activeTab === 'nalozi' });
-  const historyQuery = useQuery({ ...operationalQueryOptions<{ history: any[]; total: number; totalPages: number }>(userId, userRole, 'history', {
-    page: historyPage, limit: PAGE_SIZE, machineId: historyMachineFilter, dateFrom: historyDateFrom, dateTo: historyDateTo, search: debouncedHistorySearch.trim(),
-  }), enabled: Boolean(userId) && activeTab === 'istorijat' });
+  const issuesQuery = useQuery({
+    ...operationalQueryOptions<{ issues: any[]; total: number; totalPages: number }>(userId, userRole, 'issues', {
+      page: issuesPage, limit: PAGE_SIZE, status: issueStatusFilter, priority: issuePriorityFilter, machineId: issueMachineFilter, search: debouncedIssueSearch.trim(),
+    }), enabled: Boolean(userId) && activeTab === 'kvarovi'
+  });
+  const remontQuery = useQuery({
+    ...operationalQueryOptions<{ orders: any[]; total: number; totalPages: number }>(userId, userRole, 'remont', {
+      page: remontPage, limit: PAGE_SIZE, machineId: remontMachineFilter, workerId: remontWorkerFilter, search: debouncedRemontSearch.trim(),
+    }), enabled: Boolean(userId) && activeTab === 'nalozi'
+  });
+  const historyQuery = useQuery({
+    ...operationalQueryOptions<{ history: any[]; total: number; totalPages: number }>(userId, userRole, 'history', {
+      page: historyPage, limit: PAGE_SIZE, machineId: historyMachineFilter, dateFrom: historyDateFrom, dateTo: historyDateTo, search: debouncedHistorySearch.trim(),
+    }), enabled: Boolean(userId) && activeTab === 'istorijat'
+  });
   const issues = issuesQuery.data?.issues || [];
   const issuesTotal = issuesQuery.data?.total ?? issues.length;
   const issuesTotalPages = issuesQuery.data?.totalPages || 1;
@@ -374,9 +388,9 @@ const RadionicaKvarovi: React.FC = () => {
         const data = await res.json();
         showToast(
           data.message ||
-            (isEditingCompletedReport
-              ? 'Izveštaj o servisu je uspešno ažuriran!'
-              : 'Popravka uspešno evidentirana!')
+          (isEditingCompletedReport
+            ? 'Izveštaj o servisu je uspešno ažuriran!'
+            : 'Popravka uspešno evidentirana!')
         );
         setSelectedIssueToResolve(null);
         setIsEditingCompletedReport(false);
@@ -398,6 +412,7 @@ const RadionicaKvarovi: React.FC = () => {
   // Slanje novog radnog naloga za remont (Rukovodilac / Direktor)
   const handleCreateRemontOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (remontPhotoUploading) return;
     if (!remontMachineId || !remontWorkerId || !remontInstructions.trim()) {
       showToast('Popunite sva obavezna polja.', 'error');
       return;
@@ -416,6 +431,7 @@ const RadionicaKvarovi: React.FC = () => {
           priority: remontPriority,
           serviceType: remontServiceType,
           instructions: remontInstructions,
+          photoUrl: remontPhoto,
         }),
       });
 
@@ -424,6 +440,7 @@ const RadionicaKvarovi: React.FC = () => {
         showToast(data.message || 'Radni nalog za remont uspešno izdat!');
         setIsRemontModalOpen(false);
         setRemontInstructions('');
+        setRemontPhoto(null);
         refreshStats();
         refreshIssues(1);
         refreshRemontOrders(1);
@@ -442,6 +459,7 @@ const RadionicaKvarovi: React.FC = () => {
   // Slanje direktne prijave kvara / servisa
   const handleCreateNewIssue = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (photoUploading) return;
     if (!newIssueMachineId || !newIssueTitle.trim()) {
       showToast('Izaberite mašinu i unesite naslov problema.', 'error');
       return;
@@ -459,6 +477,7 @@ const RadionicaKvarovi: React.FC = () => {
           priority: newIssuePriority,
           title: newIssueTitle,
           description: newIssueDesc || null,
+          photoUrl: newIssuePhoto,
           isMachineStopped: true,
         }),
       });
@@ -468,6 +487,7 @@ const RadionicaKvarovi: React.FC = () => {
         setIsNewIssueModalOpen(false);
         setNewIssueTitle('');
         setNewIssueDesc('');
+        setNewIssuePhoto(null);
         refreshStats();
         refreshIssues(1);
         refreshRemontOrders();
@@ -622,9 +642,6 @@ const RadionicaKvarovi: React.FC = () => {
               </span>
               Servisna Radionica & Kvarovi
             </h2>
-            <p className={styles.subtitle}>
-              Evidencija kvarova, servisni nalozi za remont i digitalna servisna knjižica mehanizacije.
-            </p>
           </div>
 
           <div className={styles.headerActions}>
@@ -669,56 +686,56 @@ const RadionicaKvarovi: React.FC = () => {
         {/* Dashboard Stats Grid (KPI Cards) */}
         {statsQuery.isError ? <QueryErrorNotice title="Statistika radionice nije učitana." error={statsQuery.error}
           pending={statsQuery.isFetching} onRetry={() => { void statsQuery.refetch(); }} /> : statsQuery.isPending ? <p role="status">Učitavanje statistike...</p> : <div className={styles.statsGrid}>
-          <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.iconBroken}`}>
-              <AlertTriangle size={24} />
+            <div className={styles.statCard}>
+              <div className={`${styles.statIcon} ${styles.iconBroken}`}>
+                <AlertTriangle size={24} />
+              </div>
+              <div className={styles.statInfo}>
+                <span className={styles.statValue}>{stats.brokenIssues}</span>
+                <span className={styles.statLabel}>U Kvaru (Čeka Prijem)</span>
+              </div>
             </div>
-            <div className={styles.statInfo}>
-              <span className={styles.statValue}>{stats.brokenIssues}</span>
-              <span className={styles.statLabel}>U Kvaru (Čeka Prijem)</span>
-            </div>
-          </div>
 
-          <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.iconInRepair}`}>
-              <Wrench size={24} />
+            <div className={styles.statCard}>
+              <div className={`${styles.statIcon} ${styles.iconInRepair}`}>
+                <Wrench size={24} />
+              </div>
+              <div className={styles.statInfo}>
+                <span className={styles.statValue}>{stats.inRepairIssues}</span>
+                <span className={styles.statLabel}>U Radu (Popravka)</span>
+              </div>
             </div>
-            <div className={styles.statInfo}>
-              <span className={styles.statValue}>{stats.inRepairIssues}</span>
-              <span className={styles.statLabel}>U Radu (Popravka)</span>
-            </div>
-          </div>
 
-          <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.iconWaitingParts}`}>
-              <Clock size={24} />
+            <div className={styles.statCard}>
+              <div className={`${styles.statIcon} ${styles.iconWaitingParts}`}>
+                <Clock size={24} />
+              </div>
+              <div className={styles.statInfo}>
+                <span className={styles.statValue}>{stats.waitingPartsIssues}</span>
+                <span className={styles.statLabel}>Čeka Delove</span>
+              </div>
             </div>
-            <div className={styles.statInfo}>
-              <span className={styles.statValue}>{stats.waitingPartsIssues}</span>
-              <span className={styles.statLabel}>Čeka Delove</span>
-            </div>
-          </div>
 
-          <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.iconFree}`}>
-              <CheckCircle2 size={24} />
+            <div className={styles.statCard}>
+              <div className={`${styles.statIcon} ${styles.iconFree}`}>
+                <CheckCircle2 size={24} />
+              </div>
+              <div className={styles.statInfo}>
+                <span className={styles.statValue}>{stats.freeMachines}</span>
+                <span className={styles.statLabel}>Slobodne Mašine</span>
+              </div>
             </div>
-            <div className={styles.statInfo}>
-              <span className={styles.statValue}>{stats.freeMachines}</span>
-              <span className={styles.statLabel}>Slobodne Mašine</span>
-            </div>
-          </div>
 
-          <div className={styles.statCard}>
-            <div className={`${styles.statIcon} ${styles.iconRemont}`}>
-              <ClipboardList size={24} />
+            <div className={styles.statCard}>
+              <div className={`${styles.statIcon} ${styles.iconRemont}`}>
+                <ClipboardList size={24} />
+              </div>
+              <div className={styles.statInfo}>
+                <span className={styles.statValue}>{stats.remontOrders}</span>
+                <span className={styles.statLabel}>Nalozi za Remont</span>
+              </div>
             </div>
-            <div className={styles.statInfo}>
-              <span className={styles.statValue}>{stats.remontOrders}</span>
-              <span className={styles.statLabel}>Nalozi za Remont</span>
-            </div>
-          </div>
-        </div>}
+          </div>}
 
         {/* Navigation Tabs */}
         <div className={styles.tabsContainer}>
@@ -853,15 +870,14 @@ const RadionicaKvarovi: React.FC = () => {
                   return (
                     <div
                       key={issue.id}
-                      className={`${styles.issueCard} ${
-                        isCritical
+                      className={`${styles.issueCard} ${isCritical
                           ? styles.cardBorderCritical
                           : isHigh
-                          ? styles.cardBorderHigh
-                          : isMedium
-                          ? styles.cardBorderMedium
-                          : styles.cardBorderLow
-                      }`}
+                            ? styles.cardBorderHigh
+                            : isMedium
+                              ? styles.cardBorderMedium
+                              : styles.cardBorderLow
+                        }`}
                     >
                       <div className={styles.cardHeader}>
                         <div className={styles.machineInfo}>
@@ -885,30 +901,28 @@ const RadionicaKvarovi: React.FC = () => {
                         <div className={styles.badgesGroup}>
                           {/* Priority Badge */}
                           <span
-                            className={`${styles.badge} ${
-                              isCritical
+                            className={`${styles.badge} ${isCritical
                                 ? styles.badgePriorityCritical
                                 : isHigh
-                                ? styles.badgePriorityHigh
-                                : isMedium
-                                ? styles.badgePriorityMedium
-                                : styles.badgePriorityLow
-                            }`}
+                                  ? styles.badgePriorityHigh
+                                  : isMedium
+                                    ? styles.badgePriorityMedium
+                                    : styles.badgePriorityLow
+                              }`}
                           >
                             {issue.priority}
                           </span>
 
                           {/* Status Badge */}
                           <span
-                            className={`${styles.badge} ${
-                              issue.status === 'OTVOREN'
+                            className={`${styles.badge} ${issue.status === 'OTVOREN'
                                 ? styles.badgeStatusOtvoren
                                 : issue.status === 'U_RADU'
-                                ? styles.badgeStatusURadu
-                                : issue.status === 'CEKA_DELOVE'
-                                ? styles.badgeStatusCekaDelove
-                                : styles.badgeStatusPopravljeno
-                            }`}
+                                  ? styles.badgeStatusURadu
+                                  : issue.status === 'CEKA_DELOVE'
+                                    ? styles.badgeStatusCekaDelove
+                                    : styles.badgeStatusPopravljeno
+                              }`}
                           >
                             {issue.status === 'OTVOREN' && '🔴 Otvoren'}
                             {issue.status === 'U_RADU' && '🟡 U radu'}
@@ -920,6 +934,7 @@ const RadionicaKvarovi: React.FC = () => {
 
                       <div className={styles.cardBody}>
                         <div className={styles.issueTitle}>{issue.title}</div>
+                        <PhotoAttachment url={issue.photoUrl} label="Fotografija kvara" />
                         {issue.description && (
                           <div className={styles.issueDesc}>{issue.description}</div>
                         )}
@@ -1129,9 +1144,8 @@ const RadionicaKvarovi: React.FC = () => {
                   return (
                     <div
                       key={order.id}
-                      className={`${styles.issueCard} ${
-                        isDone ? '' : styles.cardBorderHigh
-                      }`}
+                      className={`${styles.issueCard} ${isDone ? '' : styles.cardBorderHigh
+                        }`}
                     >
                       <div className={styles.cardHeader}>
                         <div className={styles.machineInfo}>
@@ -1154,25 +1168,24 @@ const RadionicaKvarovi: React.FC = () => {
 
                         <div className={styles.badgesGroup}>
                           <span
-                            className={`${styles.badge} ${
-                              isDone
+                            className={`${styles.badge} ${isDone
                                 ? styles.badgeStatusPopravljeno
                                 : order.maintenance?.status === 'CEKA_DELOVE'
-                                ? styles.badgeStatusCekaDelove
-                                : order.status === 'U_TOKU' || order.maintenance?.status === 'U_RADU'
-                                ? styles.badgeStatusURadu
-                                : styles.badgeStatusOtvoren
-                            }`}
+                                  ? styles.badgeStatusCekaDelove
+                                  : order.status === 'U_TOKU' || order.maintenance?.status === 'U_RADU'
+                                    ? styles.badgeStatusURadu
+                                    : styles.badgeStatusOtvoren
+                              }`}
                           >
                             {isDone
                               ? isTodayDone
                                 ? 'ZAVRŠEN DANAS (DO 23:59h)'
                                 : 'ZAVRŠEN'
                               : order.maintenance?.status === 'CEKA_DELOVE'
-                              ? 'ČEKA DELOVE'
-                              : order.status === 'U_TOKU' || order.maintenance?.status === 'U_RADU'
-                              ? 'U RADU'
-                              : order.status}
+                                ? 'ČEKA DELOVE'
+                                : order.status === 'U_TOKU' || order.maintenance?.status === 'U_RADU'
+                                  ? 'U RADU'
+                                  : order.status}
                           </span>
                         </div>
                       </div>
@@ -1181,6 +1194,7 @@ const RadionicaKvarovi: React.FC = () => {
                         <div className={styles.issueTitle}>Instrukcije rukovodioca:</div>
                         <div className={styles.issueDesc}>
                           {order.instructions || 'Redovan periodični servis i kontrola ispravnosti.'}
+                          <PhotoAttachment url={order.photoUrl} label="Fotografija uz nalog" />
                         </div>
 
                         <div className={styles.reporterDetails}>
@@ -1196,10 +1210,10 @@ const RadionicaKvarovi: React.FC = () => {
                                 {order.maintenance.status === 'CEKA_DELOVE'
                                   ? 'Čeka rezervne delove'
                                   : order.maintenance.status === 'U_RADU'
-                                  ? 'U radu na servisu'
-                                  : order.maintenance.status === 'POPRAVLJENO'
-                                  ? 'Završen servis'
-                                  : 'Dodeljen nalog'}
+                                    ? 'U radu na servisu'
+                                    : order.maintenance.status === 'POPRAVLJENO'
+                                      ? 'Završen servis'
+                                      : 'Dodeljen nalog'}
                               </span>
                             </div>
                           )}
@@ -1738,8 +1752,8 @@ const RadionicaKvarovi: React.FC = () => {
                       {submittingResolve
                         ? 'Snimanje...'
                         : isEditingCompletedReport
-                        ? 'Sačuvaj izmene izveštaja'
-                        : 'Završi popravku i oslobodi mašinu'}
+                          ? 'Sačuvaj izmene izveštaja'
+                          : 'Završi popravku i oslobodi mašinu'}
                     </span>
                   </button>
                 </div>
@@ -1834,6 +1848,7 @@ const RadionicaKvarovi: React.FC = () => {
                   </div>
                 </div>
 
+                <PhotoUpload photoUrl={remontPhoto} label="Fotografija za radnika (opciono)" onChange={setRemontPhoto} onUploadStateChange={setRemontPhotoUploading} disabled={submittingRemont} />
                 <div className={styles.modalFooter}>
                   <button
                     type="button"
@@ -1846,7 +1861,7 @@ const RadionicaKvarovi: React.FC = () => {
                   <button
                     type="submit"
                     className={styles.btnModalSubmit}
-                    disabled={submittingRemont}
+                    disabled={submittingRemont || remontPhotoUploading}
                   >
                     <ClipboardList size={18} />
                     <span>{submittingRemont ? 'Izdavanje...' : 'Izdaj radni nalog'}</span>
@@ -1932,6 +1947,7 @@ const RadionicaKvarovi: React.FC = () => {
                   </div>
                 </div>
 
+                <PhotoUpload photoUrl={newIssuePhoto} label="Fotografija kvara (opciono)" onChange={setNewIssuePhoto} onUploadStateChange={setPhotoUploading} disabled={submittingNewIssue} />
                 <div className={styles.modalFooter}>
                   <button
                     type="button"
@@ -1944,7 +1960,7 @@ const RadionicaKvarovi: React.FC = () => {
                   <button
                     type="submit"
                     className={styles.btnModalSubmit}
-                    disabled={submittingNewIssue}
+                    disabled={submittingNewIssue || photoUploading}
                   >
                     <AlertTriangle size={18} />
                     <span>{submittingNewIssue ? 'Prijavljivanje...' : 'Evidentiraj kvar'}</span>
@@ -1958,9 +1974,8 @@ const RadionicaKvarovi: React.FC = () => {
         {/* Floating Toast Notifikacija */}
         {toast && (
           <div
-            className={`${styles.toast} ${
-              toast.type === 'error' ? styles.toastError : styles.toastSuccess
-            }`}
+            className={`${styles.toast} ${toast.type === 'error' ? styles.toastError : styles.toastSuccess
+              }`}
           >
             {toast.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
             <span>{toast.message}</span>

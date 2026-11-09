@@ -1,7 +1,7 @@
 import { fetchFuelEfficiency, fetchFuelExport, fuelFilterParams } from './fuelEfficiencyQueries';
 import { FuelEfficiency } from './FuelEfficiency';
 import { fuelOperationRows, fuelCriticalRows, fuelHeaders, criticalFuelHeaders } from './fuelEfficiencyReport';
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   BarChart3,
@@ -36,6 +36,93 @@ type ActiveTab = 'pregled' | 'masine' | 'radnici' | 'troskovi' | 'parcele' | 'go
 const API = '/api';
 const PAGE_SIZE = 10;
 
+interface TableSyncScrollbarProps {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}
+
+const TableSyncScrollbar: React.FC<TableSyncScrollbarProps> = ({ containerRef }) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [metrics, setMetrics] = useState({ scrollWidth: 0, clientWidth: 0, scrollLeft: 0 });
+  const isSyncingFromTable = useRef(false);
+  const isSyncingFromSelf = useRef(false);
+
+  const updateMetrics = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    setMetrics({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      scrollLeft: el.scrollLeft,
+    });
+    if (scrollRef.current && !isSyncingFromSelf.current) {
+      scrollRef.current.scrollLeft = el.scrollLeft;
+    }
+  }, [containerRef]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    updateMetrics();
+
+    const handleTableScroll = () => {
+      if (isSyncingFromSelf.current) return;
+      isSyncingFromTable.current = true;
+      if (scrollRef.current) {
+        scrollRef.current.scrollLeft = el.scrollLeft;
+      }
+      setMetrics((prev) => ({ ...prev, scrollLeft: el.scrollLeft }));
+      isSyncingFromTable.current = false;
+    };
+
+    el.addEventListener('scroll', handleTableScroll, { passive: true });
+    window.addEventListener('resize', updateMetrics);
+
+    const ro = new ResizeObserver(() => updateMetrics());
+    ro.observe(el);
+
+    return () => {
+      el.removeEventListener('scroll', handleTableScroll);
+      window.removeEventListener('resize', updateMetrics);
+      ro.disconnect();
+    };
+  }, [containerRef, updateMetrics]);
+
+  const handleSelfScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (isSyncingFromTable.current) return;
+    isSyncingFromSelf.current = true;
+    const newLeft = e.currentTarget.scrollLeft;
+    if (containerRef.current) {
+      containerRef.current.scrollLeft = newLeft;
+    }
+    setMetrics((prev) => ({ ...prev, scrollLeft: newLeft }));
+    requestAnimationFrame(() => {
+      isSyncingFromSelf.current = false;
+    });
+  };
+
+  if (metrics.scrollWidth <= metrics.clientWidth) {
+    return null;
+  }
+
+  const visibleWidth = Math.max(300, metrics.clientWidth - 40);
+
+  return (
+    <div
+      className={styles.inRowScrollToolbar}
+      style={{ width: `${visibleWidth}px` }}
+    >
+      <div
+        ref={scrollRef}
+        className={styles.inRowScrollBarWrapper}
+        onScroll={handleSelfScroll}
+      >
+        <div style={{ width: `${metrics.scrollWidth}px`, height: '1px' }} />
+      </div>
+    </div>
+  );
+};
+
 export const AnalitikaDashboard: React.FC = () => {
   const { data: session, isPending: sessionLoading } = useSession();
   const currentUser = (session as any)?.user;
@@ -45,6 +132,10 @@ export const AnalitikaDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => new URLSearchParams(window.location.search).get('tab') === 'gorivo' ? 'gorivo' : 'pregled');
   const [expandedMachineId, setExpandedMachineId] = useState<string | null>(null);
   const [expandedWorkerId, setExpandedWorkerId] = useState<string | null>(null);
+
+  // Reference na tabele za sinhronizovani skrol
+  const machinesTableContainerRef = useRef<HTMLDivElement>(null);
+  const workersTableContainerRef = useRef<HTMLDivElement>(null);
 
   // Filteri
   const [preset, setPreset] = useState<PresetType>('MESEC');
@@ -184,7 +275,7 @@ export const AnalitikaDashboard: React.FC = () => {
     const list: CustomSelectOption[] = (filtersData?.parcels || []).map((p: any) => ({
       value: p.id,
       label: `[${p.code}] ${p.name}`,
-      subLabel: `${p.areaHa} ha${p.currentCrop ? ` • ${p.currentCrop}` : ''}`,
+      subLabel: `${p.areaHa} ha`,
     }));
     return [{ value: '', label: 'Sve parcele' }, ...list];
   }, [filtersData?.parcels]);
@@ -287,10 +378,12 @@ export const AnalitikaDashboard: React.FC = () => {
   const [fuelPages, setFuelPages] = useState({ filters: '', operations: 1, critical: 1 });
   const fuelOperationsPage = fuelPages.filters === fuelFilters ? fuelPages.operations : 1;
   const fuelCriticalPage = fuelPages.filters === fuelFilters ? fuelPages.critical : 1;
-  const fuelQuery = useQuery({ queryKey: ['analytics-fuel', currentUser?.id, fuelFilters, fuelOperationsPage, fuelCriticalPage],
+  const fuelQuery = useQuery({
+    queryKey: ['analytics-fuel', currentUser?.id, fuelFilters, fuelOperationsPage, fuelCriticalPage],
     queryFn: ({ signal }) => fetchFuelEfficiency(fuelFilters, fuelOperationsPage, fuelCriticalPage, signal),
     enabled: isDirector && activeTab === 'gorivo', staleTime: 30_000,
-    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === currentUser?.id ? previous : undefined });
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === currentUser?.id ? previous : undefined
+  });
   const changeFuelPage = (table: 'operations' | 'critical', page: number) => setFuelPages({
     filters: fuelFilters, operations: table === 'operations' ? page : fuelOperationsPage,
     critical: table === 'critical' ? page : fuelCriticalPage,
@@ -410,9 +503,8 @@ export const AnalitikaDashboard: React.FC = () => {
         `${(m.fieldWork.totalHa || 0).toFixed(1)} ha`,
         `${(m.fieldWork.totalWorkHours || 0).toFixed(1)} h`,
         `${(m.fuel.totalLiters || 0).toLocaleString('sr-RS')} L`,
-        'Poseban izvestaj',
         `${(m.maintenance.totalCost || 0).toLocaleString('sr-RS')} RSD`,
-        `${m.maintenance.count} popravki (${m.maintenance.downtimeHours || 0}h zastoja)`,
+        `${m.maintenance.count} popravki (${(m.maintenance.downtimeHours || 0).toFixed(1)}h zastoja)`,
         `${(m.tolls.totalCost || 0).toLocaleString('sr-RS')} RSD`,
         `${(m.totalCostMachine || 0).toLocaleString('sr-RS')} RSD`,
       ]);
@@ -427,7 +519,6 @@ export const AnalitikaDashboard: React.FC = () => {
             'Uradeno',
             'Radni sati',
             'Gorivo (L)',
-            'Normativi',
             'Popravke (RSD)',
             'Kvarovi & Zastoj',
             'Putarine',
@@ -569,12 +660,11 @@ export const AnalitikaDashboard: React.FC = () => {
         'Radnih Sati na Njivi': m.fieldWork.totalWorkHours || 0,
         'Utrošeno Goriva (L)': m.fuel.totalLiters || 0,
         'Trošak Goriva (RSD)': m.fuel.totalCost || 0,
-        'Normativi goriva': 'List Gorivo normativi',
         'Popravke Ukupno (RSD)': m.maintenance.totalCost || 0,
         'Trošak Delova (RSD)': m.maintenance.partsCost || 0,
         'Trošak Rada Servisa (RSD)': m.maintenance.laborCost || 0,
         'Broj Kvarova': m.maintenance.count || 0,
-        'Sati Zastoja (Downtime)': m.maintenance.downtimeHours || 0,
+        'Sati Zastoja (Downtime)': Math.round((m.maintenance.downtimeHours || 0) * 10) / 10,
         'Putarine (RSD)': m.tolls.totalCost || 0,
         'UKUPAN TROŠAK MAŠINE (RSD)': m.totalCostMachine || 0,
       }));
@@ -616,7 +706,7 @@ export const AnalitikaDashboard: React.FC = () => {
             'Izveštaj Mehaničara': r.repairNotes || '',
             'Utrošeno Mazivo': r.lubricantType ? `${r.lubricantType} (${r.lubricantLiters || 0} L)` : '',
             'Trošak Popravke (RSD)': r.totalCost || 0,
-            'Sati Zastoja': r.downtimeHours || 0,
+            'Sati Zastoja': Math.round((r.downtimeHours || 0) * 10) / 10,
           });
         });
       });
@@ -630,7 +720,6 @@ export const AnalitikaDashboard: React.FC = () => {
         'Naziv Parcele': p.parcel.name,
         Šifra: p.parcel.code,
         'Površina (ha)': p.parcel.areaHa,
-        'Trenutna Kultura': p.parcel.currentCrop || '',
         'Urađeno Operacija (broj)': p.fieldWork.count || 0,
         'Urađeno ha (ukupno operacija)': p.fieldWork.totalHa || 0,
         'Utrošak Đubriva (kg/L)': p.fertilizer.totalQuantity || 0,
@@ -882,7 +971,7 @@ export const AnalitikaDashboard: React.FC = () => {
            ======================================================== */}
         <div className={styles.navTabs}>
           <button className={`${styles.tabBtn} ${activeTab === 'gorivo' ? styles.tabBtnActive : ''}`} onClick={() => setActiveTab('gorivo')}>
-            <Fuel size={18} /> Efikasnost goriva i normativi
+            <Fuel size={18} /> Gorivo
           </button>
 
           <button
@@ -890,7 +979,7 @@ export const AnalitikaDashboard: React.FC = () => {
             onClick={() => setActiveTab('pregled')}
           >
             <BarChart3 size={18} />
-            Pregled & Ključni Pokazatelji
+            Opšti Pregled
           </button>
 
           <button
@@ -898,7 +987,7 @@ export const AnalitikaDashboard: React.FC = () => {
             onClick={() => setActiveTab('masine')}
           >
             <Tractor size={18} />
-            Mašine & Održavanje
+            Mašine
             <span className={styles.tabBadge}>{machinesPagination.total}</span>
           </button>
 
@@ -907,7 +996,7 @@ export const AnalitikaDashboard: React.FC = () => {
             onClick={() => setActiveTab('radnici')}
           >
             <Users size={18} />
-            Radnici & Učinak
+            Radnici
             <span className={styles.tabBadge}>{workersPagination.total}</span>
           </button>
 
@@ -916,7 +1005,7 @@ export const AnalitikaDashboard: React.FC = () => {
             onClick={() => setActiveTab('troskovi')}
           >
             <Coins size={18} />
-            Finansije & Mesečni Tokovi
+            Finansije
           </button>
 
           <button
@@ -924,7 +1013,7 @@ export const AnalitikaDashboard: React.FC = () => {
             onClick={() => setActiveTab('parcele')}
           >
             <Sprout size={18} />
-            Parcele & Agrotehnika
+            Parcele
             <span className={styles.tabBadge}>{parcelsPagination.total}</span>
           </button>
         </div>
@@ -1199,7 +1288,7 @@ export const AnalitikaDashboard: React.FC = () => {
               </div>
             </div>
 
-            <div className={styles.tableContainer}>
+            <div className={styles.tableContainer} ref={machinesTableContainerRef}>
               <table className={styles.dataTable} style={{ minWidth: '950px' }}>
                 <thead>
                   <tr>
@@ -1209,7 +1298,6 @@ export const AnalitikaDashboard: React.FC = () => {
                     <th>Urađeno (ha)</th>
                     <th>Radni sati</th>
                     <th>Gorivo (L & RSD)</th>
-                    <th>Normativi goriva</th>
                     <th>Uloženo u popravke</th>
                     <th>Putarine</th>
                     <th>Ukupan trošak</th>
@@ -1223,10 +1311,10 @@ export const AnalitikaDashboard: React.FC = () => {
                       m.machine.status === 'SLOBODNA'
                         ? styles.statusSlobodna
                         : m.machine.status === 'ZADUZENA'
-                        ? styles.statusZaduzena
-                        : m.machine.status === 'U_KVARU'
-                        ? styles.statusUKvaru
-                        : styles.statusServis;
+                          ? styles.statusZaduzena
+                          : m.machine.status === 'U_KVARU'
+                            ? styles.statusUKvaru
+                            : styles.statusServis;
 
                     return (
                       <React.Fragment key={m.machine.id}>
@@ -1259,14 +1347,11 @@ export const AnalitikaDashboard: React.FC = () => {
                             </div>
                           </td>
                           <td>
-                            <button className={styles.tabBtn} onClick={() => setActiveTab('gorivo')}>Normativi goriva</button>
-                          </td>
-                          <td>
                             <div className={styles.costText}>
                               {(m.maintenance.totalCost || 0).toLocaleString('sr-RS')} RSD
                             </div>
                             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                              {m.maintenance.count} kvarova ({m.maintenance.downtimeHours || 0}h stajanja)
+                              {m.maintenance.count} kvarova ({(m.maintenance.downtimeHours || 0).toFixed(1)}h stajanja)
                             </div>
                           </td>
                           <td>{(m.tolls.totalCost || 0).toLocaleString('sr-RS')} RSD</td>
@@ -1296,7 +1381,8 @@ export const AnalitikaDashboard: React.FC = () => {
                            ======================================================== */}
                         {isExpanded && (
                           <tr className={styles.detailsExpandRow}>
-                            <td colSpan={11}>
+                            <td colSpan={10}>
+                              <TableSyncScrollbar containerRef={machinesTableContainerRef} />
                               <div className={styles.deepDiveGrid}>
                                 {/* 1. Istorija popravki i šta je radjeno */}
                                 <div className={styles.deepDiveCard}>
@@ -1446,7 +1532,7 @@ export const AnalitikaDashboard: React.FC = () => {
                   })}
                   {machinesList.length === 0 && (
                     <tr>
-                      <td colSpan={11} style={{ textAlign: 'center', padding: '2rem' }}>
+                      <td colSpan={10} style={{ textAlign: 'center', padding: '2rem' }}>
                         Nema mašina koje odgovaraju zadatim filterima.
                       </td>
                     </tr>
@@ -1492,7 +1578,7 @@ export const AnalitikaDashboard: React.FC = () => {
               </div>
             </div>
 
-            <div className={styles.tableContainer}>
+            <div className={styles.tableContainer} ref={workersTableContainerRef}>
               <table className={styles.dataTable} style={{ minWidth: '900px' }}>
                 <thead>
                   <tr>
@@ -1581,6 +1667,7 @@ export const AnalitikaDashboard: React.FC = () => {
                         {isExpanded && (
                           <tr className={styles.detailsExpandRow}>
                             <td colSpan={10}>
+                              <TableSyncScrollbar containerRef={workersTableContainerRef} />
                               <div className={styles.deepDiveGrid}>
                                 {/* Mašine koje je vozio */}
                                 <div className={styles.deepDiveCard}>
@@ -1814,7 +1901,6 @@ export const AnalitikaDashboard: React.FC = () => {
                     <th>Parcela</th>
                     <th>Šifra</th>
                     <th>Površina (ha)</th>
-                    <th>Kultura</th>
                     <th>Urađeno operacija</th>
                     <th>Utrošak Đubriva</th>
                     <th>Sezonski rad (h)</th>
@@ -1829,7 +1915,6 @@ export const AnalitikaDashboard: React.FC = () => {
                         <span className={styles.typeBadge}>[{p.parcel.code}]</span>
                       </td>
                       <td>{p.parcel.areaHa} ha</td>
-                      <td>{p.parcel.currentCrop || 'Nije uneto'}</td>
                       <td>
                         <span style={{ fontWeight: 700, color: '#16a34a' }}>
                           {(p.fieldWork?.totalHa || 0).toFixed(1)} ha
@@ -1852,7 +1937,7 @@ export const AnalitikaDashboard: React.FC = () => {
                   ))}
                   {parcelsList.length === 0 && (
                     <tr>
-                      <td colSpan={8} style={{ textAlign: 'center', padding: '2rem' }}>
+                      <td colSpan={7} style={{ textAlign: 'center', padding: '2rem' }}>
                         Nema parcela koje odgovaraju zadatim filterima.
                       </td>
                     </tr>

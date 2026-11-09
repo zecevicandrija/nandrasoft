@@ -199,24 +199,54 @@
 }
 
 /* Quick Actions Buttons (Add / Edit Parcel) */
+.quickField {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quickFieldTitle {
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.quickField .quickFieldTrigger {
+  min-height: 44px;
+  height: 44px;
+  padding: 0 0.85rem;
+  font-size: 0.88rem;
+}
+
+.quickFieldTrigger :global(.customSelectMainText) {
+  line-height: 1.2;
+}
+
 .quickActionsContainer {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
-  margin-left: auto;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .actionBtnAdd {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.22rem 0.55rem;
-  font-size: 0.72rem;
-  font-weight: 700;
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
   color: #15803d;
-  background: #dcfce7;
-  border: 1px solid #86efac;
-  border-radius: 6px;
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border-color, #dbe3ed);
+  border-radius: 8px;
   cursor: pointer;
   line-height: 1.2;
   white-space: nowrap;
@@ -243,13 +273,14 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.22rem 0.55rem;
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: #0369a1;
-  background: #e0f2fe;
-  border: 1px solid #7dd3fc;
-  border-radius: 6px;
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #475569);
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border-color, #dbe3ed);
+  border-radius: 8px;
   cursor: pointer;
   line-height: 1.2;
   white-space: nowrap;

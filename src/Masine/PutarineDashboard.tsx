@@ -594,15 +594,14 @@ const PutarineDashboard: React.FC = () => {
     <AppLayout pageTitle="Putarine & ENP Tagovi">
       <div className={styles.container}>
         {!entryModalOpen && <SubmissionRecovery pending={!!entryDraft.pending} busy={entryLoading} error={entryDraft.storageError || (!editingEntry ? entryError : '')}
-                onRetry={() => void handleSaveEntry(undefined, true)} />}
+          onRetry={() => void handleSaveEntry(undefined, true)} />}
         {!topUpModalOpen && <SubmissionRecovery pending={!!topUpDraft.pending} busy={topUpLoading} error={topUpDraft.storageError || topUpError}
-                onRetry={() => void handleSaveTopUp(undefined, true)} />}
+          onRetry={() => void handleSaveTopUp(undefined, true)} />}
 
         {toast && (
           <div
-            className={`${styles.toast} ${
-              toast.type === 'success' ? styles.toastSuccess : styles.toastError
-            }`}
+            className={`${styles.toast} ${toast.type === 'success' ? styles.toastSuccess : styles.toastError
+              }`}
           >
             {toast.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
             <span>{toast.text}</span>
@@ -618,9 +617,6 @@ const PutarineDashboard: React.FC = () => {
               </span>
               <span>Putarine & ENP Tagovi</span>
             </h2>
-            <p className={styles.subtitle}>
-              Evidencija putarina i praćenje ENP tagova za kamione i prevozna sredstva
-            </p>
           </div>
 
           <div className={styles.actionBtns}>
@@ -735,8 +731,8 @@ const PutarineDashboard: React.FC = () => {
                   bal <= 0
                     ? styles.balanceEmpty
                     : bal < 2000
-                    ? styles.balanceLow
-                    : styles.balanceOk;
+                      ? styles.balanceLow
+                      : styles.balanceOk;
 
                 return (
                   <div key={veh.id} className={styles.tagCard}>
@@ -960,19 +956,18 @@ const PutarineDashboard: React.FC = () => {
                             </td>
                             <td>
                               <span
-                                className={`${styles.methodPill} ${
-                                  entry.paymentMethod === 'ENP_TAG'
+                                className={`${styles.methodPill} ${entry.paymentMethod === 'ENP_TAG'
                                     ? styles.methodENP
                                     : entry.paymentMethod === 'GOTOVINA'
-                                    ? styles.methodCash
-                                    : styles.methodCard
-                                }`}
+                                      ? styles.methodCash
+                                      : styles.methodCard
+                                  }`}
                               >
                                 {entry.paymentMethod === 'ENP_TAG'
                                   ? 'ENP Tag'
                                   : entry.paymentMethod === 'GOTOVINA'
-                                  ? 'Gotovina'
-                                  : 'Kartica'}
+                                    ? 'Gotovina'
+                                    : 'Kartica'}
                               </span>
                               {entry.tagNumber && (
                                 <div className={styles.tagSubtext}>
@@ -1044,19 +1039,18 @@ const PutarineDashboard: React.FC = () => {
                           </div>
                           <div className={styles.mobileCardHeaderRight}>
                             <span
-                              className={`${styles.methodPill} ${
-                                entry.paymentMethod === 'ENP_TAG'
+                              className={`${styles.methodPill} ${entry.paymentMethod === 'ENP_TAG'
                                   ? styles.methodENP
                                   : entry.paymentMethod === 'GOTOVINA'
-                                  ? styles.methodCash
-                                  : styles.methodCard
-                              }`}
+                                    ? styles.methodCash
+                                    : styles.methodCard
+                                }`}
                             >
                               {entry.paymentMethod === 'ENP_TAG'
                                 ? 'ENP Tag'
                                 : entry.paymentMethod === 'GOTOVINA'
-                                ? 'Gotovina'
-                                : 'Kartica'}
+                                  ? 'Gotovina'
+                                  : 'Kartica'}
                             </span>
                             <span className={styles.amountBadge}>
                               {Number(entry.amount).toLocaleString('sr-RS')} RSD
@@ -1318,7 +1312,7 @@ const PutarineDashboard: React.FC = () => {
 
               <form onSubmit={handleSaveEntry}>
                 {!editingEntry && <SubmissionRecovery pending={!!entryDraft.pending} busy={entryLoading} error={entryDraft.storageError || (!editingEntry ? entryError : '')}
-                onRetry={() => void handleSaveEntry(undefined, true)} />}
+                  onRetry={() => void handleSaveEntry(undefined, true)} />}
                 <div className={styles.modalBody}>
                   {entryError && (
                     <div className={styles.modalError}>
@@ -1453,8 +1447,8 @@ const PutarineDashboard: React.FC = () => {
                     {entryLoading
                       ? 'Čuvanje...'
                       : editingEntry
-                      ? 'Sačuvaj izmene'
-                      : 'Evidentiraj putarinu'}
+                        ? 'Sačuvaj izmene'
+                        : 'Evidentiraj putarinu'}
                   </button>
                 </div>
               </form>
@@ -1481,7 +1475,7 @@ const PutarineDashboard: React.FC = () => {
 
               <form onSubmit={handleSaveTopUp}>
                 <SubmissionRecovery pending={!!topUpDraft.pending} busy={topUpLoading} error={topUpDraft.storageError || topUpError}
-                onRetry={() => void handleSaveTopUp(undefined, true)} />
+                  onRetry={() => void handleSaveTopUp(undefined, true)} />
                 <div className={styles.modalBody}>
                   {topUpError && (
                     <div className={styles.modalError}>

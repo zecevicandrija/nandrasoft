@@ -1,5 +1,8 @@
+import WorkMaterialsEditor, { MaterialSummary } from '../components/WorkMaterialsEditor';
+import { materialPayload, materialSummary } from '../lib/workMaterials';
+import { ContractorSelect } from '../components/ContractorSelect';
 import { masterQueryKeys } from '../lib/masterQueryKeys';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -10,6 +13,7 @@ import {
   Plus,
   FileSpreadsheet,
   Printer,
+  Image as ImageIcon,
   Search,
   Pencil,
   Trash2,
@@ -98,6 +102,13 @@ const RadoviDashboard: React.FC = () => {
   const [editingWork, setEditingWork] = useState<any | null>(null);
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [toast, setToast] = useState<Toast | null>(null);
+  const [photoWork, setPhotoWork] = useState<{ photoUrl: string; notes?: string | null } | null>(null);
+  const [photoLoadError, setPhotoLoadError] = useState(false);
+  const photoDialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    if (photoWork) photoDialogRef.current?.showModal();
+  }, [photoWork]);
 
   // Brzo dodavanje / izmena parcele
   const [parcelQuickModalOpen, setParcelQuickModalOpen] = useState(false);
@@ -369,6 +380,8 @@ const RadoviDashboard: React.FC = () => {
       date: work.date ? new Date(work.date).toISOString().slice(0, 10) : '',
       shift: work.shift,
       parcelId: work.parcelId,
+      contractorId: work.contractorId || null,
+      materials: work.materials ?? [],
       machineId: work.machineId,
       attachmentId: work.attachmentId || '',
       workerId: work.workerId,
@@ -395,6 +408,7 @@ const RadoviDashboard: React.FC = () => {
       data: {
         ...editForm,
         areaDoneHa: Number(editForm.areaDoneHa),
+        materials: materialPayload(editForm.materials),
         attachmentId: editForm.attachmentId || null,
       },
     });
@@ -483,10 +497,11 @@ const RadoviDashboard: React.FC = () => {
           new Date(w.date).toLocaleDateString('sr-RS'),
           w.shift === 'PRVA' ? '1. Smena' : w.shift === 'DRUGA' ? '2. Smena' : 'Noćna',
           `[${w.parcel?.code}] ${w.parcel?.name}`,
+          w.contractor?.name || '—',
           `${w.areaDoneHa} ha`,
           w.worker?.name,
           w.machine?.name,
-          w.workType?.name,
+          [w.workType?.name, materialSummary(w.materials)].filter(Boolean).join('\n'),
           w.startTime && w.endTime ? `${w.startTime} - ${w.endTime}` : '-',
           `${w.workHours || 0} h`,
           w.notes || '-',
@@ -500,6 +515,7 @@ const RadoviDashboard: React.FC = () => {
             'Datum',
             'Smena',
             'Parcela',
+            'Kooperant',
             'Urađeno',
             'Radnik',
             'Mašina',
@@ -513,6 +529,7 @@ const RadoviDashboard: React.FC = () => {
         foot: [
           [
             'UKUPNO',
+            '',
             '',
             '',
             '',
@@ -914,6 +931,7 @@ const RadoviDashboard: React.FC = () => {
                     <th>Datum</th>
                     <th>Smena</th>
                     <th>Parcela</th>
+                    <th>Kooperant</th>
                     <th>Urađeno</th>
                     <th>Radnik / Mašina</th>
                     <th>Radna Operacija</th>
@@ -944,6 +962,7 @@ const RadoviDashboard: React.FC = () => {
                             </div>
                           </div>
                         </td>
+                        <td>{work.contractor?.name || '—'}</td>
                         <td>
                           <span className={styles.areaHighlight}>{work.areaDoneHa} ha</span>
                         </td>
@@ -962,6 +981,7 @@ const RadoviDashboard: React.FC = () => {
                         </td>
                         <td>
                           <strong>{work.workType?.name}</strong>
+                          <MaterialSummary items={work.materials} />
                         </td>
                         <td>
                           {work.startTime && work.endTime ? (
@@ -986,6 +1006,19 @@ const RadoviDashboard: React.FC = () => {
                         </td>
                         <td style={{ maxWidth: 200, color: 'var(--text-secondary)' }}>
                           {work.notes || '-'}
+                          {work.photoUrl && (
+                            <button
+                              type="button"
+                              className={`${styles.btnSecondary} ${styles.photoButton}`}
+                              onClick={() => {
+                                setPhotoLoadError(false);
+                                setPhotoWork({ photoUrl: work.photoUrl, notes: work.notes });
+                              }}
+                            >
+                              <ImageIcon size={16} />
+                              Prikaži sliku
+                            </button>
+                          )}
                         </td>
                         {(isManager || isOperator) && (
                           <td>
@@ -1118,6 +1151,37 @@ const RadoviDashboard: React.FC = () => {
           )}
         </div>
 
+        {photoWork && (
+          <dialog
+            ref={photoDialogRef}
+            className={styles.photoDialog}
+            aria-labelledby="work-photo-title"
+            onCancel={() => setPhotoWork(null)}
+            onClose={() => setPhotoWork(null)}
+            onClick={(event) => {
+              if (event.target === event.currentTarget) setPhotoWork(null);
+            }}
+          >
+            <div className={styles.modalHeader}>
+              <h3 id="work-photo-title" className={styles.modalTitle}>Fotografija sa terena</h3>
+              <button type="button" className={styles.modalCloseBtn} aria-label="Zatvori pregled slike" onClick={() => setPhotoWork(null)}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className={styles.modalBody}>
+              {photoLoadError ? (
+                <p role="alert">Fotografija nije učitana. Zatvorite pregled i pokušajte ponovo.</p>
+              ) : (
+                <img className={styles.workPhoto} src={photoWork.photoUrl} alt="Fotografija prijavljena uz rad na njivi" onError={() => setPhotoLoadError(true)} />
+              )}
+              <div className={styles.photoNotes}>
+                <strong>Napomena</strong>
+                <p>{photoWork.notes?.trim() || 'Nema napomene uz ovaj rad.'}</p>
+              </div>
+            </div>
+          </dialog>
+        )}
+
         {/* Modal za izmenu unosa sa elegantnim CustomSelect komponentama */}
         {editModalOpen && (
           <div className={styles.modalOverlay} onClick={() => setEditModalOpen(false)}>
@@ -1225,6 +1289,9 @@ const RadoviDashboard: React.FC = () => {
                   </div>
 
                   <div className={styles.formGroup}>
+                    <ContractorSelect value={editForm.contractorId || ''} onChange={value => setEditForm({ ...editForm, contractorId: value || null })} canManage={isManager} />
+                  </div>
+                  <div className={styles.formGroup}>
                     <label className={styles.formLabel}>Priključak / Oruđe (opciono)</label>
                     <CustomSelect
                       value={editForm.attachmentId || ''}
@@ -1239,12 +1306,15 @@ const RadoviDashboard: React.FC = () => {
                     <label className={styles.formLabel}>Radna operacija</label>
                     <CustomSelect
                       value={editForm.workTypeId}
-                      onChange={(val) => setEditForm({ ...editForm, workTypeId: val })}
+                      onChange={(val) => setEditForm({ ...editForm, workTypeId: val, materials: val === editForm.workTypeId ? editForm.materials : [] })}
                       options={workTypeEditOptions}
                       placeholder="— Izaberite radnu operaciju —"
                       searchable
                     />
                   </div>
+
+                  <WorkMaterialsEditor kind={workTypesData?.workTypes?.find((w: any) => w.id === editForm.workTypeId)?.materialKind}
+                    required={workTypesData?.workTypes?.find((w: any) => w.id === editForm.workTypeId)?.materialRequired} value={editForm.materials} onChange={materials => setEditForm({ ...editForm, materials })} canManage={isManager} />
 
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>

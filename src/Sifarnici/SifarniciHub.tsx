@@ -1,3 +1,5 @@
+import MaterialCatalogue from './MaterialCatalogue';
+import { useContractors } from '../components/ContractorSelect';
 import { masterQueryKeys } from '../lib/masterQueryKeys';
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -17,6 +19,7 @@ import {
   AlertTriangle,
   Loader2,
   X,
+  Fuel,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
@@ -26,9 +29,29 @@ import styles from './Sifarnici.module.css';
 
 const API = '/api';
 
-type TabType = 'parcele' | 'masine' | 'radnici' | 'operacije' | 'kulture' | 'partneri';
+type TabType = 'parcele' | 'masine' | 'radnici' | 'operacije' | 'kulture' | 'partneri' | 'kooperanti' | 'hemija' | 'semena' | 'gorivo';
 
 const PAGE_SIZE = 25;
+
+const OIL_FUEL_CATEGORY_OPTIONS: CustomSelectOption[] = [
+  { value: 'GORIVO', label: 'Pogonsko gorivo', badge: 'Gorivo', badgeType: 'warning' },
+  { value: 'MOTORNO_ULJE', label: 'Motorno ulje', badge: 'Motorno ulje', badgeType: 'primary' },
+  { value: 'HIDRAULICNO_ULJE', label: 'Hidraulično ulje', badge: 'Hidraulično ulje', badgeType: 'info' },
+  { value: 'TRANSMISIONO_ULJE', label: 'Transmisiono ulje', badge: 'Transmisiono ulje', badgeType: 'purple' as any },
+  { value: 'PUTARINA', label: 'Putarina / ENP', badge: 'Putarina', badgeType: 'default' },
+  { value: 'OSTALO', label: 'Ostalo', badge: 'Ostalo', badgeType: 'default' },
+];
+
+const FILTER_OIL_FUEL_CATEGORY_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Sve kategorije (Gorivo / Ulja / Putarina)' },
+  ...OIL_FUEL_CATEGORY_OPTIONS,
+];
+
+const OIL_FUEL_UNIT_OPTIONS: CustomSelectOption[] = [
+  { value: 'L', label: 'L (Litar)' },
+  { value: 'KOM', label: 'KOM (Komad / Pakovanje)' },
+  { value: 'KG', label: 'KG (Kilogram)' },
+];
 
 const MACHINE_TYPE_OPTIONS: CustomSelectOption[] = [
   { value: 'TRAKTOR', label: 'Traktor' },
@@ -127,6 +150,7 @@ const SifarniciHub: React.FC = () => {
   const [filterWorkerType, setFilterWorkerType] = useState('');
   const [filterWorkCategory, setFilterWorkCategory] = useState('');
   const [filterPartnerType, setFilterPartnerType] = useState('');
+  const [filterOilFuelCategory, setFilterOilFuelCategory] = useState('');
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any | null>(null);
@@ -217,6 +241,24 @@ const SifarniciHub: React.FC = () => {
     },
   });
 
+  const { data: contractorsData, isLoading: loadingContractors } = useContractors();
+
+  const { data: oilFuelData, isLoading: loadingOilFuel } = useQuery({
+    queryKey: ['oil-and-fuel', page, search, filterOilFuelCategory],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: '10',
+      });
+      if (search.trim()) params.append('q', search.trim());
+      if (filterOilFuelCategory) params.append('category', filterOilFuelCategory);
+      const res = await fetch(`${API}/master/oil-and-fuel?${params.toString()}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Greška pri učitavanju ulja i goriva');
+      return res.json();
+    },
+    enabled: activeTab === 'gorivo',
+  });
+
   // 3. MUTATIONS (ADD / EDIT / DELETE)
   const saveMutation = useMutation({
     mutationFn: async ({ endpoint, id, data }: { endpoint: string; id?: string; data: any }) => {
@@ -235,6 +277,13 @@ const SifarniciHub: React.FC = () => {
     onSuccess: (_, variables) => {
       showToast('Uspešno sačuvano!', 'success');
       queryClient.invalidateQueries({ queryKey: [variables.endpoint] });
+      if (variables.endpoint === 'work-types') {
+        queryClient.invalidateQueries({ queryKey: ['work-types-lite'] });
+        queryClient.invalidateQueries({ queryKey: ['operational'] });
+      }
+      if (variables.endpoint === 'contractors') {
+        for (const key of ['field-works', 'operational', 'work-order-detail']) queryClient.invalidateQueries({ queryKey: [key] });
+      }
       queryClient.invalidateQueries({ queryKey: ['master-stats'] });
       closeModal();
     },
@@ -256,6 +305,13 @@ const SifarniciHub: React.FC = () => {
     onSuccess: (data, variables) => {
       showToast(data.message || 'Uspešno obrisano!', 'success');
       queryClient.invalidateQueries({ queryKey: [variables.endpoint] });
+      if (variables.endpoint === 'work-types') {
+        queryClient.invalidateQueries({ queryKey: ['work-types-lite'] });
+        queryClient.invalidateQueries({ queryKey: ['operational'] });
+      }
+      if (variables.endpoint === 'contractors') {
+        for (const key of ['field-works', 'operational', 'work-order-detail']) queryClient.invalidateQueries({ queryKey: [key] });
+      }
       queryClient.invalidateQueries({ queryKey: ['master-stats'] });
       setItemToDelete(null);
     },
@@ -270,9 +326,11 @@ const SifarniciHub: React.FC = () => {
     if (activeTab === 'parcele') setForm({ code: '', name: '', areaHa: '', location: '', currentCrop: '', notes: '' });
     if (activeTab === 'masine') setForm({ name: '', type: 'TRAKTOR', brandModel: '', regNumber: '', year: new Date().getFullYear(), currentHours: 0, tankCapacityLiters: 250, status: 'SLOBODNA', notes: '' });
     if (activeTab === 'radnici') setForm({ name: '', role: 'OPERATER', phone: '', city: '', dailyWage: '' });
-    if (activeTab === 'operacije') setForm({ name: '', category: 'OBRADA', unit: 'ha' });
+    if (activeTab === 'operacije') setForm({ materialKind: null, materialRequired: false, name: '', category: 'OBRADA', unit: 'ha', fuelNormLitersPerHa: '' });
     if (activeTab === 'kulture') setForm({ name: '', variety: '', notes: '' });
+    if (activeTab === 'kooperanti') setForm({ code: '', name: '', phone: '', notes: '' });
     if (activeTab === 'partneri') setForm({ name: '', type: 'KUPAC', pib: '', phone: '', email: '', address: '' });
+    if (activeTab === 'gorivo') setForm({ code: '', name: '', category: 'GORIVO', unit: 'L', notes: '' });
     setModalOpen(true);
   };
 
@@ -300,6 +358,10 @@ const SifarniciHub: React.FC = () => {
 
   const handleSave = () => {
     const endpointMap: Record<TabType, string> = {
+      hemija: 'materials-chemicals',
+      semena: 'materials-seeds',
+      gorivo: 'oil-and-fuel',
+      kooperanti: 'contractors',
       parcele: 'parcels',
       masine: 'machines',
       radnici: 'workers',
@@ -341,6 +403,13 @@ const SifarniciHub: React.FC = () => {
         payload.dailyWage = null;
       }
     }
+    if (activeTab === 'operacije') {
+      if (payload.fuelNormLitersPerHa !== '' && payload.fuelNormLitersPerHa !== undefined && payload.fuelNormLitersPerHa !== null) {
+        payload.fuelNormLitersPerHa = parseFloat(payload.fuelNormLitersPerHa);
+      } else {
+        payload.fuelNormLitersPerHa = null;
+      }
+    }
 
     saveMutation.mutate({ endpoint, id: editingItem?.id, data: payload });
   };
@@ -357,6 +426,10 @@ const SifarniciHub: React.FC = () => {
   const confirmDelete = () => {
     if (!itemToDelete) return;
     const endpointMap: Record<TabType, string> = {
+      hemija: 'materials-chemicals',
+      semena: 'materials-seeds',
+      gorivo: 'oil-and-fuel',
+      kooperanti: 'contractors',
       parcele: 'parcels',
       masine: 'machines',
       radnici: 'workers',
@@ -379,8 +452,12 @@ const SifarniciHub: React.FC = () => {
         return 'operaciju';
       case 'kulture':
         return 'kulturu / sortu';
+      case 'kooperanti':
+        return 'kooperanta';
       case 'partneri':
         return 'partnera';
+      case 'gorivo':
+        return 'artikal (ulje / gorivo)';
       default:
         return 'stavku';
     }
@@ -396,6 +473,7 @@ const SifarniciHub: React.FC = () => {
     setFilterWorkerType('');
     setFilterWorkCategory('');
     setFilterPartnerType('');
+    setFilterOilFuelCategory('');
   };
 
   const handleSearchChange = (val: string) => {
@@ -475,7 +553,10 @@ const SifarniciHub: React.FC = () => {
     });
   }, [partnersData?.partners, filterPartnerType, q]);
 
-  // Aktivna lista i paginacija (25 po stranici)
+  const contractors = useMemo(() => (contractorsData?.contractors || []).filter(c =>
+    [c.code, c.name, c.phone, c.notes].some(value => (value || '').toLowerCase().includes(q))), [contractorsData, q]);
+
+  // Aktivna lista i paginacija (25 po stranici, osim za gorivo gde je 10 po stranici)
   const currentList = useMemo(() => {
     switch (activeTab) {
       case 'parcele':
@@ -488,15 +569,20 @@ const SifarniciHub: React.FC = () => {
         return workTypes;
       case 'kulture':
         return crops;
+      case 'kooperanti':
+        return contractors;
       case 'partneri':
         return partners;
+      case 'gorivo':
+        return oilFuelData?.items || [];
       default:
         return [];
     }
-  }, [activeTab, parcels, machines, workers, workTypes, crops, partners]);
+  }, [activeTab, parcels, machines, workers, workTypes, crops, partners, contractors, oilFuelData]);
 
-  const totalItems = currentList.length;
-  const totalPages = Math.ceil(totalItems / PAGE_SIZE) || 1;
+  const activePageSize = activeTab === 'gorivo' ? 10 : PAGE_SIZE;
+  const totalItems = activeTab === 'gorivo' ? (oilFuelData?.totalItems ?? 0) : currentList.length;
+  const totalPages = activeTab === 'gorivo' ? (oilFuelData?.totalPages ?? 1) : (Math.ceil(totalItems / PAGE_SIZE) || 1);
 
   const paginatedParcels = useMemo(
     () => parcels.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
@@ -535,14 +621,21 @@ const SifarniciHub: React.FC = () => {
         return 'operacija';
       case 'kulture':
         return 'kultura';
+      case 'kooperanti':
+        return 'kooperanta';
       case 'partneri':
         return 'partnera';
+      case 'gorivo':
+        return 'artikala ulja i goriva';
       default:
         return 'zapisa';
     }
   };
 
-  const isLoading = loadingParcels || loadingMachines || loadingWorkers || loadingWorkTypes || loadingCrops || loadingPartners;
+  const isLoading =
+    activeTab === 'gorivo'
+      ? loadingOilFuel
+      : loadingParcels || loadingMachines || loadingWorkers || loadingWorkTypes || loadingCrops || loadingPartners || loadingContractors;
 
   return (
     <AppLayout pageTitle="Šifarnici">
@@ -599,6 +692,16 @@ const SifarniciHub: React.FC = () => {
 
       {/* Tab Navigation */}
       <div className={styles.tabsContainer}>
+        <button className={`${styles.tabBtn} ${activeTab === 'hemija' ? styles.tabBtnActive : ''}`} onClick={() => handleTabChange('hemija')}><Sprout size={18} /> Preparati za prskanje</button>
+        <button className={`${styles.tabBtn} ${activeTab === 'semena' ? styles.tabBtnActive : ''}`} onClick={() => handleTabChange('semena')}><Sprout size={18} /> Semena</button>
+        <button className={`${styles.tabBtn} ${activeTab === 'gorivo' ? styles.tabBtnActive : ''}`} onClick={() => handleTabChange('gorivo')}>
+          <Fuel size={18} />
+          <span>Ulja i gorivo</span>
+          <span className={styles.tabBadge}>{stats?.oilFuelCount ?? 7}</span>
+        </button>
+        <button className={`${styles.tabBtn} ${activeTab === 'kooperanti' ? styles.tabBtnActive : ''}`} onClick={() => handleTabChange('kooperanti')}>
+          <Handshake size={18} /> Kooperanti
+        </button>
         <button
           className={`${styles.tabBtn} ${activeTab === 'parcele' ? styles.tabBtnActive : ''}`}
           onClick={() => handleTabChange('parcele')}
@@ -654,6 +757,7 @@ const SifarniciHub: React.FC = () => {
         </button>
       </div>
 
+      {activeTab === 'hemija' || activeTab === 'semena' ? <MaterialCatalogue key={activeTab} kind={activeTab === 'hemija' ? 'CHEMICAL' : 'SEED'} canManage={['DIREKTOR', 'RUKOVODILAC'].includes(currentUserRole)} /> : <>
       {/* Toolbar sa pretragom, filterima i dugmetom Dodaj */}
       <div className={styles.toolbar}>
         <div className={styles.toolbarLeft}>
@@ -732,6 +836,20 @@ const SifarniciHub: React.FC = () => {
                   setPage(1);
                 }}
                 options={FILTER_PARTNER_TYPE_OPTIONS}
+                searchable={false}
+              />
+            </div>
+          )}
+
+          {activeTab === 'gorivo' && (
+            <div style={{ minWidth: 260, flex: '0 0 auto' }}>
+              <CustomSelect
+                value={filterOilFuelCategory}
+                onChange={(val) => {
+                  setFilterOilFuelCategory(val);
+                  setPage(1);
+                }}
+                options={FILTER_OIL_FUEL_CATEGORY_OPTIONS}
                 searchable={false}
               />
             </div>
@@ -1000,18 +1118,26 @@ const SifarniciHub: React.FC = () => {
                   <tr>
                     <th>Naziv operacije</th>
                     <th>Kategorija rada</th>
+                    <th>Normativ goriva</th>
                     <th>Jedinica mere</th>
                     <th className={styles.thActions}>Akcije</th>
                   </tr>
                 </thead>
                 <tbody>
                   {workTypes.length === 0 ? (
-                    <tr><td colSpan={4} className={styles.emptyState}>Nema unetih operacija</td></tr>
+                    <tr><td colSpan={5} className={styles.emptyState}>Nema unetih operacija</td></tr>
                   ) : (
                     paginatedWorkTypes.map((wt: any) => (
                       <tr key={wt.id}>
-                        <td><strong className={styles.primaryText}>{wt.name}</strong></td>
+                        <td><strong className={styles.primaryText}>{wt.name}</strong>{wt.materialKind && <div className={styles.secondaryText}>Materijali: {({ FERTILIZER: 'Đubrivo', CHEMICAL: 'Preparati za prskanje', SEED: 'Seme / sorta / hibrid' } as Record<string, string>)[wt.materialKind]}{wt.materialRequired ? ' (obavezno)' : ''}</div>}</td>
                         <td><span className={`${styles.pill} ${styles.pillPurple}`}>{wt.category}</span></td>
+                        <td>
+                          {wt.fuelNormLitersPerHa != null ? (
+                            <span className={`${styles.pill} ${styles.pillBlue}`}>{wt.fuelNormLitersPerHa} L/ha</span>
+                          ) : (
+                            <span className={styles.secondaryText}>—</span>
+                          )}
+                        </td>
                         <td><span className={styles.codeBadge}>{wt.unit}</span></td>
                         <td>
                           <div className={styles.actionBtns}>
@@ -1025,6 +1151,7 @@ const SifarniciHub: React.FC = () => {
                                   tab: 'operacije',
                                   details: [
                                     { label: 'Kategorija rada', value: wt.category },
+                                    { label: 'Normativ goriva', value: wt.fuelNormLitersPerHa != null ? `${wt.fuelNormLitersPerHa} L/ha` : 'Nije unet' },
                                     { label: 'Jedinica mere', value: wt.unit },
                                   ],
                                 })
@@ -1092,6 +1219,20 @@ const SifarniciHub: React.FC = () => {
               </table>
             )}
 
+            {activeTab === 'kooperanti' && <table className={styles.table}>
+              <thead><tr><th>Šifra</th><th>Kooperant</th><th>Telefon</th><th>Napomena</th><th className={styles.thActions}>Akcije</th></tr></thead>
+              <tbody>
+                {contractors.length === 0 && <tr><td colSpan={5} className={styles.emptyState}>Nema unetih kooperanata</td></tr>}
+                {contractors.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(item => <tr key={item.id}>
+                  <td><span className={styles.codeBadge}>{item.code}</span></td><td><strong>{item.name}</strong></td><td>{item.phone || '—'}</td><td>{item.notes || '—'}</td>
+                  <td><div className={styles.actionBtns}>
+                    <button className={styles.actionBtn} onClick={() => openEditModal(item)} title="Izmeni"><Pencil size={15} /></button>
+                    <button className={`${styles.actionBtn} ${styles.actionBtnDanger}`} onClick={() => openDeleteModal({ id: item.id, name: item.name, tab: 'kooperanti' })} title="Obriši"><Trash2 size={15} /></button>
+                  </div></td>
+                </tr>)}
+              </tbody>
+            </table>}
+
             {/* 6. PARTNERI */}
             {activeTab === 'partneri' && (
               <table className={styles.table}>
@@ -1155,6 +1296,76 @@ const SifarniciHub: React.FC = () => {
                 </tbody>
               </table>
             )}
+            {/* 7. ULJA I GORIVO */}
+            {activeTab === 'gorivo' && (
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={{ width: 110 }}>Šifra</th>
+                    <th>Naziv artikla</th>
+                    <th style={{ width: 190 }}>Kategorija</th>
+                    <th style={{ width: 100 }}>Jedinica</th>
+                    <th>Namena / Napomena</th>
+                    <th className={styles.thActions}>Akcije</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(oilFuelData?.items || []).length === 0 ? (
+                    <tr><td colSpan={6} className={styles.emptyState}>Nema unetih artikala za ulja i gorivo</td></tr>
+                  ) : (
+                    (oilFuelData?.items || []).map((item: any) => {
+                      const catBadgeClass =
+                        item.category === 'GORIVO' ? styles.pillAmber :
+                        item.category === 'MOTORNO_ULJE' ? styles.pillBlue :
+                        item.category === 'HIDRAULICNO_ULJE' ? styles.pillCyan :
+                        item.category === 'TRANSMISIONO_ULJE' ? styles.pillPurple :
+                        item.category === 'PUTARINA' ? styles.pillGreen : styles.pillBlue;
+
+                      const catLabel =
+                        item.category === 'GORIVO' ? 'Pogonsko gorivo' :
+                        item.category === 'MOTORNO_ULJE' ? 'Motorno ulje' :
+                        item.category === 'HIDRAULICNO_ULJE' ? 'Hidraulično ulje' :
+                        item.category === 'TRANSMISIONO_ULJE' ? 'Transmisiono ulje' :
+                        item.category === 'PUTARINA' ? 'Putarina' : item.category;
+
+                      return (
+                        <tr key={item.id}>
+                          <td><span className={styles.codeBadge}>{item.code}</span></td>
+                          <td><strong className={styles.primaryText}>{item.name}</strong></td>
+                          <td><span className={`${styles.pill} ${catBadgeClass}`}>{catLabel}</span></td>
+                          <td><span className={styles.codeBadge}>{item.unit}</span></td>
+                          <td><span className={styles.secondaryText}>{item.notes || '—'}</span></td>
+                          <td>
+                            <div className={styles.actionBtns}>
+                              <button className={styles.actionBtn} onClick={() => openEditModal(item)} title="Izmeni"><Pencil size={15} /></button>
+                              <button
+                                className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+                                onClick={() =>
+                                  openDeleteModal({
+                                    id: item.id,
+                                    name: item.name,
+                                    tab: 'gorivo',
+                                    details: [
+                                      { label: 'Šifra', value: item.code },
+                                      { label: 'Kategorija', value: catLabel },
+                                      { label: 'Jedinica mere', value: item.unit },
+                                      ...(item.notes ? [{ label: 'Napomena', value: item.notes }] : []),
+                                    ],
+                                  })
+                                }
+                                title="Obriši / Arhiviraj"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            )}
           </>
         )}
 
@@ -1163,12 +1374,14 @@ const SifarniciHub: React.FC = () => {
             currentPage={page}
             totalPages={totalPages}
             totalItems={totalItems}
-            pageSize={PAGE_SIZE}
+            pageSize={activePageSize}
             onPageChange={setPage}
             itemName={getItemName(activeTab)}
           />
         )}
       </div>
+
+      </>}
 
       {/* ===== UNIVERZALNI MODAL ZA DODAVANJE I IZMENU ===== */}
       {modalOpen && (
@@ -1377,6 +1590,12 @@ const SifarniciHub: React.FC = () => {
                     <label className={styles.formLabel}>Naziv operacije</label>
                     <input className={styles.formInput} value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="npr. Duboko oranje" required />
                   </div>
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Materijali za ovu operaciju</label>
+                    <CustomSelect value={form.materialKind || ''} onChange={value => setForm({ ...form, materialKind: value || null, materialRequired: value ? !!form.materialRequired : false })}
+                      options={[{ value: '', label: 'Bez materijala' }, { value: 'FERTILIZER', label: 'Đubrivo' }, { value: 'SEED', label: 'Seme / sorta / hibrid' }, { value: 'CHEMICAL', label: 'Preparati za prskanje' }]} searchable={false} />
+                    {form.materialKind && <label style={{ display: 'flex', gap: 8, marginTop: 10 }}><input type="checkbox" checked={!!form.materialRequired} onChange={event => setForm({ ...form, materialRequired: event.target.checked })} /> Izbor materijala je obavezan</label>}
+                  </div>
                   <div className={styles.formRow}>
                     <div className={styles.formGroup}>
                       <label className={styles.formLabel}>Kategorija rada</label>
@@ -1391,6 +1610,21 @@ const SifarniciHub: React.FC = () => {
                       <label className={styles.formLabel}>Podrazumevana jedinica</label>
                       <input className={styles.formInput} value={form.unit || 'ha'} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="ha / tura / sati" />
                     </div>
+                  </div>
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Normativ goriva (L/ha)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      className={styles.formInput}
+                      value={form.fuelNormLitersPerHa !== undefined && form.fuelNormLitersPerHa !== null ? form.fuelNormLitersPerHa : ''}
+                      onChange={(e) => setForm({ ...form, fuelNormLitersPerHa: e.target.value })}
+                      placeholder="npr. 21 (L po hektaru)"
+                    />
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.35rem', display: 'block' }}>
+                      Ciljna potrošnja goriva po hektaru za ovu radnu operaciju. Koristi se u Analitici za praćenje odstupanja i efikasnosti.
+                    </span>
                   </div>
                 </>
               )}
@@ -1412,6 +1646,13 @@ const SifarniciHub: React.FC = () => {
                   </div>
                 </>
               )}
+
+              {activeTab === 'kooperanti' && <>
+                {(['code', 'name', 'phone', 'notes'] as const).map(key => <div key={key} className={styles.formGroup}>
+                  <label className={styles.formLabel}>{{ code: 'Šifra *', name: 'Naziv / Ime i prezime *', phone: 'Telefon', notes: 'Napomena' }[key]}</label>
+                  <input className={styles.formInput} value={form[key] || ''} maxLength={key === 'code' ? 20 : key === 'name' ? 100 : key === 'phone' ? 50 : 500} onChange={event => setForm({ ...form, [key]: event.target.value })} />
+                </div>)}
+              </>}
 
               {/* FORMA PARTNERI */}
               {activeTab === 'partneri' && (
@@ -1444,6 +1685,64 @@ const SifarniciHub: React.FC = () => {
                       <label className={styles.formLabel}>Email</label>
                       <input className={styles.formInput} type="email" value={form.email || ''} onChange={(e) => setForm({ ...form, email: e.target.value })} />
                     </div>
+                  </div>
+                </>
+              )}
+
+              {/* FORMA ULJA I GORIVO */}
+              {activeTab === 'gorivo' && (
+                <>
+                  <div className={styles.formRow}>
+                    <div className={styles.formGroup} style={{ flex: '0 0 140px' }}>
+                      <label className={styles.formLabel}>Šifra artikla *</label>
+                      <input
+                        className={styles.formInput}
+                        value={form.code || ''}
+                        onChange={(e) => setForm({ ...form, code: e.target.value })}
+                        placeholder="npr. 123"
+                        required
+                      />
+                    </div>
+                    <div className={styles.formGroup} style={{ flex: 1 }}>
+                      <label className={styles.formLabel}>Naziv artikla *</label>
+                      <input
+                        className={styles.formInput}
+                        value={form.name || ''}
+                        onChange={(e) => setForm({ ...form, name: e.target.value })}
+                        placeholder="npr. EURODIZEL"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div className={styles.formRow}>
+                    <div className={styles.formGroup} style={{ flex: 1 }}>
+                      <label className={styles.formLabel}>Kategorija *</label>
+                      <CustomSelect
+                        value={form.category || 'GORIVO'}
+                        onChange={(val) => setForm({ ...form, category: val })}
+                        options={OIL_FUEL_CATEGORY_OPTIONS}
+                        searchable={false}
+                      />
+                    </div>
+                    <div className={styles.formGroup} style={{ flex: '0 0 150px' }}>
+                      <label className={styles.formLabel}>Jedinica mere *</label>
+                      <CustomSelect
+                        value={form.unit || 'L'}
+                        onChange={(val) => setForm({ ...form, unit: val })}
+                        options={OIL_FUEL_UNIT_OPTIONS}
+                        searchable={false}
+                      />
+                    </div>
+                  </div>
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Namena / Napomena</label>
+                    <textarea
+                      className={styles.formTextarea}
+                      rows={3}
+                      value={form.notes || ''}
+                      onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                      placeholder="npr. Osnovno pogonsko gorivo za traktore, kombajne i radne mašine..."
+                    />
                   </div>
                 </>
               )}

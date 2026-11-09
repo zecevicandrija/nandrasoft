@@ -1,8 +1,12 @@
+import { PhotoUpload } from '../components/PhotoUpload';
+import PhotoAttachment from '../components/PhotoAttachment';
+import WorkMaterialsEditor, { MaterialSummary } from '../components/WorkMaterialsEditor';
+import { materialPayload, type WorkMaterial } from '../lib/workMaterials';
+import { ContractorSelect } from '../components/ContractorSelect';
 import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
-import { refreshMachineFuel } from '../lib/machineFuel';
 import SubmissionRecovery from '../components/SubmissionRecovery';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -57,14 +61,19 @@ const BrziUnosRada: React.FC = () => {
   // Form states
   const [shift, setShift] = useState<'PRVA' | 'DRUGA' | 'TRECA'>('PRVA');
   const [parcelId, setParcelId] = useState('');
+  const [contractorId, setContractorId] = useState('');
+  const initializedContractorOrder = useRef<string | null>(null);
   const [machineId, setMachineId] = useState('');
   const [attachmentId, setAttachmentId] = useState('');
   const [workerId, setWorkerId] = useState('');
   const [workTypeId, setWorkTypeId] = useState('');
+  const [materials, setMaterials] = useState<WorkMaterial[]>([]);
   const [areaDoneHa, setAreaDoneHa] = useState<number | string>('');
   const [startTime, setStartTime] = useState('07:00');
   const [endTime, setEndTime] = useState('15:30');
   const [notes, setNotes] = useState('');
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
 
   // Razduženje mašine i gorivo states
   const [endFuelLiters, setEndFuelLiters] = useState<string | number>('');
@@ -78,23 +87,27 @@ const BrziUnosRada: React.FC = () => {
   const [submittedData, setSubmittedData] = useState<any | null>(null);
 
   const durable = useDurableSubmission(`field-work:${orderIdParam || 'manual'}`, currentUser?.id,
-    { shift, parcelId, machineId, attachmentId, workerId, workTypeId, areaDoneHa, startTime, endTime, notes, endFuelLiters, endHours, isOperational, returnNotes, fuelSnapshot },
+    { shift, parcelId, contractorId, materials, machineId, attachmentId, workerId, workTypeId, areaDoneHa, startTime, endTime, notes, photoUrl, endFuelLiters, endHours, isOperational, returnNotes, fuelSnapshot },
     (draft) => {
+      setMaterials(draft.materials ?? []);
+      setContractorId(draft.contractorId || '');
       setShift(draft.shift); setParcelId(draft.parcelId); setMachineId(draft.machineId);
       setAttachmentId(draft.attachmentId); setWorkerId(draft.workerId); setWorkTypeId(draft.workTypeId);
       setAreaDoneHa(draft.areaDoneHa); setStartTime(draft.startTime); setEndTime(draft.endTime);
-      setNotes(draft.notes); setEndFuelLiters(draft.endFuelLiters); setEndHours(draft.endHours);
+      setPhotoUrl(draft.photoUrl ?? null); setNotes(draft.notes); setEndFuelLiters(draft.endFuelLiters); setEndHours(draft.endHours);
       setFuelSnapshot(draft.fuelSnapshot ?? null);
       setIsOperational(draft.isOperational); setReturnNotes(draft.returnNotes);
     });
 
   // Dohvatanje detalja radnog naloga ako je prosleđen
-  const { data: orderData } = useQuery({
+  const { data: orderData, isPending: orderPending, isError: orderFailed, error: orderError, refetch: retryOrder } = useQuery({
     queryKey: ['work-order-detail', orderIdParam],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!orderIdParam) return null;
-      const res = await fetch(`${API}/work-orders/${orderIdParam}`, { credentials: 'include' });
-      return res.ok ? res.json() : null;
+      const res = await fetch(`${API}/work-orders/${orderIdParam}`, { credentials: 'include', signal });
+      const body = await res.json();
+      if (!res.ok || !body.workOrder) throw new Error(body.error || 'Radni nalog nije učitan.');
+      return body;
     },
     enabled: !!orderIdParam,
   });
@@ -179,6 +192,11 @@ const BrziUnosRada: React.FC = () => {
     if (durable.hasDraft) return;
     if (orderData?.workOrder) {
       const wo = orderData.workOrder;
+      if (initializedContractorOrder.current !== wo.id) {
+        setMaterials(wo.materials ?? []);
+        setContractorId(wo.contractorId || '');
+        initializedContractorOrder.current = wo.id;
+      }
       if (wo.parcelId && !parcelId) setParcelId(wo.parcelId);
       if (wo.machineId && !machineId) setMachineId(wo.machineId);
       if (wo.attachmentId && !attachmentId) setAttachmentId(wo.attachmentId);
@@ -342,7 +360,13 @@ const BrziUnosRada: React.FC = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (photoUploading) return;
     setErrorMsg('');
+
+    if (orderIdParam && (orderPending || orderFailed || !orderData?.workOrder)) {
+      setErrorMsg('Sačekajte da se učitaju radni nalog i planirani materijali.');
+      return;
+    }
 
     if (!parcelId || !machineId || (!isOperator && !workerId) || !workTypeId) {
       setErrorMsg('Molimo popunite sva obavezna polja.');
@@ -369,6 +393,8 @@ const BrziUnosRada: React.FC = () => {
     const payload: any = {
       shift,
       parcelId,
+      contractorId: contractorId || null,
+      materials: materialPayload(materials),
       machineId,
       attachmentId: attachmentId || null,
       workTypeId,
@@ -376,6 +402,7 @@ const BrziUnosRada: React.FC = () => {
       startTime: startTime || null,
       endTime: endTime || null,
       notes: notes || null,
+      photoUrl,
       autoAssignMachine: true,
       workOrderId: orderIdParam || null,
       isOperational,
@@ -407,6 +434,7 @@ const BrziUnosRada: React.FC = () => {
     setEndHours('');
     setEndFuelLiters('');
     setNotes('');
+    setPhotoUrl(null);
     setIsOperational(true);
     setReturnNotes('');
     setErrorMsg('');
@@ -452,6 +480,7 @@ const BrziUnosRada: React.FC = () => {
               )}
               <div>
                 <strong>Operacija:</strong> {submittedData.workType?.name}
+                <MaterialSummary items={submittedData.materials} />
               </div>
               <div>
                 <strong>Radni sati:</strong> {submittedData.workHours ? `${submittedData.workHours} h` : '-'}
@@ -522,6 +551,8 @@ const BrziUnosRada: React.FC = () => {
               </div>
             </div>
 
+            {orderIdParam && orderFailed && <div role="alert">{orderError.message} <button type="button" onClick={() => retryOrder()}>Pokušaj ponovo</button></div>}
+            {orderIdParam && orderPending && <p role="status">Učitavanje naloga i planiranih materijala...</p>}
             {orderIdParam && (
               <div
                 style={{
@@ -541,6 +572,7 @@ const BrziUnosRada: React.FC = () => {
                   <strong>Popunjavanje rada po izdatom Radnom Nalogu</strong>
                   {orderData?.workOrder && (
                     <span style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                      <PhotoAttachment url={orderData.workOrder.photoUrl} label="Fotografija uz nalog" />
                       Nalog: <strong>{orderData.workOrder.orderNumber}</strong>
                       {orderData.workOrder.machineAssignments?.[0]?.startFuelLiters !== undefined && (
                         <> — Zaduženo gorivo: <strong>{orderData.workOrder.machineAssignments[0].startFuelLiters} L</strong></>
@@ -668,6 +700,10 @@ const BrziUnosRada: React.FC = () => {
                   />
                 </div>
 
+                <div className={styles.fieldGroup}>
+                  <ContractorSelect value={contractorId} onChange={setContractorId} canManage={isManager} />
+                </div>
+
                 {/* 3. URAĐENA POVRŠINA (HA) SA BRZIM TASTERIMA */}
                 <div className={styles.areaSection}>
                   <label className={styles.fieldLabel}>Urađeno Hektara (ha)</label>
@@ -739,12 +775,15 @@ const BrziUnosRada: React.FC = () => {
                   <label className={styles.fieldLabel}>Radna Operacija</label>
                   <CustomSelect
                     value={workTypeId}
-                    onChange={(val) => setWorkTypeId(val)}
+                    onChange={(val) => { setWorkTypeId(val); if (val !== workTypeId) setMaterials([]); }}
                     options={workTypeOptions}
                     placeholder="— Izaberite radnu operaciju —"
                     searchable
                   />
                 </div>
+
+                <WorkMaterialsEditor kind={workTypesData?.workTypes?.find((w: any) => w.id === workTypeId)?.materialKind}
+                  required={workTypesData?.workTypes?.find((w: any) => w.id === workTypeId)?.materialRequired} value={materials} onChange={setMaterials} canManage={isManager} />
 
                 {/* 5. MAŠINA I RADNIK */}
                 <div className={styles.fieldGroup}>
@@ -978,16 +1017,6 @@ const BrziUnosRada: React.FC = () => {
                             value={endFuelLiters}
                             onChange={(e) => setEndFuelLiters(e.target.value)}
                           />
-                          <p>Izmereno gorivo zamenjuje trenutno stanje. Posle naknadnog sipanja osvežite podatke i proverite merenje.</p>
-                          <button type="button" className={styles.btnSecondary} disabled={!!durable.pending} onClick={async () => {
-                            try {
-                              const machine = await refreshMachineFuel(machineId);
-                              setFuelSnapshot({ machineId, updatedAt: machine.updatedAt });
-                              setEndFuelLiters('');
-                              setErrorMsg(`Poslednje stanje: ${machine.currentFuelLiters ?? 0} L. Ponovo unesite izmereno gorivo.`);
-                              void queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
-                            } catch (error: any) { setErrorMsg(error.message); }
-                          }}>Osveži stanje mašine</button>
                           {selectedWorkTypeObj?.fuelNormLitersPerHa && (
                             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                               Planirani normativ posla: {selectedWorkTypeObj.fuelNormLitersPerHa} L/ha
@@ -1065,11 +1094,12 @@ const BrziUnosRada: React.FC = () => {
                   />
                 </div>
 
+                <PhotoUpload photoUrl={photoUrl} label="Fotografija sa terena (opciono)" onChange={setPhotoUrl} onUploadStateChange={setPhotoUploading} disabled={submitMutation.isPending} />
                 {/* TASTER ZA SLANJE */}
                 <button
                   type="submit"
                   className={styles.submitBtn}
-                  disabled={submitMutation.isPending || isEndHoursInvalid || (selectedParcelObj && currentNumericArea > parcelMaxHa)}
+                  disabled={photoUploading || submitMutation.isPending || (!!orderIdParam && (orderPending || orderFailed)) || isEndHoursInvalid || (selectedParcelObj && currentNumericArea > parcelMaxHa)}
                 >
                   {submitMutation.isPending ? (
                     <>

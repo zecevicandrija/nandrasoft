@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test:materials": "node --test tests/work-materials.test.ts",
     "test:sentry": "node --test tests/sentry.test.ts",
     "test:fuel": "node --test tests/fuel-queries.test.ts tests/fuel-efficiency-queries.test.ts",
     "test:bundle": "npm run build && node --test tests/bundle-splitting.test.ts",

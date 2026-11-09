@@ -1,0 +1,68 @@
+.attachment {
+  display: inline-flex;
+  box-sizing: border-box;
+  max-width: 100%;
+  margin: .5rem 0;
+  padding: .5rem .7rem;
+  border: 1px solid var(--border-color, #dce3eb);
+  border-radius: 10px;
+  color: var(--text-primary, #334155);
+  background: var(--bg-card-secondary, #f8fafc);
+  font-size: .85rem;
+}
+
+.desktopLink {
+  display: inline-flex;
+  align-items: center;
+  gap: .65rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.desktopLink img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.desktopLink:hover { color: #0284c7; }
+.mobileImage { display: none; }
+
+@media (width < 768px) {
+  .attachment {
+    display: block;
+    width: 100%;
+    padding: .5rem;
+  }
+
+  .desktopLink,
+  .uploadPreview .viewLink { display: none; }
+
+  .mobileImage {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 360px;
+    object-fit: contain;
+    border-radius: 6px;
+  }
+
+  .uploadPreview {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .uploadPreview .uploadThumb {
+    width: 100%;
+    height: auto;
+  }
+
+  .uploadPreview .uploadThumb img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 360px;
+    object-fit: contain;
+  }
+}

@@ -713,6 +713,54 @@
 }
 
 /* Modal */
+.photoButton {
+  display: flex;
+  margin-top: .5rem;
+  padding: .45rem .65rem;
+}
+
+.photoDialog {
+  box-sizing: border-box;
+  width: min(800px, calc(100% - 2rem));
+  max-height: 90dvh;
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xl);
+}
+
+.photoDialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.photoDialog::backdrop {
+  background: var(--bg-modal-overlay, rgba(0, 0, 0, .5));
+  backdrop-filter: blur(4px);
+}
+
+.photoDialog .modalHeader { flex-shrink: 0; }
+.photoDialog .modalBody { min-height: 0; }
+
+.workPhoto {
+  display: block;
+  width: 100%;
+  max-height: 60dvh;
+  object-fit: contain;
+  border-radius: 10px;
+}
+
+.photoNotes p {
+  margin: .5rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
 .modalOverlay {
   position: fixed;
   inset: 0;

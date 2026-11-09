@@ -27,6 +27,7 @@ import { NovoTocenjeModal } from './NovoTocenjeModal';
 import { PrijemCisterneModal } from './PrijemCisterneModal';
 import { IzmeniTocenjeModal } from './IzmeniTocenjeModal';
 import { PregledRacunaModal } from './PregledRacunaModal';
+import { StanjeMasinaTab } from './StanjeMasinaTab';
 import styles from './GorivoDashboard.module.css';
 
 interface FuelStats {
@@ -165,7 +166,7 @@ const GorivoDashboard: React.FC = () => {
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(userRole);
 
   // Tabovi za rukovodioce
-  const [activeTab, setActiveTab] = useState<'TOCENJA' | 'CISTERNA'>('TOCENJA');
+  const [activeTab, setActiveTab] = useState<'TOCENJA' | 'CISTERNA' | 'STANJE_MASINA'>('TOCENJA');
 
   type PeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve' | 'custom';
   const PAGE_SIZE = 25;
@@ -250,10 +251,18 @@ const GorivoDashboard: React.FC = () => {
     }),
     enabled: enabled && isManager && activeTab === 'TOCENJA',
   });
-  const suppliesQuery = useQuery({ ...fuelQueryOptions<{ supplies: FuelSupply[] }>(userId, 'supplies', dateFilters),
-    enabled: enabled && isManager && activeTab === 'CISTERNA' });
-  const todayQuery = useQuery({ ...fuelQueryOptions<{ entries: FuelEntry[] }>(userId, 'entries', { scope: 'today', limit: 50 }),
-    enabled: enabled && !isManager });
+  const suppliesQuery = useQuery({
+    ...fuelQueryOptions<{ supplies: FuelSupply[] }>(userId, 'supplies', dateFilters),
+    enabled: enabled && isManager && activeTab === 'CISTERNA'
+  });
+  const machineStatesQuery = useQuery({
+    ...fuelQueryOptions<{ machines: any[] }>(userId, 'machineStates'),
+    enabled: enabled && isManager,
+  });
+  const todayQuery = useQuery({
+    ...fuelQueryOptions<{ entries: FuelEntry[] }>(userId, 'entries', { scope: 'today', limit: 50 }),
+    enabled: enabled && !isManager
+  });
   const historyQuery = useQuery({
     ...fuelQueryOptions<{ entries: FuelEntry[]; pagination: PaginationMeta }>(userId, 'entries', { scope: 'history', page: historyPage, limit: PAGE_SIZE }),
     enabled: enabled && !isManager && showHistory,
@@ -263,13 +272,19 @@ const GorivoDashboard: React.FC = () => {
   const managerEntries = managerEntriesQuery.data?.entries || [];
   const managerPagination = managerEntriesQuery.data?.pagination;
   const supplies = suppliesQuery.data?.supplies || [];
+  const machineStates = machineStatesQuery.data?.machines || [];
   const todayEntries = todayQuery.data?.entries || [];
   const historyEntries = historyQuery.data?.entries || [];
   const historyPagination = historyQuery.data?.pagination;
   const machines = machinesQuery.data?.machines || [];
   const workers = workersQuery.data?.workers || [];
   const partners = partnersQuery.data?.partners || [];
-  const activeManagerQuery = activeTab === 'TOCENJA' ? managerEntriesQuery : suppliesQuery;
+  const activeManagerQuery =
+    activeTab === 'TOCENJA'
+      ? managerEntriesQuery
+      : activeTab === 'CISTERNA'
+        ? suppliesQuery
+        : machineStatesQuery;
   const loading = activeManagerQuery.isFetching;
   const todayLoading = todayQuery.isFetching;
   const historyLoading = historyQuery.isFetching;
@@ -336,11 +351,6 @@ const GorivoDashboard: React.FC = () => {
               <Fuel size={26} color="#16a34a" />
               {isManager ? 'Evidencija Goriva & Cisterna' : 'Dnevnik točenja goriva'}
             </h2>
-            <p>
-              {isManager
-                ? 'Praćenje nivoa goriva u litrima, točenja na terenu, normativa L/ha i zaliha cisterne'
-                : 'Evidencija sipanja goriva u mašine.'}
-            </p>
           </div>
 
           <div className={styles.headerActions}>
@@ -487,83 +497,88 @@ const GorivoDashboard: React.FC = () => {
                 <span>Prijem cisterne & Zalihe ({supplies.length})</span>
               </button>
 
+              <button
+                className={`${styles.tabBtn} ${activeTab === 'STANJE_MASINA' ? styles.tabBtnActive : ''}`}
+                onClick={() => setActiveTab('STANJE_MASINA')}
+              >
+                <Truck size={17} />
+                <span>Stanje Mašina ({machineStates.length})</span>
+              </button>
             </div>
 
             {/* Brzi Period Filter (Danas, Ova Nedelja, Ovaj Mesec, Svi Unosi, Prilagođen Raspon) */}
-            <div className={styles.periodRowCard}>
-              <div className={styles.periodButtonGroup}>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${period === 'danas' ? styles.periodBtnActive : ''}`}
-                  onClick={() => handlePeriodChange('danas')}
-                >
-                  Danas
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${period === 'nedelja' ? styles.periodBtnActive : ''}`}
-                  onClick={() => handlePeriodChange('nedelja')}
-                >
-                  Ova Nedelja
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${period === 'mesec' ? styles.periodBtnActive : ''}`}
-                  onClick={() => handlePeriodChange('mesec')}
-                >
-                  Ovaj Mesec
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${period === 'sve' ? styles.periodBtnActive : ''}`}
-                  onClick={() => handlePeriodChange('sve')}
-                >
-                  Svi Unosi
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${period === 'custom' ? styles.periodBtnActive : ''}`}
-                  onClick={() => handlePeriodChange('custom')}
-                >
-                  Prilagođen Raspon
-                </button>
-              </div>
-
-              {period === 'custom' && (
-                <div className={styles.customDateRangeBox}>
-                  <span>Od:</span>
-                  <input
-                    type="date"
-                    aria-label="Datum od"
-                    className={styles.dateInput}
-                    value={dateFrom}
-                    onChange={(e) => {
-                      setDateFrom(e.target.value);
-                      setPeriod('custom');
-                      setManagerPage(1);
-                      setSuppliesPage(1);
-
-
-                    }}
-                  />
-                  <span>Do:</span>
-                  <input
-                    type="date"
-                    aria-label="Datum do"
-                    className={styles.dateInput}
-                    value={dateTo}
-                    onChange={(e) => {
-                      setDateTo(e.target.value);
-                      setPeriod('custom');
-                      setManagerPage(1);
-                      setSuppliesPage(1);
-
-
-                    }}
-                  />
+            {activeTab !== 'STANJE_MASINA' && (
+              <div className={styles.periodRowCard}>
+                <div className={styles.periodButtonGroup}>
+                  <button
+                    type="button"
+                    className={`${styles.periodBtn} ${period === 'danas' ? styles.periodBtnActive : ''}`}
+                    onClick={() => handlePeriodChange('danas')}
+                  >
+                    Danas
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.periodBtn} ${period === 'nedelja' ? styles.periodBtnActive : ''}`}
+                    onClick={() => handlePeriodChange('nedelja')}
+                  >
+                    Ova Nedelja
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.periodBtn} ${period === 'mesec' ? styles.periodBtnActive : ''}`}
+                    onClick={() => handlePeriodChange('mesec')}
+                  >
+                    Ovaj Mesec
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.periodBtn} ${period === 'sve' ? styles.periodBtnActive : ''}`}
+                    onClick={() => handlePeriodChange('sve')}
+                  >
+                    Svi Unosi
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.periodBtn} ${period === 'custom' ? styles.periodBtnActive : ''}`}
+                    onClick={() => handlePeriodChange('custom')}
+                  >
+                    Prilagođen Raspon
+                  </button>
                 </div>
-              )}
-            </div>
+
+                {period === 'custom' && (
+                  <div className={styles.customDateRangeBox}>
+                    <span>Od:</span>
+                    <input
+                      type="date"
+                      aria-label="Datum od"
+                      className={styles.dateInput}
+                      value={dateFrom}
+                      onChange={(e) => {
+                        setDateFrom(e.target.value);
+                        setPeriod('custom');
+                        setManagerPage(1);
+                        setSuppliesPage(1);
+                      }}
+                    />
+                    <span>Do:</span>
+                    <input
+                      type="date"
+                      aria-label="Datum do"
+                      className={styles.dateInput}
+                      value={dateTo}
+                      onChange={(e) => {
+                        setDateTo(e.target.value);
+                        setPeriod('custom');
+                        setManagerPage(1);
+                        setSuppliesPage(1);
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* TAB 1: Dnevnik Točenja */}
             {activeTab === 'TOCENJA' && (
@@ -854,6 +869,19 @@ const GorivoDashboard: React.FC = () => {
                   </>
                 )}
               </div>
+            )}
+
+            {/* TAB 3: Stanje Mašina */}
+            {activeTab === 'STANJE_MASINA' && (
+              <StanjeMasinaTab
+                machines={machineStates}
+                isLoading={machineStatesQuery.isLoading}
+                onRefresh={() => {
+                  void machineStatesQuery.refetch();
+                  void machinesQuery.refetch();
+                }}
+                userId={userId}
+              />
             )}
 
           </>

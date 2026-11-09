@@ -613,6 +613,18 @@
 }
 
 /* Badges */
+.codeBadge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+  border-radius: 6px;
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

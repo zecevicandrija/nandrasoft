@@ -1,3 +1,4 @@
+import PhotoAttachment from './components/PhotoAttachment';
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, Navigate } from 'react-router-dom';
 import {
@@ -341,6 +342,8 @@ const PocetniEkran: React.FC = () => {
                     </span>
                   </div>
                 )}
+                {todayOrder.materials?.length > 0 && <div><strong>Materijali:</strong> {todayOrder.materials.map((item: { name: string; dosePerHa?: number | null; unit: string }) => `${item.name}${item.dosePerHa != null ? ` (${item.dosePerHa} ${item.unit}/ha)` : ''}`).join(', ')}</div>}
+                <PhotoAttachment url={todayOrder.photoUrl} label="Fotografija uz nalog" />
                 {todayOrder.instructions && (
                   <div
                     style={{

@@ -38,7 +38,7 @@ type FertilizerType =
   | 'TECNI_BIOSTIMULATOR'
   | 'ORGANSKO_PELETIRANO';
 
-type FertilizerUnit = 'KG' | 'L' | 'TONA';
+type FertilizerUnit = 'KG' | 'L' | 'TONA' | 'KOM';
 
 type StockMovementType =
   | 'PRIJEM_NABAVKA'
@@ -48,6 +48,7 @@ type StockMovementType =
 
 interface FertilizerProduct {
   id: string;
+  code?: string | null;
   name: string;
   type: FertilizerType;
   unit: FertilizerUnit;
@@ -136,7 +137,7 @@ const MOVEMENT_LABELS: Record<StockMovementType, string> = {
   OTPIS_KOREKCIJA: 'Otpis / Korekcija',
 };
 
-const STOCK_PAGE_SIZE = 25;
+const STOCK_PAGE_SIZE = 10;
 const HISTORY_PAGE_SIZE = 25;
 
 const FERTILIZER_TYPE_FILTER_OPTIONS: CustomSelectOption[] = [
@@ -187,6 +188,7 @@ const PRODUCT_UNIT_OPTIONS: CustomSelectOption[] = [
   { value: 'KG', label: 'Kilogram (KG)' },
   { value: 'L', label: 'Litar (L)' },
   { value: 'TONA', label: 'Tona (TONA)' },
+  { value: 'KOM', label: 'Komad / Pakovanje (KOM)' },
 ];
 
 const FertilizerDashboard: React.FC = () => {
@@ -361,10 +363,11 @@ const FertilizerDashboard: React.FC = () => {
       if (filterType && p.type !== filterType) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
+        const matchCode = (p.code || '').toLowerCase().includes(q);
         const matchName = p.name.toLowerCase().includes(q);
         const matchLoc = (p.defaultLocation || '').toLowerCase().includes(q);
         const matchDesc = (p.description || '').toLowerCase().includes(q);
-        if (!matchName && !matchLoc && !matchDesc) return false;
+        if (!matchCode && !matchName && !matchLoc && !matchDesc) return false;
       }
       return true;
     });
@@ -380,7 +383,7 @@ const FertilizerDashboard: React.FC = () => {
   const fertilizerProductOptions = useMemo(() => {
     return products.map((p) => ({
       value: p.id,
-      label: p.name,
+      label: p.code ? `[${p.code}] ${p.name}` : p.name,
       subLabel: `Stanje: ${p.currentStock.toLocaleString('sr-RS')} ${p.unit} • Min: ${p.minStockWarning.toLocaleString('sr-RS')} ${p.unit}`,
       badge: p.isBelowMin
         ? 'Ispod min'
@@ -654,6 +657,7 @@ const FertilizerDashboard: React.FC = () => {
   const [productError, setProductError] = useState('');
 
   const [productForm, setProductForm] = useState({
+    code: '',
     name: '',
     type: 'MINERALNO_GRANULISANO' as FertilizerType,
     unit: 'KG' as FertilizerUnit,
@@ -668,6 +672,7 @@ const FertilizerDashboard: React.FC = () => {
     setEditingProduct(null);
     setProductError('');
     setProductForm({
+      code: '',
       name: '',
       type: 'MINERALNO_GRANULISANO',
       unit: 'KG',
@@ -684,6 +689,7 @@ const FertilizerDashboard: React.FC = () => {
     setEditingProduct(prod);
     setProductError('');
     setProductForm({
+      code: prod.code || '',
       name: prod.name,
       type: prod.type,
       unit: prod.unit,
@@ -713,6 +719,7 @@ const FertilizerDashboard: React.FC = () => {
       const method = editingProduct ? 'PUT' : 'POST';
 
       const payload: Record<string, any> = {
+        code: productForm.code.trim() || null,
         name: productForm.name.trim(),
         type: productForm.type,
         unit: productForm.unit,
@@ -1244,6 +1251,7 @@ const FertilizerDashboard: React.FC = () => {
                   <table className={styles.table}>
                     <thead>
                       <tr>
+                        <th style={{ width: 90 }}>Šifra</th>
                         <th>Naziv i formulacija</th>
                         <th>Kategorija</th>
                         <th>Lokacija u skladištu</th>
@@ -1259,6 +1267,9 @@ const FertilizerDashboard: React.FC = () => {
                           key={prod.id}
                           className={prod.isBelowMin ? styles.rowBelowMin : undefined}
                         >
+                          <td>
+                            <span className={styles.codeBadge}>{prod.code || '—'}</span>
+                          </td>
                           <td>
                             <div style={{ fontWeight: 800, fontSize: '0.94rem' }}>{prod.name}</div>
                             {prod.description && (
@@ -2560,16 +2571,28 @@ const FertilizerDashboard: React.FC = () => {
                     </div>
                   )}
 
-                  <div className={styles.formField}>
-                    <label>Naziv i formulacija đubriva *</label>
-                    <input
-                      type="text"
-                      className={styles.formInput}
-                      placeholder="npr. NPK 16:16:16, UREA 46% N, YaraMila Complex..."
-                      value={productForm.name}
-                      onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
-                      required
-                    />
+                  <div className={styles.formGrid}>
+                    <div className={styles.formField} style={{ flex: '0 0 140px' }}>
+                      <label>Šifra artikla</label>
+                      <input
+                        type="text"
+                        className={styles.formInput}
+                        placeholder="npr. 90"
+                        value={productForm.code}
+                        onChange={(e) => setProductForm({ ...productForm, code: e.target.value })}
+                      />
+                    </div>
+                    <div className={styles.formField} style={{ flex: 1 }}>
+                      <label>Naziv i formulacija đubriva *</label>
+                      <input
+                        type="text"
+                        className={styles.formInput}
+                        placeholder="npr. NPK 16:16:16, UREA 46% N, YaraMila Complex..."
+                        value={productForm.name}
+                        onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
+                        required
+                      />
+                    </div>
                   </div>
 
                   <div className={styles.formGrid}>

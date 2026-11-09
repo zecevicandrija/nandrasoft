@@ -225,8 +225,8 @@ export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
                 value={fuelType}
                 onChange={(val) => setFuelType(val)}
                 options={[
-                  { value: 'EURODIZEL', label: 'Eurodizel (Standardni)' },
-                  { value: 'EURODIZEL ADITIVNI', label: 'Eurodizel Aditivni' },
+                  { value: 'EURODIZEL', label: '[123] Eurodizel (Standardni)' },
+                  { value: 'EURODIZEL ADITIVNI', label: '[122] Eurodizel Aditivni' },
                 ]}
                 placeholder="Izaberite vrstu goriva"
                 searchable={false}

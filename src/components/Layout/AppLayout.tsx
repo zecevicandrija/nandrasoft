@@ -44,6 +44,17 @@ interface NavGroup {
 
 const NAV_GROUPS: NavGroup[] = [
   {
+    groupName: 'Komunikacija',
+    items: [
+      {
+        title: 'Komunikacija',
+        to: '/',
+        icon: <ClipboardList size={18} />,
+        allowedRoles: ['DIREKTOR'],
+      },
+    ],
+  },
+  {
     groupName: 'Operativa & Njiva',
     items: [
       {

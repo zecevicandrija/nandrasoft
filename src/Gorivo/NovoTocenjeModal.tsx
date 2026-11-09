@@ -47,12 +47,12 @@ interface NovoTocenjeModalProps {
 const API = 'http://localhost:5000/api';
 
 const FLUID_TYPES = [
-  { value: 'EURODIZEL', label: 'Eurodizel (Osnovno pogonsko)', unit: 'L' },
-  { value: 'EURODIZEL ADITIVNI', label: 'Eurodizel Aditivni (Zimski)', unit: 'L' },
-  { value: 'HIDROL-46', label: 'Hidrol-46 (Hidraulično ulje)', unit: 'L' },
-  { value: 'MOTORNO ULJE 10W-40', label: 'Motorno ulje 10W-40', unit: 'L' },
-  { value: 'MOTORNO ULJE 15W-40', label: 'Motorno ulje 15W-40', unit: 'L' },
-  { value: 'ULJE TOTAL DYNATRANS MPV-TRAKTORI', label: 'Total Dynatrans MPV (Transmisija)', unit: 'L' },
+  { value: 'EURODIZEL', label: '[123] Eurodizel (Osnovno pogonsko)', unit: 'L' },
+  { value: 'EURODIZEL ADITIVNI', label: '[122] Eurodizel Aditivni (Zimski)', unit: 'L' },
+  { value: 'HIDROL-46', label: '[5] Hidrol-46 (Hidraulično ulje)', unit: 'L' },
+  { value: 'MOTORNO ULJE 10W-40', label: '[61] Motorno ulje 10W-40 (Polusintetika)', unit: 'L' },
+  { value: 'MOTORNO ULJE 15W-40', label: '[126] Motorno ulje 15W-40 (Mineralno ulje)', unit: 'L' },
+  { value: 'ULJE TOTAL DYNATRANS MPV-TRAKTORI', label: '[573] Ulje Total Dynatrans MPV (Transmisija)', unit: 'KOM' },
 ];
 
 export const NovoTocenjeModal: React.FC<NovoTocenjeModalProps> = ({

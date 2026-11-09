@@ -3,6 +3,7 @@ import { queryOptions } from '@tanstack/react-query';
 const endpoints = {
   machines: '/master/machines', workers: '/master/workers', partners: '/master/partners',
   stats: '/fuel/stats', entries: '/fuel/entries', supplies: '/fuel/supplies',
+  machineStates: '/fuel/machine-states',
 };
 
 export async function fuelRequest<T>(path: string, options: RequestInit = {}): Promise<T> {

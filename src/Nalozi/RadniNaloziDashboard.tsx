@@ -1,3 +1,7 @@
+import { PhotoUpload } from '../components/PhotoUpload';
+import WorkMaterialsEditor from '../components/WorkMaterialsEditor';
+import { materialPayload, materialLabels, materialUnits, type WorkMaterial, type MaterialOperation } from '../lib/workMaterials';
+import { ContractorSelect } from '../components/ContractorSelect';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { operationalQueryOptions, operationalKey } from '../lib/operationalQueries';
 import QueryErrorNotice from '../components/QueryErrorNotice';
@@ -32,9 +36,14 @@ import {
   CheckCircle2,
   Filter,
   Layers,
+  Handshake,
+  FlaskConical,
+  Sprout,
+  Camera,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
+import OrderDetailsModal from './OrderDetailsModal';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import { useSession } from '../lib/auth-client';
 import styles from './RadniNaloziDashboard.module.css';
@@ -70,13 +79,14 @@ interface Parcel {
   notes?: string | null;
 }
 
-interface WorkType {
+interface WorkType extends MaterialOperation {
   id: string;
   name: string;
   category: string;
 }
 
-interface WorkOrder {
+export interface WorkOrder {
+  materials?: WorkMaterial[];
   id: string;
   orderNumber: string;
   orderDate: string;
@@ -96,6 +106,8 @@ interface WorkOrder {
   };
   attachmentId?: string;
   attachment?: { id: string; name: string };
+  contractorId?: string | null;
+  contractor?: { id: string; name: string; code: string } | null;
   parcelId?: string;
   parcel?: { id: string; name: string; code: string };
   workTypeId?: string;
@@ -103,6 +115,14 @@ interface WorkOrder {
   plannedAreaHa?: number;
   shift: 'PRVA' | 'DRUGA' | 'TRECA';
   instructions?: string;
+  photoUrl?: string | null;
+  fieldWork?: {
+    id?: string;
+    photoUrl?: string | null;
+    areaDoneHa?: number | null;
+    workHours?: number | null;
+    status?: string | null;
+  };
   issuedBy?: { id: string; name: string; role: string };
   createdAt?: string;
   updatedAt?: string;
@@ -130,6 +150,7 @@ interface StatsData {
 }
 
 const API = '/api';
+const materialDoseFormatter = new Intl.NumberFormat('sr-Latn-RS', { maximumFractionDigits: 12 });
 
 const RadniNaloziDashboard: React.FC = () => {
   const { data: session } = useSession();
@@ -148,8 +169,13 @@ const RadniNaloziDashboard: React.FC = () => {
 
   // Modal za novi nalog stanje
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [editPhotoUploading, setEditPhotoUploading] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState('');
+
+  // Modal za slike i detalje radnog naloga
+  const [detailsOrder, setDetailsOrder] = useState<WorkOrder | null>(null);
 
   // Brzo dodavanje / izmena parcele
   const [parcelQuickModalOpen, setParcelQuickModalOpen] = useState(false);
@@ -173,15 +199,18 @@ const RadniNaloziDashboard: React.FC = () => {
     workerId: '',
     machineId: '',
     attachmentId: '',
+    materials: [] as WorkMaterial[],
+    contractorId: '',
     parcelId: '',
     workTypeId: '',
     plannedAreaHa: '',
     shift: 'PRVA',
     instructions: '',
+    photoUrl: null as string | null,
   });
 
   const orderDraft = useDurableSubmission('create-work-order', currentUser?.id, formData,
-    (draft) => { setFormData(draft); });
+    (draft) => { setFormData({ ...draft, photoUrl: draft.photoUrl ?? null, materials: draft.materials ?? [] }); });
 
   // Modal za izmenu radnog naloga
   const [editingOrder, setEditingOrder] = useState<WorkOrder | null>(null);
@@ -192,11 +221,14 @@ const RadniNaloziDashboard: React.FC = () => {
     workerId: '',
     machineId: '',
     attachmentId: '',
+    materials: [] as WorkMaterial[],
+    contractorId: '',
     parcelId: '',
     workTypeId: '',
     plannedAreaHa: '',
     shift: 'PRVA',
     instructions: '',
+    photoUrl: null as string | null,
     status: 'PLANIRAN',
   });
   const [editModalLoading, setEditModalLoading] = useState(false);
@@ -258,6 +290,7 @@ const RadniNaloziDashboard: React.FC = () => {
   // Kreiranje naloga
   const handleCreateOrder = async (e?: React.FormEvent, replay = false) => {
     e?.preventDefault();
+    if (photoUploading) return;
     setModalError('');
 
     if (!replay && !formData.workerId) {
@@ -273,6 +306,8 @@ const RadniNaloziDashboard: React.FC = () => {
         plannedAreaHa: formData.plannedAreaHa ? parseFloat(formData.plannedAreaHa) : null,
         machineId: formData.machineId || null,
         attachmentId: formData.attachmentId || null,
+        materials: materialPayload(formData.orderType === 'RAD_NJIVA' ? formData.materials : []),
+        contractorId: formData.orderType === 'RAD_NJIVA' ? formData.contractorId || null : null,
         parcelId: formData.parcelId || null,
         workTypeId: formData.workTypeId || null,
       };
@@ -289,11 +324,14 @@ const RadniNaloziDashboard: React.FC = () => {
         workerId: '',
         machineId: '',
         attachmentId: '',
+        materials: [] as WorkMaterial[],
+        contractorId: '',
         parcelId: '',
         workTypeId: '',
         plannedAreaHa: '',
         shift: 'PRVA',
         instructions: '',
+        photoUrl: null as string | null,
       });
 
       setPage(1);
@@ -469,6 +507,7 @@ const RadniNaloziDashboard: React.FC = () => {
     setFormData((prev) => ({
       ...prev,
       orderType: newType as any,
+      materials: newType === 'RAD_NJIVA' ? prev.materials : [],
       workerId: isCurrentValid ? prev.workerId : '',
     }));
   };
@@ -480,6 +519,7 @@ const RadniNaloziDashboard: React.FC = () => {
     setEditFormData((prev) => ({
       ...prev,
       orderType: newType as any,
+      materials: newType === 'RAD_NJIVA' ? prev.materials : [],
       workerId: isCurrentValid ? prev.workerId : '',
     }));
   };
@@ -691,18 +731,21 @@ const RadniNaloziDashboard: React.FC = () => {
       workerId: order.workerId,
       machineId: order.machineId || '',
       attachmentId: order.attachmentId || '',
+      materials: order.materials ?? [],
+      contractorId: order.contractorId || '',
       parcelId: order.parcelId || '',
       workTypeId: order.workTypeId || '',
       plannedAreaHa: order.plannedAreaHa ? String(order.plannedAreaHa) : '',
       shift: order.shift || 'PRVA',
       instructions: order.instructions || '',
+      photoUrl: order.photoUrl || null,
       status: order.status,
     });
   };
 
   const handleUpdateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingOrder) return;
+    if (!editingOrder || editPhotoUploading) return;
     setEditModalError('');
 
     if (!editFormData.workerId) {
@@ -718,6 +761,8 @@ const RadniNaloziDashboard: React.FC = () => {
         plannedAreaHa: editFormData.plannedAreaHa ? parseFloat(editFormData.plannedAreaHa) : null,
         machineId: editFormData.machineId || null,
         attachmentId: editFormData.attachmentId || null,
+        materials: materialPayload(editFormData.orderType === 'RAD_NJIVA' ? editFormData.materials : []),
+        contractorId: editFormData.orderType === 'RAD_NJIVA' ? editFormData.contractorId || null : null,
         parcelId: editFormData.parcelId || null,
         workTypeId: editFormData.workTypeId || null,
       };
@@ -874,11 +919,6 @@ const RadniNaloziDashboard: React.FC = () => {
               </span>
               Dnevni Radni Nalozi
             </h2>
-            <p>
-              {isManager
-                ? 'Izdavanje naloga traktoristima za rad na njivi i mehaničarima za remont mašina.'
-                : 'Pregled zadataka i radnih naloga koji su vam dodeljeni za rad.'}
-            </p>
           </div>
 
           {isManager && (
@@ -1021,24 +1061,24 @@ const RadniNaloziDashboard: React.FC = () => {
         {/* Orders Grid */}
         {ordersQuery.isError ? <QueryErrorNotice title="Radni nalozi nisu učitani." error={ordersQuery.error}
           pending={ordersQuery.isFetching} onRetry={() => { void ordersQuery.refetch(); }} /> : loading ? (
-          <div className={styles.emptyState}>
-            <Loader2 size={32} className={styles.spinnerIcon} />
-            <p>Učitavam radne naloge...</p>
-          </div>
-        ) : orders.length === 0 ? (
-          <div className={styles.emptyState}>
-            <div className={styles.emptyStateIcon}>
-              <ClipboardList size={38} />
+            <div className={styles.emptyState}>
+              <Loader2 size={32} className={styles.spinnerIcon} />
+              <p>Učitavam radne naloge...</p>
             </div>
-            <strong>Nema izdatih radnih naloga</strong>
-            <p>Za izabrani period i filtere trenutno nema evidentiranih radnih naloga.</p>
-            {isManager && (
-              <button className={styles.newOrderBtn} onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}>
-                <Plus size={18} /> Izdaj novi nalog
-              </button>
-            )}
-          </div>
-        ) : (
+          ) : orders.length === 0 ? (
+            <div className={styles.emptyState}>
+              <div className={styles.emptyStateIcon}>
+                <ClipboardList size={38} />
+              </div>
+              <strong>Nema izdatih radnih naloga</strong>
+              <p>Za izabrani period i filtere trenutno nema evidentiranih radnih naloga.</p>
+              {isManager && (
+                <button className={styles.newOrderBtn} onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}>
+                  <Plus size={18} /> Izdaj novi nalog
+                </button>
+              )}
+            </div>
+          ) : (
           <>
             <div className={styles.ordersGrid}>
               {orders.map((order) => {
@@ -1049,7 +1089,14 @@ const RadniNaloziDashboard: React.FC = () => {
                     {/* Card Header */}
                     <div className={styles.cardHeader}>
                       <div className={styles.headerLeft}>
-                        <span className={styles.orderNumberBadge}>{order.orderNumber}</span>
+                        <button
+                          type="button"
+                          className={styles.orderNumberBadge}
+                          onClick={() => setDetailsOrder(order)}
+                          title="Kliknite za prikaz slika i detalja naloga"
+                        >
+                          #{order.orderNumber}
+                        </button>
                         <div className={styles.orderDateRow}>
                           <Calendar size={13} className={styles.dateIcon} />
                           <span>
@@ -1130,6 +1177,15 @@ const RadniNaloziDashboard: React.FC = () => {
                           </div>
                         )}
 
+                        {order.contractor && (
+                          <div className={styles.orderRow}>
+                            <div className={styles.rowIconWrapper}><Handshake size={15} aria-hidden="true" /></div>
+                            <div className={styles.rowContent}>
+                              <span className={styles.rowLabel}>Kooperant:</span>
+                              <strong className={styles.rowValue}>{order.contractor.name}</strong>
+                            </div>
+                          </div>
+                        )}
                         {order.parcel && (
                           <div className={styles.orderRow}>
                             <div className={styles.rowIconWrapper}>
@@ -1143,18 +1199,40 @@ const RadniNaloziDashboard: React.FC = () => {
                         )}
 
                         {order.workType && (
-                          <div className={styles.orderRow}>
+                          <div className={`${styles.orderRow} ${styles.jobRow}`}>
                             <div className={styles.rowIconWrapper}>
                               <Wrench size={15} />
                             </div>
-                            <div className={styles.rowContent}>
-                              <span className={styles.rowLabel}>Posao:</span>
-                              <span className={styles.rowValue}>
-                                <strong>{order.workType?.name}</strong>
-                                {order.plannedAreaHa && (
-                                  <span className={styles.planBadge}>{order.plannedAreaHa} ha</span>
+                            <div className={styles.jobDetails}>
+                              <div className={styles.jobHeader}>
+                                <div className={styles.jobTitle}>
+                                  <span className={styles.rowLabel}>Posao</span>
+                                  <strong>{order.workType.name}</strong>
+                                </div>
+                                {order.plannedAreaHa != null && order.plannedAreaHa > 0 && (
+                                  <span className={styles.planBadge} title="Planirana površina">{materialDoseFormatter.format(order.plannedAreaHa)} ha</span>
                                 )}
-                              </span>
+                              </div>
+                              {!!order.materials?.length && <div className={styles.jobMaterials}>
+                                <span className={styles.materialsLabel}>{materialLabels[order.materials[0].kind]}</span>
+                                <ul className={styles.materialList}>
+                                  {order.materials.map(item => {
+                                    const MaterialIcon = item.kind === 'CHEMICAL' ? FlaskConical : Sprout;
+                                    return <li className={styles.materialItem} key={`${item.kind}:${item.productId}`}>
+                                      <MaterialIcon size={14} className={styles.materialIcon} aria-hidden="true" />
+                                      <div className={styles.materialDetails}>
+                                        <div className={styles.materialHeading}>
+                                          <span className={styles.materialName}>{item.name}</span>
+                                          {item.dosePerHa != null && <span className={styles.materialDose} aria-label={`Doza: ${materialDoseFormatter.format(item.dosePerHa)} ${materialUnits[item.unit] || item.unit} po hektaru`}>
+                                            {materialDoseFormatter.format(item.dosePerHa)} {materialUnits[item.unit] || item.unit}/ha
+                                          </span>}
+                                        </div>
+                                        {item.notes && <p className={styles.materialNote}>{item.notes}</p>}
+                                      </div>
+                                    </li>;
+                                  })}
+                                </ul>
+                              </div>}
                             </div>
                           </div>
                         )}
@@ -1172,6 +1250,25 @@ const RadniNaloziDashboard: React.FC = () => {
                           </div>
                         )}
 
+                      {(() => {
+                        const hasPhotos = Boolean(order.photoUrl || order.fieldWork?.photoUrl);
+                        const photoCount = (order.photoUrl ? 1 : 0) + (order.fieldWork?.photoUrl ? 1 : 0);
+                        if (!hasPhotos) return null;
+                        return (
+                          <button
+                            type="button"
+                            className={styles.viewPhotosBtn}
+                            onClick={() => setDetailsOrder(order)}
+                            title="Pregledajte fotografije i detalje ovog radnog naloga"
+                          >
+                            <Camera size={15} />
+                            <span>Pogledaj slike i detalje</span>
+                            <span className={styles.photoCountBadge}>
+                              {photoCount} {photoCount === 1 ? 'slika' : 'slike'}
+                            </span>
+                          </button>
+                        );
+                      })()}
                       {order.instructions && (
                         <div className={styles.instructionsBox}>
                           <span className={styles.instructionsQuote}>“</span>
@@ -1310,7 +1407,7 @@ const RadniNaloziDashboard: React.FC = () => {
               )}
 
               <form onSubmit={handleCreateOrder} className={styles.modalForm}>
-              {masterFeedback}
+                {masterFeedback}
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
                     <div className={styles.formLabelRow}>
@@ -1436,26 +1533,16 @@ const RadniNaloziDashboard: React.FC = () => {
                   )}
                 </div>
 
+                {formData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                  <ContractorSelect value={formData.contractorId || ''} onChange={value => setFormData(prev => ({ ...prev, contractorId: value }))} canManage={isManager} />
+                </div>}
+
                 {formData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
                       <div className={styles.formLabelRow}>
                         <label>Parcela / Njiva</label>
-                        {isManager && (
-                          <ParcelQuickActions
-                            selectedParcel={parcels.find((p) => p.id === formData.parcelId) || null}
-                            onAddClick={() => {
-                              setParcelQuickTarget('create-order');
-                              setParcelToEdit(null);
-                              setParcelQuickModalOpen(true);
-                            }}
-                            onEditClick={(parcel) => {
-                              setParcelQuickTarget('create-order');
-                              setParcelToEdit(parcel);
-                              setParcelQuickModalOpen(true);
-                            }}
-                          />
-                        )}
+
                       </div>
                       <CustomSelect
                         value={formData.parcelId}
@@ -1466,6 +1553,21 @@ const RadniNaloziDashboard: React.FC = () => {
                         hideTriggerSubLabel={true}
                         triggerClassName={styles.modalFormSelectTrigger}
                       />
+                      {isManager && (
+                        <ParcelQuickActions
+                          selectedParcel={parcels.find((p) => p.id === formData.parcelId) || null}
+                          onAddClick={() => {
+                            setParcelQuickTarget('create-order');
+                            setParcelToEdit(null);
+                            setParcelQuickModalOpen(true);
+                          }}
+                          onEditClick={(parcel) => {
+                            setParcelQuickTarget('create-order');
+                            setParcelToEdit(parcel);
+                            setParcelQuickModalOpen(true);
+                          }}
+                        />
+                      )}
                     </div>
 
                     <div className={styles.formGroup}>
@@ -1474,7 +1576,7 @@ const RadniNaloziDashboard: React.FC = () => {
                       </div>
                       <CustomSelect
                         value={formData.workTypeId}
-                        onChange={(val) => setFormData((prev) => ({ ...prev, workTypeId: val }))}
+                        onChange={(val) => setFormData((prev) => ({ ...prev, workTypeId: val, materials: val === prev.workTypeId ? prev.materials : [] }))}
                         options={workTypeOptions}
                         placeholder="— Izaberi posao —"
                         searchable
@@ -1484,6 +1586,11 @@ const RadniNaloziDashboard: React.FC = () => {
                     </div>
                   </div>
                 )}
+
+                {formData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                  <WorkMaterialsEditor kind={workTypes.find(w => w.id === formData.workTypeId)?.materialKind} required={workTypes.find(w => w.id === formData.workTypeId)?.materialRequired}
+                    value={formData.materials} onChange={materials => setFormData(prev => ({ ...prev, materials }))} canManage={isManager} />
+                </div>}
 
                 {formData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
@@ -1523,6 +1630,7 @@ const RadniNaloziDashboard: React.FC = () => {
                   />
                 </div>
 
+                <PhotoUpload photoUrl={formData.photoUrl} label="Fotografija za radnika (opciono)" onChange={(photoUrl) => setFormData((current) => ({ ...current, photoUrl }))} onUploadStateChange={setPhotoUploading} disabled={modalLoading} />
                 <div className={styles.modalFooter}>
                   <button
                     type="button"
@@ -1531,7 +1639,7 @@ const RadniNaloziDashboard: React.FC = () => {
                   >
                     Odustani
                   </button>
-                  <button type="submit" className={styles.saveBtn} disabled={modalLoading}>
+                  <button type="submit" className={styles.saveBtn} disabled={modalLoading || photoUploading}>
                     {modalLoading ? 'Izdavanje naloga...' : 'Sačuvaj i izdaj nalog'}
                   </button>
                 </div>
@@ -1558,7 +1666,7 @@ const RadniNaloziDashboard: React.FC = () => {
               )}
 
               <form onSubmit={handleUpdateOrder} className={styles.modalForm}>
-              {masterFeedback}
+                {masterFeedback}
                 <div className={styles.formGrid}>
                   <div className={styles.formGroup}>
                     <div className={styles.formLabelRow}>
@@ -1684,26 +1792,16 @@ const RadniNaloziDashboard: React.FC = () => {
                   )}
                 </div>
 
+                {editFormData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                  <ContractorSelect value={editFormData.contractorId || ''} onChange={value => setEditFormData(prev => ({ ...prev, contractorId: value }))} canManage={isManager} />
+                </div>}
+
                 {editFormData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
                     <div className={styles.formGroup}>
                       <div className={styles.formLabelRow}>
                         <label>Parcela / Njiva</label>
-                        {isManager && (
-                          <ParcelQuickActions
-                            selectedParcel={parcels.find((p) => p.id === editFormData.parcelId) || null}
-                            onAddClick={() => {
-                              setParcelQuickTarget('edit-order');
-                              setParcelToEdit(null);
-                              setParcelQuickModalOpen(true);
-                            }}
-                            onEditClick={(parcel) => {
-                              setParcelQuickTarget('edit-order');
-                              setParcelToEdit(parcel);
-                              setParcelQuickModalOpen(true);
-                            }}
-                          />
-                        )}
+
                       </div>
                       <CustomSelect
                         value={editFormData.parcelId}
@@ -1714,6 +1812,21 @@ const RadniNaloziDashboard: React.FC = () => {
                         hideTriggerSubLabel={true}
                         triggerClassName={styles.modalFormSelectTrigger}
                       />
+                      {isManager && (
+                        <ParcelQuickActions
+                          selectedParcel={parcels.find((p) => p.id === editFormData.parcelId) || null}
+                          onAddClick={() => {
+                            setParcelQuickTarget('edit-order');
+                            setParcelToEdit(null);
+                            setParcelQuickModalOpen(true);
+                          }}
+                          onEditClick={(parcel) => {
+                            setParcelQuickTarget('edit-order');
+                            setParcelToEdit(parcel);
+                            setParcelQuickModalOpen(true);
+                          }}
+                        />
+                      )}
                     </div>
 
                     <div className={styles.formGroup}>
@@ -1722,7 +1835,7 @@ const RadniNaloziDashboard: React.FC = () => {
                       </div>
                       <CustomSelect
                         value={editFormData.workTypeId}
-                        onChange={(val) => setEditFormData((prev) => ({ ...prev, workTypeId: val }))}
+                        onChange={(val) => setEditFormData((prev) => ({ ...prev, workTypeId: val, materials: val === prev.workTypeId ? prev.materials : [] }))}
                         options={workTypeOptions}
                         placeholder="— Izaberi posao —"
                         searchable
@@ -1732,6 +1845,11 @@ const RadniNaloziDashboard: React.FC = () => {
                     </div>
                   </div>
                 )}
+
+                {editFormData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                  <WorkMaterialsEditor kind={workTypes.find(w => w.id === editFormData.workTypeId)?.materialKind} required={workTypes.find(w => w.id === editFormData.workTypeId)?.materialRequired}
+                    value={editFormData.materials} onChange={materials => setEditFormData(prev => ({ ...prev, materials }))} canManage={isManager} />
+                </div>}
 
                 {editFormData.orderType === 'RAD_NJIVA' && (
                   <div className={styles.formGrid}>
@@ -1786,6 +1904,7 @@ const RadniNaloziDashboard: React.FC = () => {
                   />
                 </div>
 
+                <PhotoUpload photoUrl={editFormData.photoUrl} label="Fotografija za radnika (opciono)" onChange={(photoUrl) => setEditFormData((current) => ({ ...current, photoUrl }))} onUploadStateChange={setEditPhotoUploading} disabled={editModalLoading} />
                 <div className={styles.modalFooter} style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                   <button
                     type="button"
@@ -1809,7 +1928,7 @@ const RadniNaloziDashboard: React.FC = () => {
                     >
                       Odustani
                     </button>
-                    <button type="submit" className={styles.saveBtn} disabled={editModalLoading}>
+                    <button type="submit" className={styles.saveBtn} disabled={editModalLoading || editPhotoUploading}>
                       {editModalLoading ? 'Čuvanje izmena...' : 'Sačuvaj izmene'}
                     </button>
                   </div>
@@ -1853,7 +1972,7 @@ const RadniNaloziDashboard: React.FC = () => {
               )}
 
               <form onSubmit={handleConfirmAcceptOrder} className={styles.modalForm}>
-              {masterFeedback}
+                {masterFeedback}
                 {selectedOrderToAccept.machine && (
                   <div className={styles.machineSummaryCard}>
                     <div className={styles.machineSummaryTitle}>
@@ -2369,6 +2488,16 @@ const RadniNaloziDashboard: React.FC = () => {
           </div>
         )}
 
+        {/* Modal za slike i detalje radnog naloga */}
+        {detailsOrder && (
+          <OrderDetailsModal
+            order={detailsOrder}
+            onClose={() => setDetailsOrder(null)}
+            onEdit={handleOpenEditModal}
+            canEdit={canEditOrder(detailsOrder)}
+          />
+        )}
+
         {/* Brzi modal za dodavanje / izmenu parcele */}
         <ParcelQuickModal
           isOpen={parcelQuickModalOpen}
@@ -2377,8 +2506,10 @@ const RadniNaloziDashboard: React.FC = () => {
           onSaved={(savedParcel, mode) => {
             queryClient.setQueryData(operationalQueryOptions(userId, userRole, 'parcels').queryKey, (previous: { parcels: Parcel[] } | undefined) => {
               const prev = previous?.parcels || [];
-              return { parcels: mode === 'edit' ? prev.map(p => p.id === savedParcel.id ? savedParcel : p)
-                : [...prev, savedParcel].sort((a, b) => a.code.localeCompare(b.code)) };
+              return {
+                parcels: mode === 'edit' ? prev.map(p => p.id === savedParcel.id ? savedParcel : p)
+                  : [...prev, savedParcel].sort((a, b) => a.code.localeCompare(b.code))
+              };
             });
             if (parcelQuickTarget === 'create-order') {
               setFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));

@@ -1,3 +1,5 @@
+import { PhotoUpload } from '../components/PhotoUpload';
+import PhotoAttachment from '../components/PhotoAttachment';
 import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import { refreshMachineFuel } from '../lib/machineFuel';
@@ -75,6 +77,8 @@ const MasineZaduzenje: React.FC = () => {
   const [checkinFuelLiters, setCheckinFuelLiters] = useState<number | string>('');
   const [checkinOperational, setCheckinOperational] = useState(true);
   const [checkinNotes, setCheckinNotes] = useState('');
+  const [checkinPhoto, setCheckinPhoto] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
 
   // Edit Modal states (izmena zaduženja)
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -93,11 +97,11 @@ const MasineZaduzenje: React.FC = () => {
   const isOperator = currentUser?.role === 'OPERATER';
 
   const checkinDraft = useDurableSubmission('checkin', currentUser?.id,
-    { selectedAssignment, checkinEndHours, checkinFuelLiters, checkinOperational, checkinNotes },
+    { selectedAssignment, checkinEndHours, checkinFuelLiters, checkinOperational, checkinNotes, checkinPhoto },
     (draft) => {
       setSelectedAssignment(draft.selectedAssignment); setCheckinEndHours(draft.checkinEndHours);
       setCheckinFuelLiters(draft.checkinFuelLiters); setCheckinOperational(draft.checkinOperational);
-      setCheckinNotes(draft.checkinNotes); if (draft.selectedAssignment) setCheckinModalOpen(true);
+      setCheckinPhoto(draft.checkinPhoto ?? null); setCheckinNotes(draft.checkinNotes); if (draft.selectedAssignment) setCheckinModalOpen(true);
     });
 
   // Search parametri (za direktno rešavanje neusklađenosti ili brzi završetak dana)
@@ -374,6 +378,7 @@ const MasineZaduzenje: React.FC = () => {
     );
     setCheckinOperational(true);
     setCheckinNotes('');
+    setCheckinPhoto(null);
     setCheckinModalOpen(true);
   };
 
@@ -413,7 +418,7 @@ const MasineZaduzenje: React.FC = () => {
 
   const handleCheckinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedAssignment) return;
+    if (!selectedAssignment || photoUploading) return;
 
     const endH = Number(checkinEndHours);
     if (endH < selectedAssignment.startHours) {
@@ -442,6 +447,7 @@ const MasineZaduzenje: React.FC = () => {
       expectedMachineUpdatedAt: selectedAssignment.machine?.updatedAt,
       isOperational: checkinOperational,
       returnNotes: checkinNotes || null,
+      photoUrl: checkinPhoto,
     });
   };
 
@@ -1649,7 +1655,7 @@ const MasineZaduzenje: React.FC = () => {
                                   </span>
                                 </td>
                                 <td style={{ maxWidth: 220, color: 'var(--text-secondary)' }}>
-                                  {a.returnNotes || a.assignNotes || '-'}
+                                  {a.returnNotes || a.assignNotes || '-'}<PhotoAttachment url={a.photoUrl} />
                                 </td>
                                 <td style={{ textAlign: 'right' }}>
                                   <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
@@ -1762,6 +1768,7 @@ const MasineZaduzenje: React.FC = () => {
                             </div>
                           </div>
 
+                          <PhotoAttachment url={a.photoUrl} />
                           {(a.returnNotes || a.assignNotes) && (
                             <div className={styles.historyCardNotes}>
                               <FileText size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
@@ -1818,15 +1825,6 @@ const MasineZaduzenje: React.FC = () => {
               </div>
 
               <form onSubmit={handleCheckinSubmit}>
-                <p>Izmereno gorivo zamenjuje trenutno stanje. Ako je u međuvremenu evidentirano sipanje, osvežite podatke i ponovo proverite merenje.</p>
-                <button type="button" className={styles.btnSecondary} disabled={!!checkinDraft.pending || checkinMutation.isPending} onClick={async () => {
-                  try {
-                    const machine = await refreshMachineFuel(selectedAssignment.machineId);
-                    setSelectedAssignment({ ...selectedAssignment, machine });
-                    setCheckinFuelLiters('');
-                    showToast(`Poslednje stanje: ${machine.currentFuelLiters ?? 0} L. Ponovo unesite izmereno gorivo.`, 'success');
-                  } catch (error: any) { showToast(error.message, 'error'); }
-                }}>Osveži stanje mašine</button>
                 <div className={styles.modalBody}>
                   <SubmissionRecovery pending={!!checkinDraft.pending} busy={checkinMutation.isPending} error={checkinDraft.storageError}
                     onRetry={() => checkinDraft.pending && checkinMutation.mutate(checkinDraft.pending.payload)} />
@@ -1961,6 +1959,7 @@ const MasineZaduzenje: React.FC = () => {
                   </div>
                 </div>
 
+                <PhotoUpload photoUrl={checkinPhoto} label="Fotografija pri razduženju (opciono)" onChange={setCheckinPhoto} onUploadStateChange={setPhotoUploading} disabled={checkinMutation.isPending} />
                 <div className={styles.modalFooter}>
                   <button
                     type="button"
@@ -1974,7 +1973,7 @@ const MasineZaduzenje: React.FC = () => {
                     type="submit"
                     className={styles.btnCheckin}
                     style={{ width: 'auto', padding: '0.65rem 1.5rem' }}
-                    disabled={checkinMutation.isPending}
+                    disabled={checkinMutation.isPending || photoUploading}
                   >
                     {checkinMutation.isPending ? 'Razduživanje...' : 'Potvrdi Razduživanje'}
                   </button>

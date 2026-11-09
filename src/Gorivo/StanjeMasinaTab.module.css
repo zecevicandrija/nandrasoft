@@ -1,0 +1,610 @@
+/* StanjeMasinaTab.module.css */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Info Banner */
+.infoBanner {
+  background: rgba(2, 132, 199, 0.08);
+  border: 1px solid rgba(2, 132, 199, 0.25);
+  border-radius: 14px;
+  padding: 1rem 1.25rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  color: #0369a1;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+:global(.dark) .infoBanner {
+  color: #38bdf8;
+  background: rgba(2, 132, 199, 0.12);
+  border-color: rgba(2, 132, 199, 0.35);
+}
+
+.infoBannerIcon {
+  color: #0284c7;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.infoBanner strong {
+  font-weight: 700;
+  color: #0284c7;
+}
+
+:global(.dark) .infoBanner strong {
+  color: #7dd3fc;
+}
+
+/* KPI Summary Cards */
+.kpiGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 1rem;
+}
+
+.kpiCard {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1.15rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.05));
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.kpiCard:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md, 0 4px 6px -1px rgba(0, 0, 0, 0.1));
+}
+
+.kpiIcon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.kpiIconGreen {
+  background: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+}
+
+.kpiIconBlue {
+  background: rgba(2, 132, 199, 0.12);
+  color: #0284c7;
+}
+
+.kpiIconAmber {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+}
+
+.kpiIconRed {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.kpiContent {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.kpiLabel {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.kpiValue {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-top: 0.15rem;
+  line-height: 1.2;
+}
+
+.kpiSub {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+/* Toolbar: Search, Filters & Action */
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1rem 1.25rem;
+}
+
+.toolbarFilters {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.searchInputWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 220px;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 0.6rem 0.85rem 0.6rem 2.4rem;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.searchInput:focus {
+  border-color: #16a34a;
+}
+
+.selectWrapper {
+  min-width: 170px;
+}
+
+.addMachineBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.25rem;
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 12px rgba(22, 163, 74, 0.25);
+  white-space: nowrap;
+}
+
+.addMachineBtn:hover {
+  background: linear-gradient(135deg, #15803d 0%, #166534 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(22, 163, 74, 0.35);
+}
+
+/* Table */
+.tableContainer {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.88rem;
+}
+
+.dataTable thead th {
+  background: var(--bg-table-header, rgba(0, 0, 0, 0.02));
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.dataTable tbody td {
+  padding: 0.95rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.dataTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.dataTable tbody tr:hover td {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.015));
+}
+
+/* Machine Info Cell */
+.machineNameCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.machineTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.machineName {
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.machineSubtext {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badgeType {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.badgeSuccess {
+  background: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+}
+
+.badgeWarning {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+}
+
+.badgeDanger {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.badgeDefault {
+  background: rgba(148, 163, 184, 0.15);
+  color: #64748b;
+}
+
+.badgeFuelEurodizel {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+  border: 1px solid rgba(22, 163, 74, 0.25);
+}
+
+.badgeFuelAditivni {
+  background: rgba(2, 132, 199, 0.12);
+  color: #0369a1;
+  border: 1px solid rgba(2, 132, 199, 0.25);
+}
+
+.badgeFuelNone {
+  background: rgba(100, 116, 139, 0.12);
+  color: #64748b;
+  border: 1px solid rgba(100, 116, 139, 0.2);
+}
+
+/* Tank Level Progress Bar */
+.tankLevelCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 170px;
+}
+
+.tankTextRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.tankNumbers {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tankCapacity {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.78rem;
+}
+
+.tankPercentage {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.progressBarTrack {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-hover, #e2e8f0);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+:global(.dark) .progressBarTrack {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.progressBarFill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.fillGreen {
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+}
+
+.fillYellow {
+  background: linear-gradient(90deg, #eab308 0%, #ca8a04 100%);
+}
+
+.fillRed {
+  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+}
+
+.fillGray {
+  background: #94a3b8;
+}
+
+/* Last Refuel Cell */
+.refuelCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.84rem;
+}
+
+.refuelDate {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.refuelDetails {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.refuelSourceBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.sourceCisterna {
+  background: rgba(22, 163, 74, 0.1);
+  color: #16a34a;
+}
+
+.sourcePumpa {
+  background: rgba(2, 132, 199, 0.1);
+  color: #0284c7;
+}
+
+.sourceKanister {
+  background: rgba(168, 85, 247, 0.1);
+  color: #9333ea;
+}
+
+.noRefuelText {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.82rem;
+}
+
+/* Action Buttons */
+.actionGroup {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.editBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.65rem;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.editBtn:hover {
+  background: var(--bg-hover);
+  color: #16a34a;
+  border-color: #16a34a;
+}
+
+.deleteBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.4rem 0.55rem;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.deleteBtn:hover {
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* Empty State */
+.emptyState {
+  padding: 3rem 1.5rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  color: var(--text-muted);
+}
+
+.emptyTitle {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* Delete confirmation modal */
+.deleteModalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.deleteModalContent {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  width: 100%;
+  max-width: 480px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-xl);
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.deleteHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #dc2626;
+}
+
+.deleteTitle {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.deleteWarningBox {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.deleteActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.confirmDeleteBtn {
+  padding: 0.65rem 1.25rem;
+  background: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.confirmDeleteBtn:hover {
+  background: #b91c1c;
+}
+
+@media (max-width: 768px) {
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .toolbarFilters {
+    flex-direction: column;
+  }
+  .searchInputWrapper,
+  .selectWrapper {
+    width: 100%;
+  }
+  .addMachineBtn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
