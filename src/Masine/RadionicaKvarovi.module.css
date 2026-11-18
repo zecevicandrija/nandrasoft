@@ -896,6 +896,33 @@
   box-shadow: 0 4px 10px rgba(16, 185, 129, 0.35);
 }
 
+.btnActionCancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.95rem;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+:global([data-theme="dark"]) .btnActionCancel {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.btnActionCancel:hover {
+  background: rgba(239, 68, 68, 0.18);
+  transform: translateY(-1px);
+}
+
 /* Empty State */
 .emptyState {
   background: var(--bg-card);

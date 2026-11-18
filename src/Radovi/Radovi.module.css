@@ -483,6 +483,9 @@
 }
 
 .tableCountBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   font-size: 0.75rem;
   font-weight: 700;
   padding: 0.25rem 0.6rem;
@@ -494,6 +497,11 @@
 .tableWrapper {
   width: 100%;
   overflow-x: auto;
+  transition: opacity 0.15s ease;
+}
+
+.tableWrapperFetching {
+  opacity: 0.65;
 }
 
 .table {

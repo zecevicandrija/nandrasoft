@@ -1,7 +1,7 @@
 import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import SubmissionRecovery from '../components/SubmissionRecovery';
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CreditCard,
@@ -30,6 +30,56 @@ import styles from './PutarineDashboard.module.css';
 
 const API = '/api';
 const PAGE_SIZE = 25;
+
+const PAYMENT_METHOD_FILTER_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Svi načini plaćanja' },
+  { value: 'ENP_TAG', label: 'ENP TAG (Uređaj)', badge: 'TAG', badgeType: 'success' },
+  { value: 'GOTOVINA', label: 'Gotovina na rampi', badge: 'GOTOVINA', badgeType: 'warning' },
+  { value: 'KARTICA', label: 'Platna kartica', badge: 'KARTICA', badgeType: 'default' },
+];
+
+const MODAL_PAYMENT_METHOD_OPTIONS: CustomSelectOption[] = [
+  { value: 'ENP_TAG', label: 'ENP Tag (Elektronska naplata)', badge: 'TAG', badgeType: 'success' },
+  { value: 'GOTOVINA', label: 'Gotovina na rampi', badge: 'GOTOVINA', badgeType: 'warning' },
+  { value: 'KARTICA', label: 'Platna kartica', badge: 'KARTICA', badgeType: 'default' },
+];
+
+const formatLocalDateInput = (dStr?: string | Date) => {
+  const d = dStr ? new Date(dStr) : new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const isSameCalendarDay = (dStr?: string | Date) => {
+  if (!dStr) return false;
+  const d = new Date(dStr);
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+};
+
+const rsdFormatter = new Intl.NumberFormat('sr-RS');
+const dateFormatter = new Intl.DateTimeFormat('sr-RS');
+const formatRsd = (value: number | string | null | undefined) =>
+  rsdFormatter.format(Number(value || 0));
+const formatDateSr = (dStr: string) => dateFormatter.format(new Date(dStr));
+
+const MOBILE_MEDIA_QUERY = '(max-width: 768px)';
+const subscribeMobileQuery = (onStoreChange: () => void) => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return () => {};
+  }
+  const mql = window.matchMedia(MOBILE_MEDIA_QUERY);
+  mql.addEventListener('change', onStoreChange);
+  return () => mql.removeEventListener('change', onStoreChange);
+};
+const getMobileSnapshot = () =>
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia(MOBILE_MEDIA_QUERY).matches
+    : false;
+const useIsMobile = () => useSyncExternalStore(subscribeMobileQuery, getMobileSnapshot, () => false);
 
 interface VehicleItem {
   id: string;
@@ -82,10 +132,31 @@ interface PaginationMeta {
   totalPages: number;
 }
 
+interface SessionUserLike {
+  id?: string;
+  name?: string;
+  role?: string;
+}
+
+interface WorkerOptionItem {
+  id: string;
+  name: string;
+  userId?: string | null;
+  type?: string;
+  role?: string;
+}
+
+const EMPTY_VEHICLES: VehicleItem[] = [];
+const EMPTY_WORKERS: WorkerOptionItem[] = [];
+
+const getErrorMessage = (err: unknown, fallback: string) =>
+  err instanceof Error && err.message ? err.message : fallback;
+
 const PutarineDashboard: React.FC = () => {
   const queryClient = useQueryClient();
-  const { data: session } = useSession();
-  const currentUser = (session as any)?.user;
+  const isMobile = useIsMobile();
+  const { data: session, isPending: sessionPending } = useSession();
+  const currentUser = (session as unknown as { user?: SessionUserLike } | null | undefined)?.user;
   const userRole = currentUser?.role || 'OPERATER';
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(userRole);
 
@@ -99,47 +170,69 @@ const PutarineDashboard: React.FC = () => {
   const [entriesPage, setEntriesPage] = useState(1);
   const [topUpsPage, setTopUpsPage] = useState(1);
 
-  // Reset na prvu stranicu prilikom promene bilo kog filtera
-  useEffect(() => {
+  const resetPages = () => {
     setEntriesPage(1);
     setTopUpsPage(1);
-  }, [filterMachineId, filterWorkerId, filterPaymentMethod, dateFrom, dateTo]);
+  };
 
   // Toast obaveštenje
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
     setToast({ text, type });
-    setTimeout(() => setToast(null), 3500);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 3500);
   };
 
-  // Dohvatanje radnika za padajuću listu
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Dohvatanje radnika za padajuću listu (potrebno samo menadžerima)
   const { data: workersData } = useQuery({
     queryKey: ['workers-lite'],
+    enabled: !sessionPending && isManager,
     queryFn: async () => {
       const res = await fetch(`${API}/master/workers`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Greška pri učitavanju radnika.');
       return res.json();
     },
   });
-  const workers: Array<{ id: string; name: string; userId?: string | null }> =
-    workersData?.workers || [];
+  const workers: WorkerOptionItem[] = workersData?.workers ?? EMPTY_WORKERS;
 
   // Dohvatanje putarina, dopuna, vozila i statistike (25 po stranici)
-  const { data: tollsData, isLoading } = useQuery({
+  const currentTabPage = activeTab === 'entries' ? entriesPage : topUpsPage;
+  const { data: tollsData, isLoading, isFetching } = useQuery({
     queryKey: [
       'tolls',
+      activeTab,
+      isManager,
       filterMachineId,
       filterWorkerId,
       filterPaymentMethod,
       dateFrom,
       dateTo,
-      entriesPage,
-      topUpsPage,
+      currentTabPage,
     ],
+    enabled: !sessionPending && !!currentUser,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey?.[1] === activeTab ? previousData : undefined,
     queryFn: async () => {
       const params = new URLSearchParams();
       params.append('entriesPage', String(entriesPage));
       params.append('topUpsPage', String(topUpsPage));
       params.append('limit', String(PAGE_SIZE));
+      params.append('includeEntries', activeTab === 'entries' ? 'true' : 'false');
+      params.append('includeTopUps', activeTab === 'topups' ? 'true' : 'false');
       if (filterMachineId) params.append('machineId', filterMachineId);
       if (isManager && filterWorkerId) params.append('workerId', filterWorkerId);
       if (filterPaymentMethod) params.append('paymentMethod', filterPaymentMethod);
@@ -152,10 +245,10 @@ const PutarineDashboard: React.FC = () => {
     },
   });
 
-  const entries: TollEntry[] = tollsData?.entries || [];
-  const topUps: TollTopUp[] = tollsData?.topUps || [];
-  const vehicles: VehicleItem[] = tollsData?.vehicles || [];
-  const taggedVehicles: VehicleItem[] = tollsData?.taggedVehicles || [];
+  const entries: TollEntry[] = tollsData?.entries ?? [];
+  const topUps: TollTopUp[] = tollsData?.topUps ?? [];
+  const vehicles: VehicleItem[] = tollsData?.vehicles ?? EMPTY_VEHICLES;
+  const taggedVehicles: VehicleItem[] = tollsData?.taggedVehicles ?? EMPTY_VEHICLES;
   const currentWorkerFromServer: { id: string; name: string } | null =
     tollsData?.currentWorker || null;
 
@@ -183,18 +276,6 @@ const PutarineDashboard: React.FC = () => {
     totalPages: Math.max(1, Math.ceil((stats.totalTopUpsCount || topUps.length) / PAGE_SIZE)),
   };
 
-  // Provera da li je datum jednak današnjem kalendarskom danu
-  const isSameCalendarDay = (dStr?: string | Date) => {
-    if (!dStr) return false;
-    const d = new Date(dStr);
-    const now = new Date();
-    return (
-      d.getFullYear() === now.getFullYear() &&
-      d.getMonth() === now.getMonth() &&
-      d.getDate() === now.getDate()
-    );
-  };
-
   // Radnik može menjati/brisati svoj unos samo do kraja dana u kojem je unet;
   // Direktor i Rukovodilac mogu menjati/brisati uvek.
   const canModifyEntry = (entry: TollEntry) => {
@@ -204,12 +285,16 @@ const PutarineDashboard: React.FC = () => {
   };
 
   // Sortiramo vozila tako da KAMION i vozila sa ENP tagom budu na vrhu liste
-  const sortedVehicles = [...vehicles].sort((a, b) => {
-    const aPriority = a.type === 'KAMION' || a.enpTagNumber ? 0 : 1;
-    const bPriority = b.type === 'KAMION' || b.enpTagNumber ? 0 : 1;
-    if (aPriority !== bPriority) return aPriority - bPriority;
-    return a.name.localeCompare(b.name);
-  });
+  const sortedVehicles = useMemo(
+    () =>
+      [...vehicles].sort((a, b) => {
+        const aPriority = a.type === 'KAMION' || a.enpTagNumber ? 0 : 1;
+        const bPriority = b.type === 'KAMION' || b.enpTagNumber ? 0 : 1;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        return a.name.localeCompare(b.name);
+      }),
+    [vehicles]
+  );
 
   // Opcije za CustomSelect komponente
   const vehicleFilterOptions: CustomSelectOption[] = useMemo(() => [
@@ -219,25 +304,18 @@ const PutarineDashboard: React.FC = () => {
       label: v.name,
       subLabel: v.regNumber ? `Reg: ${v.regNumber} • ${v.type}` : v.brandModel || v.type,
       badge: v.enpTagNumber ? `TAG: ${v.enpTagNumber}` : undefined,
-      badgeType: (v.enpTagNumber ? 'success' : 'default') as any,
+      badgeType: (v.enpTagNumber ? 'success' : 'default') as CustomSelectOption['badgeType'],
     })),
   ], [sortedVehicles]);
 
   const workerFilterOptions: CustomSelectOption[] = useMemo(() => [
     { value: '', label: 'Svi vozači / radnici' },
-    ...workers.map((w: any) => ({
+    ...workers.map((w) => ({
       value: w.id,
       label: w.name,
       subLabel: w.type || w.role || 'Radnik',
     })),
   ], [workers]);
-
-  const paymentMethodFilterOptions: CustomSelectOption[] = [
-    { value: '', label: 'Svi načini plaćanja' },
-    { value: 'ENP_TAG', label: 'ENP TAG (Uređaj)', badge: 'TAG', badgeType: 'success' },
-    { value: 'GOTOVINA', label: 'Gotovina na rampi', badge: 'GOTOVINA', badgeType: 'warning' },
-    { value: 'KARTICA', label: 'Platna kartica', badge: 'KARTICA', badgeType: 'default' },
-  ];
 
   const modalVehicleOptions: CustomSelectOption[] = useMemo(() => [
     ...sortedVehicles.map((v) => ({
@@ -245,23 +323,17 @@ const PutarineDashboard: React.FC = () => {
       label: v.name,
       subLabel: `${v.regNumber ? `Reg: ${v.regNumber} • ` : ''}${v.type}`,
       badge: v.enpTagNumber ? `TAG: ${v.enpTagNumber}` : undefined,
-      badgeType: (v.enpTagNumber ? 'success' : 'default') as any,
+      badgeType: (v.enpTagNumber ? 'success' : 'default') as CustomSelectOption['badgeType'],
     })),
   ], [sortedVehicles]);
 
   const modalWorkerOptions: CustomSelectOption[] = useMemo(() => [
-    ...workers.map((w: any) => ({
+    ...workers.map((w) => ({
       value: w.id,
       label: w.name,
       subLabel: w.type || w.role || 'Radnik',
     })),
   ], [workers]);
-
-  const modalPaymentMethodOptions: CustomSelectOption[] = [
-    { value: 'ENP_TAG', label: 'ENP Tag (Elektronska naplata)', badge: 'TAG', badgeType: 'success' },
-    { value: 'GOTOVINA', label: 'Gotovina na rampi', badge: 'GOTOVINA', badgeType: 'warning' },
-    { value: 'KARTICA', label: 'Platna kartica', badge: 'KARTICA', badgeType: 'default' },
-  ];
 
   // ==========================================
   // MODAL 1: UNOS / IZMENA PUTARINE
@@ -270,11 +342,6 @@ const PutarineDashboard: React.FC = () => {
   const [editingEntry, setEditingEntry] = useState<TollEntry | null>(null);
   const [entryLoading, setEntryLoading] = useState(false);
   const [entryError, setEntryError] = useState('');
-
-  const formatLocalDateInput = (dStr?: string | Date) => {
-    const d = dStr ? new Date(dStr) : new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
 
   const todayStr = formatLocalDateInput();
   const initialEntryForm = {
@@ -381,7 +448,7 @@ const PutarineDashboard: React.FC = () => {
       } else {
         await entryDraft.request(`${API}/tolls`, payload);
         entryDraft.clear();
-        entryAcknowledged.current = currentUser.id;
+        entryAcknowledged.current = currentUser?.id ?? null;
         setNewEntryForm(initialEntryForm);
       }
 
@@ -390,8 +457,8 @@ const PutarineDashboard: React.FC = () => {
 
       setEntryModalOpen(false);
       showToast(isEdit ? 'Putarina je uspešno izmenjena.' : 'Putarina je uspešno evidentirana.');
-    } catch (err: any) {
-      setEntryError(err.message || 'Greška na serveru.');
+    } catch (err: unknown) {
+      setEntryError(getErrorMessage(err, 'Greška na serveru.'));
     } finally {
       entrySubmitting.current = false;
       setEntryLoading(false);
@@ -418,8 +485,8 @@ const PutarineDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
       queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       showToast('Putarina je obrisana.');
-    } catch (err: any) {
-      showToast(err.message || 'Greška pri brisanju.', 'error');
+    } catch (err: unknown) {
+      showToast(getErrorMessage(err, 'Greška pri brisanju.'), 'error');
     }
   };
 
@@ -479,14 +546,14 @@ const PutarineDashboard: React.FC = () => {
       };
       await topUpDraft.request(`${API}/tolls/top-up`, payload);
       topUpDraft.clear();
-      topUpAcknowledged.current = currentUser.id;
+      topUpAcknowledged.current = currentUser?.id ?? null;
       setTopUpForm(prev => ({ ...prev, amount: '', paymentReference: '', notes: '' }));
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
       queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       setTopUpModalOpen(false);
       showToast('Dopuna ENP taga je uspešno evidentirana.');
-    } catch (err: any) {
-      setTopUpError(err.message || 'Greška na serveru.');
+    } catch (err: unknown) {
+      setTopUpError(getErrorMessage(err, 'Greška na serveru.'));
     } finally {
       topUpSubmitting.current = false;
       setTopUpLoading(false);
@@ -510,8 +577,8 @@ const PutarineDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['tolls'] });
       queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       showToast('Dopuna ENP taga je obrisana.');
-    } catch (err: any) {
-      showToast(err.message || 'Greška pri brisanju.', 'error');
+    } catch (err: unknown) {
+      showToast(getErrorMessage(err, 'Greška pri brisanju.'), 'error');
     }
   };
 
@@ -541,22 +608,6 @@ const PutarineDashboard: React.FC = () => {
     setTagConfigModalOpen(true);
   };
 
-  useEffect(() => {
-    if (tagConfigModalOpen && tagConfigForm.machineId) {
-      const v = vehicles.find((m) => m.id === tagConfigForm.machineId);
-      if (v) {
-        setTagConfigForm((prev) => ({
-          ...prev,
-          enpTagNumber: v.enpTagNumber || '',
-          enpTagBalance:
-            v.enpTagBalance !== undefined && v.enpTagBalance !== null
-              ? String(v.enpTagBalance)
-              : '0',
-        }));
-      }
-    }
-  }, [tagConfigForm.machineId]);
-
   const handleSaveTagConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     setTagConfigError('');
@@ -583,8 +634,8 @@ const PutarineDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
       setTagConfigModalOpen(false);
       showToast('Podaci o ENP tagu vozila su sačuvani.');
-    } catch (err: any) {
-      setTagConfigError(err.message || 'Greška na serveru.');
+    } catch (err: unknown) {
+      setTagConfigError(getErrorMessage(err, 'Greška na serveru.'));
     } finally {
       setTagConfigLoading(false);
     }
@@ -600,6 +651,8 @@ const PutarineDashboard: React.FC = () => {
 
         {toast && (
           <div
+            role="status"
+            aria-live="polite"
             className={`${styles.toast} ${toast.type === 'success' ? styles.toastSuccess : styles.toastError
               }`}
           >
@@ -663,7 +716,7 @@ const PutarineDashboard: React.FC = () => {
             </div>
             <div className={styles.statContent}>
               <div className={styles.statValue}>
-                {stats.totalCostPeriod.toLocaleString('sr-RS')}
+                {formatRsd(stats.totalCostPeriod)}
                 <span className={styles.statUnit}>RSD</span>
               </div>
               <div className={styles.statLabel}>
@@ -678,7 +731,7 @@ const PutarineDashboard: React.FC = () => {
             </div>
             <div className={styles.statContent}>
               <div className={styles.statValue}>
-                {stats.enpCostPeriod.toLocaleString('sr-RS')}
+                {formatRsd(stats.enpCostPeriod)}
                 <span className={styles.statUnit}>RSD</span>
               </div>
               <div className={styles.statLabel}>Plaćeno preko ENP Tagova</div>
@@ -691,7 +744,7 @@ const PutarineDashboard: React.FC = () => {
             </div>
             <div className={styles.statContent}>
               <div className={styles.statValue}>
-                {stats.cashCardCostPeriod.toLocaleString('sr-RS')}
+                {formatRsd(stats.cashCardCostPeriod)}
                 <span className={styles.statUnit}>RSD</span>
               </div>
               <div className={styles.statLabel}>Gotovina / Kartica na rampi</div>
@@ -705,7 +758,7 @@ const PutarineDashboard: React.FC = () => {
               </div>
               <div className={styles.statContent}>
                 <div className={styles.statValue}>
-                  {stats.totalTagBalance.toLocaleString('sr-RS')}
+                  {formatRsd(stats.totalTagBalance)}
                   <span className={styles.statUnit}>RSD</span>
                 </div>
                 <div className={styles.statLabel}>Preostalo stanje na ENP tagovima</div>
@@ -759,7 +812,7 @@ const PutarineDashboard: React.FC = () => {
                       <div>
                         <div className={styles.balanceLabel}>Stanje na tagu:</div>
                         <div className={`${styles.balanceValue} ${balClass}`}>
-                          {bal.toLocaleString('sr-RS')} RSD
+                          {formatRsd(bal)} RSD
                         </div>
                       </div>
 
@@ -790,6 +843,7 @@ const PutarineDashboard: React.FC = () => {
                               className={styles.miniBtn}
                               onClick={() => openTagConfigModal(veh)}
                               title="Izmeni broj ENP taga ili stanje"
+                              aria-label={`Izmeni ENP tag za ${veh.name}`}
                             >
                               <Pencil size={12} />
                             </button>
@@ -833,7 +887,10 @@ const PutarineDashboard: React.FC = () => {
             <div className={styles.filterGroup}>
               <CustomSelect
                 value={filterMachineId}
-                onChange={(val) => setFilterMachineId(val)}
+                onChange={(val) => {
+                  setFilterMachineId(val);
+                  resetPages();
+                }}
                 options={vehicleFilterOptions}
                 placeholder="Sva vozila / kamioni"
                 searchable
@@ -844,7 +901,10 @@ const PutarineDashboard: React.FC = () => {
               <div className={styles.filterGroup}>
                 <CustomSelect
                   value={filterWorkerId}
-                  onChange={(val) => setFilterWorkerId(val)}
+                  onChange={(val) => {
+                    setFilterWorkerId(val);
+                    resetPages();
+                  }}
                   options={workerFilterOptions}
                   placeholder="Svi vozači / radnici"
                   searchable
@@ -856,8 +916,11 @@ const PutarineDashboard: React.FC = () => {
               <div className={styles.filterGroup}>
                 <CustomSelect
                   value={filterPaymentMethod}
-                  onChange={(val) => setFilterPaymentMethod(val)}
-                  options={paymentMethodFilterOptions}
+                  onChange={(val) => {
+                    setFilterPaymentMethod(val);
+                    resetPages();
+                  }}
+                  options={PAYMENT_METHOD_FILTER_OPTIONS}
                   placeholder="Svi načini plaćanja"
                 />
               </div>
@@ -870,7 +933,10 @@ const PutarineDashboard: React.FC = () => {
                   type="date"
                   className={styles.dateInput}
                   value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
+                  onChange={(e) => {
+                    setDateFrom(e.target.value);
+                    resetPages();
+                  }}
                 />
               </div>
               <div className={styles.dateField}>
@@ -879,7 +945,10 @@ const PutarineDashboard: React.FC = () => {
                   type="date"
                   className={styles.dateInput}
                   value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
+                  onChange={(e) => {
+                    setDateTo(e.target.value);
+                    resetPages();
+                  }}
                 />
               </div>
             </div>
@@ -894,6 +963,7 @@ const PutarineDashboard: React.FC = () => {
                   setFilterPaymentMethod('');
                   setDateFrom('');
                   setDateTo('');
+                  resetPages();
                 }}
               >
                 Poništi filtere
@@ -903,7 +973,14 @@ const PutarineDashboard: React.FC = () => {
         </div>
 
         {/* TABELA / KARTICE UNOSA PUTARINA ILI DOPUNA */}
-        <div className={styles.tableCard}>
+        <div className={styles.tableCard} aria-busy={isFetching}>
+          {isFetching && !isLoading && (
+            <div className={styles.fetchingBar} role="status" aria-live="polite">
+              <Loader2 size={14} className="spin" />
+              <span>Osvežavanje podataka…</span>
+            </div>
+          )}
+
           {isLoading ? (
             <div className={styles.emptyState}>
               <Loader2 size={28} className="spin" />
@@ -917,44 +994,130 @@ const PutarineDashboard: React.FC = () => {
                 <span>Kliknite na „Unesi Putarinu" da zabeležite prolaz ili plaćanje putarine.</span>
               </div>
             ) : (
-              <>
-                {/* Desktop/Tablet Table (>= 768px) */}
-                <div className={styles.tableWrapper}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>Datum</th>
-                        <th>Vozilo / Kamion</th>
-                        <th>Vozač</th>
-                        <th>Iznos (RSD)</th>
-                        <th>Način plaćanja / Tag</th>
-                        <th>Relacija / Napomena</th>
-                        <th style={{ textAlign: 'right' }}>Akcije</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {entries.map((entry) => {
-                        const editable = canModifyEntry(entry);
-                        return (
-                          <tr key={entry.id}>
-                            <td>
-                              <strong>{new Date(entry.date).toLocaleDateString('sr-RS')}</strong>
-                            </td>
-                            <td>
-                              <div style={{ fontWeight: 700 }}>{entry.machine?.name}</div>
-                              {entry.machine?.regNumber && (
-                                <div className={styles.tableSubtext}>
-                                  {entry.machine.regNumber}
+              <div className={isFetching ? styles.tableContentFetching : undefined}>
+                {!isMobile ? (
+                  /* Desktop/Tablet Table (> 768px) */
+                  <div className={styles.tableWrapper}>
+                    <table className={styles.table}>
+                      <thead>
+                        <tr>
+                          <th>Datum</th>
+                          <th>Vozilo / Kamion</th>
+                          <th>Vozač</th>
+                          <th>Iznos (RSD)</th>
+                          <th>Način plaćanja / Tag</th>
+                          <th>Relacija / Napomena</th>
+                          <th className={styles.thRight}>Akcije</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {entries.map((entry) => {
+                          const editable = canModifyEntry(entry);
+                          return (
+                            <tr key={entry.id}>
+                              <td>
+                                <strong>{formatDateSr(entry.date)}</strong>
+                              </td>
+                              <td>
+                                <div className={styles.vehicleNamePrimary}>{entry.machine?.name}</div>
+                                {entry.machine?.regNumber && (
+                                  <div className={styles.tableSubtext}>
+                                    {entry.machine.regNumber}
+                                  </div>
+                                )}
+                              </td>
+                              <td>{entry.worker?.name || '—'}</td>
+                              <td>
+                                <span className={styles.amountBadge}>
+                                  {formatRsd(entry.amount)} RSD
+                                </span>
+                              </td>
+                              <td>
+                                <span
+                                  className={`${styles.methodPill} ${entry.paymentMethod === 'ENP_TAG'
+                                      ? styles.methodENP
+                                      : entry.paymentMethod === 'GOTOVINA'
+                                        ? styles.methodCash
+                                        : styles.methodCard
+                                    }`}
+                                >
+                                  {entry.paymentMethod === 'ENP_TAG'
+                                    ? 'ENP Tag'
+                                    : entry.paymentMethod === 'GOTOVINA'
+                                      ? 'Gotovina'
+                                      : 'Kartica'}
+                                </span>
+                                {entry.tagNumber && (
+                                  <div className={styles.tagSubtext}>
+                                    Tag: {entry.tagNumber}
+                                  </div>
+                                )}
+                              </td>
+                              <td>
+                                {entry.routeRelation && (
+                                  <div className={styles.routeRelationBox}>
+                                    <MapPin size={13} className={styles.routeIcon} />
+                                    <span>{entry.routeRelation}</span>
+                                  </div>
+                                )}
+                                {entry.notes && (
+                                  <div className={styles.tableNotes}>{entry.notes}</div>
+                                )}
+                                {!entry.routeRelation && !entry.notes && '—'}
+                              </td>
+                              <td>
+                                <div className={styles.rowActions}>
+                                  {editable ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className={styles.iconBtn}
+                                        onClick={() => openEditEntryModal(entry)}
+                                        title="Izmeni putarinu"
+                                        aria-label={`Izmeni putarinu za ${entry.machine?.name || 'vozilo'}`}
+                                      >
+                                        <Pencil size={14} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+                                        onClick={() => handleDeleteEntry(entry)}
+                                        title="Obriši putarinu"
+                                        aria-label={`Obriši putarinu za ${entry.machine?.name || 'vozilo'}`}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <span
+                                      className={styles.lockedBadge}
+                                      title="Rok za izmenu i brisanje je istekao (radnik može menjati samo do kraja dana unosa)"
+                                    >
+                                      <Lock size={12} />
+                                      <span>Zaključano</span>
+                                    </span>
+                                  )}
                                 </div>
-                              )}
-                            </td>
-                            <td>{entry.worker?.name || '—'}</td>
-                            <td>
-                              <span className={styles.amountBadge}>
-                                {Number(entry.amount).toLocaleString('sr-RS')} RSD
-                              </span>
-                            </td>
-                            <td>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  /* Mobile Card List (<= 768px) */
+                  <div className={styles.mobileCardList}>
+                    {entries.map((entry) => {
+                      const editable = canModifyEntry(entry);
+                      return (
+                        <div key={entry.id} className={styles.mobileEntryCard}>
+                          <div className={styles.mobileCardHeader}>
+                            <div className={styles.mobileCardDate}>
+                              <Calendar size={13} />
+                              <span>{formatDateSr(entry.date)}</span>
+                            </div>
+                            <div className={styles.mobileCardHeaderRight}>
                               <span
                                 className={`${styles.methodPill} ${entry.paymentMethod === 'ENP_TAG'
                                     ? styles.methodENP
@@ -969,175 +1132,93 @@ const PutarineDashboard: React.FC = () => {
                                     ? 'Gotovina'
                                     : 'Kartica'}
                               </span>
-                              {entry.tagNumber && (
-                                <div className={styles.tagSubtext}>
-                                  Tag: {entry.tagNumber}
-                                </div>
-                              )}
-                            </td>
-                            <td>
-                              {entry.routeRelation && (
-                                <div className={styles.routeRelationBox}>
-                                  <MapPin size={13} className={styles.routeIcon} />
-                                  <span>{entry.routeRelation}</span>
-                                </div>
-                              )}
-                              {entry.notes && (
-                                <div className={styles.tableNotes}>{entry.notes}</div>
-                              )}
-                              {!entry.routeRelation && !entry.notes && '—'}
-                            </td>
-                            <td>
-                              <div className={styles.rowActions}>
-                                {editable ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      className={styles.iconBtn}
-                                      onClick={() => openEditEntryModal(entry)}
-                                      title="Izmeni putarinu"
-                                    >
-                                      <Pencil size={14} />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                                      onClick={() => handleDeleteEntry(entry)}
-                                      title="Obriši putarinu"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </>
-                                ) : (
-                                  <span
-                                    className={styles.lockedBadge}
-                                    title="Rok za izmenu i brisanje je istekao (radnik može menjati samo do kraja dana unosa)"
-                                  >
-                                    <Lock size={12} />
-                                    <span>Zaključano</span>
-                                  </span>
+                              <span className={styles.amountBadge}>
+                                {formatRsd(entry.amount)} RSD
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className={styles.mobileCardBody}>
+                            <div className={styles.mobileVehicleRow}>
+                              <Truck size={15} className={styles.mobileRowIcon} />
+                              <div className={styles.mobileVehicleName}>
+                                <span>{entry.machine?.name}</span>
+                                {entry.machine?.regNumber && (
+                                  <span className={styles.mobileRegBadge}>{entry.machine.regNumber}</span>
                                 )}
                               </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                            </div>
 
-                {/* Mobile Card List (< 768px) */}
-                <div className={styles.mobileCardList}>
-                  {entries.map((entry) => {
-                    const editable = canModifyEntry(entry);
-                    return (
-                      <div key={entry.id} className={styles.mobileEntryCard}>
-                        <div className={styles.mobileCardHeader}>
-                          <div className={styles.mobileCardDate}>
-                            <Calendar size={13} />
-                            <span>{new Date(entry.date).toLocaleDateString('sr-RS')}</span>
-                          </div>
-                          <div className={styles.mobileCardHeaderRight}>
-                            <span
-                              className={`${styles.methodPill} ${entry.paymentMethod === 'ENP_TAG'
-                                  ? styles.methodENP
-                                  : entry.paymentMethod === 'GOTOVINA'
-                                    ? styles.methodCash
-                                    : styles.methodCard
-                                }`}
-                            >
-                              {entry.paymentMethod === 'ENP_TAG'
-                                ? 'ENP Tag'
-                                : entry.paymentMethod === 'GOTOVINA'
-                                  ? 'Gotovina'
-                                  : 'Kartica'}
-                            </span>
-                            <span className={styles.amountBadge}>
-                              {Number(entry.amount).toLocaleString('sr-RS')} RSD
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className={styles.mobileCardBody}>
-                          <div className={styles.mobileVehicleRow}>
-                            <Truck size={15} className={styles.mobileRowIcon} />
-                            <div className={styles.mobileVehicleName}>
-                              <span>{entry.machine?.name}</span>
-                              {entry.machine?.regNumber && (
-                                <span className={styles.mobileRegBadge}>{entry.machine.regNumber}</span>
+                            <div className={styles.mobileMetaRow}>
+                              <div className={styles.mobileMetaItem}>
+                                <User size={13} className={styles.mobileRowIcon} />
+                                <span>{entry.worker?.name || '—'}</span>
+                              </div>
+                              {entry.tagNumber && (
+                                <div className={styles.mobileMetaItem}>
+                                  <Tag size={13} className={styles.mobileRowIcon} />
+                                  <span>Tag: {entry.tagNumber}</span>
+                                </div>
                               )}
                             </div>
-                          </div>
 
-                          <div className={styles.mobileMetaRow}>
-                            <div className={styles.mobileMetaItem}>
-                              <User size={13} className={styles.mobileRowIcon} />
-                              <span>{entry.worker?.name || '—'}</span>
-                            </div>
-                            {entry.tagNumber && (
-                              <div className={styles.mobileMetaItem}>
-                                <Tag size={13} className={styles.mobileRowIcon} />
-                                <span>Tag: {entry.tagNumber}</span>
+                            {entry.routeRelation && (
+                              <div className={styles.mobileRouteRow}>
+                                <MapPin size={13} className={styles.routeIcon} />
+                                <span>{entry.routeRelation}</span>
+                              </div>
+                            )}
+
+                            {entry.notes && (
+                              <div className={styles.mobileNotes}>
+                                {entry.notes}
                               </div>
                             )}
                           </div>
 
-                          {entry.routeRelation && (
-                            <div className={styles.mobileRouteRow}>
-                              <MapPin size={13} className={styles.routeIcon} />
-                              <span>{entry.routeRelation}</span>
-                            </div>
-                          )}
-
-                          {entry.notes && (
-                            <div className={styles.mobileNotes}>
-                              {entry.notes}
-                            </div>
-                          )}
-                        </div>
-
-                        <div className={styles.mobileCardFooter}>
-                          <div className={styles.rowActions}>
-                            {editable ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className={styles.iconBtn}
-                                  onClick={() => openEditEntryModal(entry)}
-                                  title="Izmeni putarinu"
+                          <div className={styles.mobileCardFooter}>
+                            <div className={styles.rowActions}>
+                              {editable ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className={styles.iconBtn}
+                                    onClick={() => openEditEntryModal(entry)}
+                                    title="Izmeni putarinu"
+                                  >
+                                    <Pencil size={13} />
+                                    <span>Izmeni</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+                                    onClick={() => handleDeleteEntry(entry)}
+                                    title="Obriši putarinu"
+                                  >
+                                    <Trash2 size={13} />
+                                    <span>Obriši</span>
+                                  </button>
+                                </>
+                              ) : (
+                                <span
+                                  className={styles.lockedBadge}
+                                  title="Rok za izmenu i brisanje je istekao (dozvoljeno samo do kraja dana unosa)"
                                 >
-                                  <Pencil size={13} />
-                                  <span>Izmeni</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                                  onClick={() => handleDeleteEntry(entry)}
-                                  title="Obriši putarinu"
-                                >
-                                  <Trash2 size={13} />
-                                  <span>Obriši</span>
-                                </button>
-                              </>
-                            ) : (
-                              <span
-                                className={styles.lockedBadge}
-                                title="Rok za izmenu i brisanje je istekao (dozvoljeno samo do kraja dana unosa)"
-                              >
-                                <Lock size={12} />
-                                <span>Zaključano</span>
-                              </span>
-                            )}
+                                  <Lock size={12} />
+                                  <span>Zaključano</span>
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* Paginacija za Dnevnik putarina (25 po stranici sa direktnim unosom) */}
                 {entriesPagination.total > 0 && (
-                  <div style={{ marginTop: '1.25rem' }}>
+                  <div className={styles.paginationContainer}>
                     <TablePagination
                       currentPage={entriesPagination.page}
                       totalPages={entriesPagination.totalPages}
@@ -1148,7 +1229,7 @@ const PutarineDashboard: React.FC = () => {
                     />
                   </div>
                 )}
-              </>
+              </div>
             )
           ) : topUps.length === 0 ? (
             <div className={styles.emptyState}>
@@ -1157,44 +1238,110 @@ const PutarineDashboard: React.FC = () => {
               <span>Kliknite na „Dopuni ENP Tag" kada uplatite sredstva za kamion.</span>
             </div>
           ) : (
-            <>
-              {/* Desktop/Tablet Table (>= 768px) */}
-              <div className={styles.tableWrapper}>
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th>Datum dopune</th>
-                      <th>Vozilo / Kamion</th>
-                      <th>Broj ENP Taga</th>
-                      <th>Uplaćeni iznos (RSD)</th>
-                      <th>Referenca / Broj računa</th>
-                      <th>Napomena</th>
-                      <th style={{ textAlign: 'right' }}>Akcije</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {topUps.map((t) => (
-                      <tr key={t.id}>
-                        <td>
-                          <strong>{new Date(t.date).toLocaleDateString('sr-RS')}</strong>
-                        </td>
-                        <td>
-                          <div style={{ fontWeight: 700 }}>{t.machine?.name}</div>
-                          {t.machine?.regNumber && (
-                            <div className={styles.tableSubtext}>
-                              {t.machine.regNumber}
+            <div className={isFetching ? styles.tableContentFetching : undefined}>
+              {!isMobile ? (
+                /* Desktop/Tablet Table (> 768px) */
+                <div className={styles.tableWrapper}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>Datum dopune</th>
+                        <th>Vozilo / Kamion</th>
+                        <th>Broj ENP Taga</th>
+                        <th>Uplaćeni iznos (RSD)</th>
+                        <th>Referenca / Broj računa</th>
+                        <th>Napomena</th>
+                        <th className={styles.thRight}>Akcije</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topUps.map((t) => (
+                        <tr key={t.id}>
+                          <td>
+                            <strong>{formatDateSr(t.date)}</strong>
+                          </td>
+                          <td>
+                            <div className={styles.vehicleNamePrimary}>{t.machine?.name}</div>
+                            {t.machine?.regNumber && (
+                              <div className={styles.tableSubtext}>
+                                {t.machine.regNumber}
+                              </div>
+                            )}
+                          </td>
+                          <td>{t.tagNumber || t.machine?.enpTagNumber || '—'}</td>
+                          <td>
+                            <span className={styles.topUpAmountBadge}>
+                              +{formatRsd(t.amount)} RSD
+                            </span>
+                          </td>
+                          <td>{t.paymentReference || '—'}</td>
+                          <td>{t.notes || '—'}</td>
+                          <td>
+                            <div className={styles.rowActions}>
+                              <button
+                                type="button"
+                                className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+                                onClick={() => handleDeleteTopUp(t)}
+                                title="Obriši dopunu"
+                                aria-label={`Obriši dopunu za ${t.machine?.name || 'vozilo'}`}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                /* Mobile Card List (<= 768px) */
+                <div className={styles.mobileCardList}>
+                  {topUps.map((t) => (
+                    <div key={t.id} className={styles.mobileEntryCard}>
+                      <div className={styles.mobileCardHeader}>
+                        <div className={styles.mobileCardDate}>
+                          <Calendar size={13} />
+                          <span>{formatDateSr(t.date)}</span>
+                        </div>
+                        <span className={styles.topUpAmountBadge}>
+                          +{formatRsd(t.amount)} RSD
+                        </span>
+                      </div>
+
+                      <div className={styles.mobileCardBody}>
+                        <div className={styles.mobileVehicleRow}>
+                          <Truck size={15} className={styles.mobileRowIcon} />
+                          <div className={styles.mobileVehicleName}>
+                            <span>{t.machine?.name}</span>
+                            {t.machine?.regNumber && (
+                              <span className={styles.mobileRegBadge}>{t.machine.regNumber}</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className={styles.mobileMetaRow}>
+                          <div className={styles.mobileMetaItem}>
+                            <Tag size={13} className={styles.mobileRowIcon} />
+                            <span>Tag: {t.tagNumber || t.machine?.enpTagNumber || '—'}</span>
+                          </div>
+                          {t.paymentReference && (
+                            <div className={styles.mobileMetaItem}>
+                              <FileText size={13} className={styles.mobileRowIcon} />
+                              <span>Ref: {t.paymentReference}</span>
                             </div>
                           )}
-                        </td>
-                        <td>{t.tagNumber || t.machine?.enpTagNumber || '—'}</td>
-                        <td>
-                          <span className={styles.topUpAmountBadge}>
-                            +{Number(t.amount).toLocaleString('sr-RS')} RSD
-                          </span>
-                        </td>
-                        <td>{t.paymentReference || '—'}</td>
-                        <td>{t.notes || '—'}</td>
-                        <td>
+                        </div>
+
+                        {t.notes && (
+                          <div className={styles.mobileNotes}>
+                            {t.notes}
+                          </div>
+                        )}
+                      </div>
+
+                      {isManager && (
+                        <div className={styles.mobileCardFooter}>
                           <div className={styles.rowActions}>
                             <button
                               type="button"
@@ -1202,83 +1349,20 @@ const PutarineDashboard: React.FC = () => {
                               onClick={() => handleDeleteTopUp(t)}
                               title="Obriši dopunu"
                             >
-                              <Trash2 size={14} />
+                              <Trash2 size={13} />
+                              <span>Obriši</span>
                             </button>
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Mobile Card List (< 768px) */}
-              <div className={styles.mobileCardList}>
-                {topUps.map((t) => (
-                  <div key={t.id} className={styles.mobileEntryCard}>
-                    <div className={styles.mobileCardHeader}>
-                      <div className={styles.mobileCardDate}>
-                        <Calendar size={13} />
-                        <span>{new Date(t.date).toLocaleDateString('sr-RS')}</span>
-                      </div>
-                      <span className={styles.topUpAmountBadge}>
-                        +{Number(t.amount).toLocaleString('sr-RS')} RSD
-                      </span>
-                    </div>
-
-                    <div className={styles.mobileCardBody}>
-                      <div className={styles.mobileVehicleRow}>
-                        <Truck size={15} className={styles.mobileRowIcon} />
-                        <div className={styles.mobileVehicleName}>
-                          <span>{t.machine?.name}</span>
-                          {t.machine?.regNumber && (
-                            <span className={styles.mobileRegBadge}>{t.machine.regNumber}</span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className={styles.mobileMetaRow}>
-                        <div className={styles.mobileMetaItem}>
-                          <Tag size={13} className={styles.mobileRowIcon} />
-                          <span>Tag: {t.tagNumber || t.machine?.enpTagNumber || '—'}</span>
-                        </div>
-                        {t.paymentReference && (
-                          <div className={styles.mobileMetaItem}>
-                            <FileText size={13} className={styles.mobileRowIcon} />
-                            <span>Ref: {t.paymentReference}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {t.notes && (
-                        <div className={styles.mobileNotes}>
-                          {t.notes}
                         </div>
                       )}
                     </div>
-
-                    {isManager && (
-                      <div className={styles.mobileCardFooter}>
-                        <div className={styles.rowActions}>
-                          <button
-                            type="button"
-                            className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                            onClick={() => handleDeleteTopUp(t)}
-                            title="Obriši dopunu"
-                          >
-                            <Trash2 size={13} />
-                            <span>Obriši</span>
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
 
               {/* Paginacija za Istoriju dopuna ENP tagova (25 po stranici sa direktnim unosom) */}
               {topUpsPagination.total > 0 && (
-                <div style={{ marginTop: '1.25rem' }}>
+                <div className={styles.paginationContainer}>
                   <TablePagination
                     currentPage={topUpsPagination.page}
                     totalPages={topUpsPagination.totalPages}
@@ -1289,7 +1373,7 @@ const PutarineDashboard: React.FC = () => {
                   />
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
 
@@ -1298,13 +1382,20 @@ const PutarineDashboard: React.FC = () => {
         {/* ============================================================ */}
         {entryModalOpen && (
           <div className={styles.modalBackdrop} onClick={() => setEntryModalOpen(false)}>
-            <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+            <div
+              className={styles.modalBox}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="entry-modal-title"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className={styles.modalHeader}>
-                <h3>{editingEntry ? 'Izmeni Putarinu' : 'Unesi Putarinu'}</h3>
+                <h3 id="entry-modal-title">{editingEntry ? 'Izmeni Putarinu' : 'Unesi Putarinu'}</h3>
                 <button
                   type="button"
                   className={styles.modalCloseBtn}
                   onClick={() => setEntryModalOpen(false)}
+                  aria-label="Zatvori modal"
                 >
                   <X size={18} />
                 </button>
@@ -1396,7 +1487,7 @@ const PutarineDashboard: React.FC = () => {
                             paymentMethod: val as 'ENP_TAG' | 'GOTOVINA' | 'KARTICA',
                           })
                         }
-                        options={modalPaymentMethodOptions}
+                        options={MODAL_PAYMENT_METHOD_OPTIONS}
                       />
                     </div>
 
@@ -1461,13 +1552,20 @@ const PutarineDashboard: React.FC = () => {
         {/* ============================================================ */}
         {topUpModalOpen && (
           <div className={styles.modalBackdrop} onClick={() => setTopUpModalOpen(false)}>
-            <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+            <div
+              className={styles.modalBox}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="topup-modal-title"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className={styles.modalHeader}>
-                <h3>Dopuni ENP Tag</h3>
+                <h3 id="topup-modal-title">Dopuni ENP Tag</h3>
                 <button
                   type="button"
                   className={styles.modalCloseBtn}
                   onClick={() => setTopUpModalOpen(false)}
+                  aria-label="Zatvori modal"
                 >
                   <X size={18} />
                 </button>
@@ -1587,13 +1685,20 @@ const PutarineDashboard: React.FC = () => {
         {/* ============================================================ */}
         {tagConfigModalOpen && (
           <div className={styles.modalBackdrop} onClick={() => setTagConfigModalOpen(false)}>
-            <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+            <div
+              className={styles.modalBox}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="tag-config-modal-title"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className={styles.modalHeader}>
-                <h3>Podesi ENP Tag na vozilu</h3>
+                <h3 id="tag-config-modal-title">Podesi ENP Tag na vozilu</h3>
                 <button
                   type="button"
                   className={styles.modalCloseBtn}
                   onClick={() => setTagConfigModalOpen(false)}
+                  aria-label="Zatvori modal"
                 >
                   <X size={18} />
                 </button>
@@ -1611,9 +1716,17 @@ const PutarineDashboard: React.FC = () => {
                     <label>Vozilo / Mašina *</label>
                     <CustomSelect
                       value={tagConfigForm.machineId}
-                      onChange={(val) =>
-                        setTagConfigForm({ ...tagConfigForm, machineId: val })
-                      }
+                      onChange={(val) => {
+                        const v = vehicles.find((m) => m.id === val);
+                        setTagConfigForm({
+                          machineId: val,
+                          enpTagNumber: v?.enpTagNumber || '',
+                          enpTagBalance:
+                            v?.enpTagBalance !== undefined && v?.enpTagBalance !== null
+                              ? String(v.enpTagBalance)
+                              : '0',
+                        });
+                      }}
                       options={modalVehicleOptions}
                       placeholder="Izaberite vozilo..."
                       searchable

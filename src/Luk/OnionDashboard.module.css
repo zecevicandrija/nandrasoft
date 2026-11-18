@@ -1557,6 +1557,62 @@
   gap: 0.65rem;
 }
 
+.entryModal {
+  max-width: 720px;
+}
+
+.entrySection {
+  display: grid;
+  gap: 1rem;
+  padding: clamp(0.75rem, 2vw, 1.1rem);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+
+.sortingInputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.85rem;
+}
+
+.sortingInputs > :first-child {
+  grid-column: 1 / -1;
+}
+
+.entryModal .formGroup {
+  min-width: 0;
+}
+
+.entryModal .formGrid2 {
+  align-items: end;
+}
+
+.entryModal .input {
+  min-width: 0;
+}
+
+.entryBalance {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.35rem 1rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+
+.entryBalance strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Toast */
 .toast {
   position: fixed;

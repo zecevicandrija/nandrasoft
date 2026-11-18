@@ -1,9 +1,10 @@
-import WorkMaterialsEditor, { MaterialSummary } from '../components/WorkMaterialsEditor';
-import { materialPayload, materialSummary } from '../lib/workMaterials';
-import { ContractorSelect } from '../components/ContractorSelect';
+import { sameBelgradeDay } from '../lib/workDay';
+import MachineUsageModal from '../components/MachineUsageModal';
+import { MaterialSummary } from '../components/WorkMaterialsEditor';
+import { materialSummary } from '../lib/workMaterials';
 import { masterQueryKeys } from '../lib/masterQueryKeys';
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   Tractor,
@@ -28,9 +29,17 @@ import {
 } from 'lucide-react';
 import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
-import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
+import { ParcelQuickModal, type ParcelItem } from '../components/ParcelQuickModal';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import { useSession } from '../lib/auth-client';
+import {
+  EditWorkModal,
+  type EditWorkSubmitPayload,
+  type FieldWorkItem,
+  type MachineOption,
+  type WorkerOption,
+  type WorkTypeOption,
+} from './EditWorkModal';
 import styles from './Radovi.module.css';
 
 const API = 'http://localhost:5000/api';
@@ -42,24 +51,158 @@ interface Toast {
   type: 'success' | 'error';
 }
 
+const EMPTY_STATS = { areaDoneHa: 0, workHours: 0, count: 0, unassignedWarnings: 0 };
+const srDateFormatter = new Intl.DateTimeFormat('sr-RS');
+
+function formatLocalYmd(date: Date): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+interface WorkTableRowProps {
+  work: FieldWorkItem;
+  isManager: boolean;
+  isOperator: boolean;
+  onEdit: (work: FieldWorkItem) => void;
+  onDelete: (id: string, parcelName: string) => void;
+  onShowPhoto: (photoUrl: string, notes?: string | null) => void;
+}
+
+const WorkTableRow = React.memo<WorkTableRowProps>(({
+  work,
+  isManager,
+  isOperator,
+  onEdit,
+  onDelete,
+  onShowPhoto,
+}) => {
+  const dateFormatted = srDateFormatter.format(new Date(work.date));
+  return (
+    <tr>
+      <td>
+        <strong>{dateFormatted}</strong>
+      </td>
+      <td>
+        <span className={`${styles.shiftBadge} ${styles[`shift${work.shift}`]}`}>
+          {work.shift === 'PRVA' ? '1. Smena' : work.shift === 'DRUGA' ? '2. Smena' : 'Noćna'}
+        </span>
+      </td>
+      <td>
+        <div>
+          <strong>{work.parcel?.name}</strong>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+            Šifra: {work.parcel?.code} ({work.parcel?.areaHa} ha)
+          </div>
+        </div>
+      </td>
+      <td>{work.contractor?.name || '—'}</td>
+      <td>
+        <span className={styles.areaHighlight}>{work.areaDoneHa} ha</span>
+      </td>
+      <td>
+        <div className={styles.workerCell}>
+          <span className={styles.workerName}>{work.worker?.name}</span>
+          <span className={styles.machineName}>
+            {work.machineAssignments?.length
+              ? [...new Set(work.machineAssignments.map((a) => a.machine?.name))].join(', ')
+              : work.machine?.name}
+            {work.attachment && (
+              <span style={{ color: '#0284c7', fontWeight: 600, fontSize: '0.74rem', display: 'block', marginTop: '1px' }}>
+                + {work.attachment.name}
+              </span>
+            )}
+          </span>
+        </div>
+      </td>
+      <td>
+        <strong>{work.workType?.name}</strong>
+        <MaterialSummary items={work.materials} />
+      </td>
+      <td>
+        {work.startTime && work.endTime ? (
+          <div>
+            <span>
+              {work.startTime} - {work.endTime}
+            </span>
+            <div className={styles.hoursHighlight}>({work.workHours}h)</div>
+          </div>
+        ) : (
+          <span>{work.workHours ? `${work.workHours} h` : '-'}</span>
+        )}
+      </td>
+      <td>
+        <span className={`${styles.statusBadge} ${styles[`status${work.status}`]}`}>
+          {work.status === 'ZAVRSENO'
+            ? 'Završeno'
+            : work.status === 'U_TOKU'
+              ? 'U toku'
+              : 'Storno'}
+        </span>
+      </td>
+      <td style={{ maxWidth: 200, color: 'var(--text-secondary)' }}>
+        {work.notes || '-'}
+        {work.photoUrl && (
+          <button
+            type="button"
+            className={`${styles.btnSecondary} ${styles.photoButton}`}
+            onClick={() => {
+              if (work.photoUrl) onShowPhoto(work.photoUrl, work.notes);
+            }}
+          >
+            <ImageIcon size={16} />
+            Prikaži sliku
+          </button>
+        )}
+      </td>
+      {(isManager || isOperator) && (
+        <td>
+          <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
+            {isManager || (isOperator && sameBelgradeDay(work.date)) ? (
+              <button
+                className={styles.btnIcon}
+                title="Izmeni unos rada"
+                onClick={() => onEdit(work)}
+              >
+                <Pencil size={14} />
+              </button>
+            ) : isOperator ? (
+              <span
+                style={{
+                  fontSize: '0.72rem',
+                  color: 'var(--text-muted)',
+                  fontStyle: 'italic',
+                }}
+                title="Istekao rok za izmenu (dozvoljeno samo na dan unosa)"
+              >
+                Zaključano
+              </span>
+            ) : null}
+
+            {isManager && (
+              <button
+                className={`${styles.btnIcon} ${styles.btnDelete}`}
+                title="Storniraj rad"
+                onClick={() => onDelete(work.id, work.parcel?.name || '')}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+          </div>
+        </td>
+      )}
+    </tr>
+  );
+});
+
 const RadoviDashboard: React.FC = () => {
   const queryClient = useQueryClient();
+  const [usageId, setUsageId] = useState<string | null>(null);
   const { data: session } = useSession();
-  const currentUser = (session as any)?.user;
+  const currentUser = (session as { user?: { role?: string } } | null)?.user;
   const isManager = ['DIREKTOR', 'RUKOVODILAC'].includes(currentUser?.role || '');
   const isOperator = currentUser?.role === 'OPERATER';
-
-  // Pomoćna funkcija: da li je datum jednak današnjem kalendarskom danu
-  const isSameCalendarDay = (date1: string | Date) => {
-    if (!date1) return false;
-    const d1 = new Date(date1);
-    const d2 = new Date();
-    return (
-      d1.getFullYear() === d2.getFullYear() &&
-      d1.getMonth() === d2.getMonth() &&
-      d1.getDate() === d2.getDate()
-    );
-  };
 
   // Filter stanja
   const [period, setPeriod] = useState<PeriodType>('sve');
@@ -70,16 +213,28 @@ const RadoviDashboard: React.FC = () => {
   const [selectedWorker, setSelectedWorker] = useState('');
   const [selectedWorkType, setSelectedWorkType] = useState('');
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   // Paginacija
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
-  // Reset na stranu 1 pri svakoj promeni filtera ili veličine strane
+  // Debounce pretrage + reset stranice na 1 kada se pretraga promeni
   useEffect(() => {
+    const trimmed = search.trim();
+    if (trimmed === debouncedSearch) return;
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(trimmed);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search, debouncedSearch]);
+
+  const handlePeriodChange = (nextPeriod: PeriodType) => {
+    setPeriod(nextPeriod);
     setPage(1);
-  }, [period, dateFrom, dateTo, selectedParcel, selectedMachine, selectedWorker, selectedWorkType, search, pageSize]);
+  };
 
   // Helper za prikaz paginacionih brojeva sa elipsom (...)
   const getPageNumbers = (current: number, total: number) => {
@@ -99,8 +254,7 @@ const RadoviDashboard: React.FC = () => {
 
   // Modali i toast
   const [editModalOpen, setEditModalOpen] = useState(false);
-  const [editingWork, setEditingWork] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState<Record<string, any>>({});
+  const [editingWork, setEditingWork] = useState<FieldWorkItem | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [photoWork, setPhotoWork] = useState<{ photoUrl: string; notes?: string | null } | null>(null);
   const [photoLoadError, setPhotoLoadError] = useState(false);
@@ -110,23 +264,19 @@ const RadoviDashboard: React.FC = () => {
     if (photoWork) photoDialogRef.current?.showModal();
   }, [photoWork]);
 
-  // Brzo dodavanje / izmena parcele
+  // Brzo dodavanje / izmena parcele iz filtera
   const [parcelQuickModalOpen, setParcelQuickModalOpen] = useState(false);
   const [parcelToEdit, setParcelToEdit] = useState<ParcelItem | null>(null);
-  const [parcelQuickTarget, setParcelQuickTarget] = useState<'edit-work' | 'filter'>('edit-work');
 
-  const showToast = (message: string, type: 'success' | 'error') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
-  };
+  }, []);
 
   // Računanje datuma na osnovu izabranog brzog perioda
-  const getDateRange = () => {
+  const currentRange = useMemo(() => {
     const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    const todayStr = `${yyyy}-${mm}-${dd}`;
+    const todayStr = formatLocalYmd(today);
 
     if (period === 'danas') {
       return { from: todayStr, to: todayStr };
@@ -135,72 +285,85 @@ const RadoviDashboard: React.FC = () => {
       const dayOfWeek = today.getDay() === 0 ? 6 : today.getDay() - 1;
       const startOfWeek = new Date(today);
       startOfWeek.setDate(today.getDate() - dayOfWeek);
-      const startStr = startOfWeek.toISOString().slice(0, 10);
-      return { from: startStr, to: todayStr };
+      return { from: formatLocalYmd(startOfWeek), to: todayStr };
     }
     if (period === 'mesec') {
-      const startOfMonth = `${yyyy}-${mm}-01`;
-      return { from: startOfMonth, to: todayStr };
+      const yyyy = today.getFullYear();
+      const mm = String(today.getMonth() + 1).padStart(2, '0');
+      return { from: `${yyyy}-${mm}-01`, to: todayStr };
     }
     if (period === 'custom') {
       return { from: dateFrom, to: dateTo };
     }
     return { from: '', to: '' };
-  };
+  }, [period, dateFrom, dateTo]);
 
-  const currentRange = getDateRange();
+  const isCustomRange = period === 'custom' && Boolean(dateFrom || dateTo);
 
-  // 1. STATISTIKA RADOVA (Dinamički se osvežava sa promenom izabranog perioda)
+  // 1. STATISTIKA RADOVA (Jedan keširan poziv za ugrađene periode; dodatni samo za custom raspon)
   const { data: statsData } = useQuery({
-    queryKey: ['field-work-stats', period, currentRange.from, currentRange.to],
-    queryFn: async () => {
+    queryKey: isCustomRange
+      ? ['field-work-stats', 'custom', currentRange.from, currentRange.to]
+      : ['field-work-stats', 'presets'],
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
-      if (period) params.append('period', period);
-      if (currentRange.from) params.append('dateFrom', currentRange.from);
-      if (currentRange.to) params.append('dateTo', currentRange.to);
+      params.append('includeBreakdown', 'false');
+      if (isCustomRange) {
+        params.append('period', 'custom');
+        if (currentRange.from) params.append('dateFrom', currentRange.from);
+        if (currentRange.to) params.append('dateTo', currentRange.to);
+      } else {
+        params.append('period', 'sve');
+      }
 
-      const res = await fetch(`${API}/field-work/stats?${params.toString()}`, { credentials: 'include' });
+      const res = await fetch(`${API}/field-work/stats?${params.toString()}`, { credentials: 'include', signal });
       if (!res.ok) throw new Error('Greška pri dohvatanju statistike radova');
       return res.json();
     },
+    placeholderData: keepPreviousData,
   });
 
   // 2. ŠIFARNICI ZA FILTERE I MODALE
   const { data: parcelsData } = useQuery({
     queryKey: masterQueryKeys.parcels,
-    queryFn: async () => {
-      const res = await fetch(`${API}/master/parcels`, { credentials: 'include' });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${API}/master/parcels`, { credentials: 'include', signal });
+      if (!res.ok) throw new Error('Greška pri dohvatanju parcela');
       return res.json();
     },
   });
 
   const { data: machinesData } = useQuery({
     queryKey: masterQueryKeys.machines,
-    queryFn: async () => {
-      const res = await fetch(`${API}/master/machines`, { credentials: 'include' });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${API}/master/machines`, { credentials: 'include', signal });
+      if (!res.ok) throw new Error('Greška pri dohvatanju mašina');
       return res.json();
     },
   });
 
   const { data: workersData } = useQuery({
     queryKey: ['workers-lite'],
-    queryFn: async () => {
-      const res = await fetch(`${API}/master/workers`, { credentials: 'include' });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${API}/master/workers`, { credentials: 'include', signal });
+      if (!res.ok) throw new Error('Greška pri dohvatanju radnika');
       return res.json();
     },
+    enabled: Boolean(currentUser) && !isOperator,
   });
 
   const { data: workTypesData } = useQuery({
     queryKey: ['work-types-lite'],
-    queryFn: async () => {
-      const res = await fetch(`${API}/master/work-types`, { credentials: 'include' });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${API}/master/work-types`, { credentials: 'include', signal });
+      if (!res.ok) throw new Error('Greška pri dohvatanju radnih operacija');
       return res.json();
     },
   });
 
   // 3. OPOCIJE ZA ELEGANTNE CUSTOMSELECT KOMPONENTE
   const parcelFilterOptions: CustomSelectOption[] = useMemo(() => {
-    const list: CustomSelectOption[] = (parcelsData?.parcels || []).map((p: any) => ({
+    const list: CustomSelectOption[] = (parcelsData?.parcels || []).map((p: ParcelItem) => ({
       value: p.id,
       label: `[${p.code}] ${p.name}`,
       subLabel: `${p.areaHa} ha${p.currentCrop ? ` • ${p.currentCrop}` : ''}`,
@@ -209,7 +372,7 @@ const RadoviDashboard: React.FC = () => {
   }, [parcelsData?.parcels]);
 
   const machineFilterOptions: CustomSelectOption[] = useMemo(() => {
-    const list: CustomSelectOption[] = (machinesData?.machines || []).map((m: any) => ({
+    const list: CustomSelectOption[] = (machinesData?.machines || []).map((m: MachineOption) => ({
       value: m.id,
       label: m.name,
       subLabel: [m.type, m.brandModel].filter(Boolean).join(' • ') || undefined,
@@ -218,7 +381,7 @@ const RadoviDashboard: React.FC = () => {
   }, [machinesData?.machines]);
 
   const workerFilterOptions: CustomSelectOption[] = useMemo(() => {
-    const list: CustomSelectOption[] = (workersData?.workers || []).map((w: any) => ({
+    const list: CustomSelectOption[] = (workersData?.workers || []).map((w: WorkerOption) => ({
       value: w.id,
       label: w.name,
       subLabel: w.type || w.role || undefined,
@@ -227,7 +390,7 @@ const RadoviDashboard: React.FC = () => {
   }, [workersData?.workers]);
 
   const workTypeFilterOptions: CustomSelectOption[] = useMemo(() => {
-    const list: CustomSelectOption[] = (workTypesData?.workTypes || []).map((wt: any) => ({
+    const list: CustomSelectOption[] = (workTypesData?.workTypes || []).map((wt: WorkTypeOption) => ({
       value: wt.id,
       label: wt.name,
       subLabel: wt.category || undefined,
@@ -235,66 +398,8 @@ const RadoviDashboard: React.FC = () => {
     return [{ value: '', label: 'Sve operacije', subLabel: 'Prikaz svih radnih operacija' }, ...list];
   }, [workTypesData?.workTypes]);
 
-  // Opcije za Edit Modal
-  const parcelEditOptions: CustomSelectOption[] = useMemo(() => {
-    return (parcelsData?.parcels || []).map((p: any) => ({
-      value: p.id,
-      label: `[${p.code}] ${p.name}`,
-      subLabel: `${p.areaHa} ha${p.currentCrop ? ` • ${p.currentCrop}` : ''}`,
-    }));
-  }, [parcelsData?.parcels]);
-
-  const machineEditOptions: CustomSelectOption[] = useMemo(() => {
-    return (machinesData?.machines || [])
-      .filter((m: any) => m.type !== 'PRIKLJUCAK' || m.id === editForm.machineId)
-      .map((m: any) => ({
-        value: m.id,
-        label: m.name,
-        subLabel: [m.type, m.brandModel].filter(Boolean).join(' • ') || undefined,
-      }));
-  }, [machinesData?.machines, editForm.machineId]);
-
-  const workerEditOptions: CustomSelectOption[] = useMemo(() => {
-    return (workersData?.workers || []).map((w: any) => ({
-      value: w.id,
-      label: w.name,
-      subLabel: w.type || w.role || undefined,
-    }));
-  }, [workersData?.workers]);
-
-  const attachmentEditOptions: CustomSelectOption[] = useMemo(() => {
-    const list: CustomSelectOption[] = (machinesData?.machines || [])
-      .filter((m: any) => m.type === 'PRIKLJUCAK' || m.id === editForm.attachmentId)
-      .map((m: any) => ({
-        value: m.id,
-        label: m.name,
-        subLabel: m.brandModel || 'Priključno oruđe',
-      }));
-    return [
-      { value: '', label: '— Bez priključka —', subLabel: 'Samostalan rad mašine bez oruđa' },
-      ...list,
-    ];
-  }, [machinesData?.machines, editForm.attachmentId]);
-
-  const workTypeEditOptions: CustomSelectOption[] = useMemo(() => {
-    return (workTypesData?.workTypes || []).map((wt: any) => ({
-      value: wt.id,
-      label: wt.name,
-      subLabel: wt.category || undefined,
-    }));
-  }, [workTypesData?.workTypes]);
-
-  const shiftEditOptions: CustomSelectOption[] = useMemo(
-    () => [
-      { value: 'PRVA', label: '1. Smena (Jutarnja)' },
-      { value: 'DRUGA', label: '2. Smena (Popodnevna)' },
-      { value: 'TRECA', label: '3. Smena (Noćna)' },
-    ],
-    []
-  );
-
   // 4. GLAVNA TABELA RADOVA (Serverska paginacija i keširanje)
-  const { data: worksData, isLoading } = useQuery({
+  const { data: worksData, isLoading, isFetching } = useQuery({
     queryKey: [
       'field-works',
       page,
@@ -305,9 +410,9 @@ const RadoviDashboard: React.FC = () => {
       selectedMachine,
       selectedWorker,
       selectedWorkType,
-      search,
+      debouncedSearch,
     ],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       params.append('page', String(page));
       params.append('limit', String(pageSize));
@@ -317,12 +422,13 @@ const RadoviDashboard: React.FC = () => {
       if (selectedMachine) params.append('machineId', selectedMachine);
       if (selectedWorker) params.append('workerId', selectedWorker);
       if (selectedWorkType) params.append('workTypeId', selectedWorkType);
-      if (search) params.append('search', search);
+      if (debouncedSearch) params.append('search', debouncedSearch);
 
-      const res = await fetch(`${API}/field-work?${params.toString()}`, { credentials: 'include' });
+      const res = await fetch(`${API}/field-work?${params.toString()}`, { credentials: 'include', signal });
       if (!res.ok) throw new Error('Greška pri dohvatanju radova');
       return res.json();
     },
+    placeholderData: keepPreviousData,
   });
 
   // MUTACIJA ZA BRISANJE / STORNO
@@ -343,14 +449,14 @@ const RadoviDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['field-work-stats'] });
       showToast(data.message || 'Zapis uspešno ažuriran.', 'success');
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       showToast(err.message, 'error');
     },
   });
 
   // MUTACIJA ZA IZMENU
   const updateMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: any }) => {
+    mutationFn: async ({ id, data }: { id: string; data: EditWorkSubmitPayload }) => {
       const res = await fetch(`${API}/field-work/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -369,56 +475,28 @@ const RadoviDashboard: React.FC = () => {
       setEditModalOpen(false);
       showToast(data.message || 'Rad uspešno izmenjen.', 'success');
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       showToast(err.message, 'error');
     },
   });
 
-  const handleOpenEdit = (work: any) => {
+  const { mutate: deleteWorkMutate } = deleteMutation;
+
+  const handleOpenEdit = useCallback((work: FieldWorkItem) => {
     setEditingWork(work);
-    setEditForm({
-      date: work.date ? new Date(work.date).toISOString().slice(0, 10) : '',
-      shift: work.shift,
-      parcelId: work.parcelId,
-      contractorId: work.contractorId || null,
-      materials: work.materials ?? [],
-      machineId: work.machineId,
-      attachmentId: work.attachmentId || '',
-      workerId: work.workerId,
-      workTypeId: work.workTypeId,
-      areaDoneHa: work.areaDoneHa,
-      startTime: work.startTime || '',
-      endTime: work.endTime || '',
-      notes: work.notes || '',
-    });
     setEditModalOpen(true);
-  };
+  }, []);
 
-  const handleSaveEdit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingWork) return;
-
-    if (!editForm.parcelId || !editForm.machineId || !editForm.workerId || !editForm.workTypeId) {
-      showToast('Molimo izaberite sva obavezna polja (parcela, mašina, radnik, operacija).', 'error');
-      return;
-    }
-
-    updateMutation.mutate({
-      id: editingWork.id,
-      data: {
-        ...editForm,
-        areaDoneHa: Number(editForm.areaDoneHa),
-        materials: materialPayload(editForm.materials),
-        attachmentId: editForm.attachmentId || null,
-      },
-    });
-  };
-
-  const handleDelete = (id: string, name: string) => {
+  const handleDelete = useCallback((id: string, name: string) => {
     if (confirm(`Da li ste sigurni da želite da stornirate ovaj rad na parceli "${name}"?`)) {
-      deleteMutation.mutate(id);
+      deleteWorkMutate(id);
     }
-  };
+  }, [deleteWorkMutate]);
+
+  const handleShowPhoto = useCallback((photoUrl: string, notes?: string | null) => {
+    setPhotoLoadError(false);
+    setPhotoWork({ photoUrl, notes });
+  }, []);
 
   // EXCEL DOWNLOAD
   const handleExportExcel = () => {
@@ -429,7 +507,7 @@ const RadoviDashboard: React.FC = () => {
     if (selectedMachine) params.append('machineId', selectedMachine);
     if (selectedWorker) params.append('workerId', selectedWorker);
     if (selectedWorkType) params.append('workTypeId', selectedWorkType);
-    if (search) params.append('search', search);
+    if (search.trim()) params.append('search', search.trim());
 
     window.open(`${API}/field-work/export/excel?${params.toString()}`, '_blank');
   };
@@ -445,7 +523,7 @@ const RadoviDashboard: React.FC = () => {
       if (selectedMachine) params.append('machineId', selectedMachine);
       if (selectedWorker) params.append('workerId', selectedWorker);
       if (selectedWorkType) params.append('workTypeId', selectedWorkType);
-      if (search) params.append('search', search);
+      if (search.trim()) params.append('search', search.trim());
       params.append('limit', '5000');
 
       const res = await fetch(`${API}/field-work?${params.toString()}`, { credentials: 'include' });
@@ -488,19 +566,19 @@ const RadoviDashboard: React.FC = () => {
       let totalHa = 0;
       let totalHours = 0;
 
-      const tableData = works.map((w: any, idx: number) => {
+      const tableData = works.map((w: FieldWorkItem, idx: number) => {
         totalHa += w.areaDoneHa || 0;
         totalHours += w.workHours || 0;
 
         return [
           idx + 1,
-          new Date(w.date).toLocaleDateString('sr-RS'),
+          srDateFormatter.format(new Date(w.date)),
           w.shift === 'PRVA' ? '1. Smena' : w.shift === 'DRUGA' ? '2. Smena' : 'Noćna',
           `[${w.parcel?.code}] ${w.parcel?.name}`,
           w.contractor?.name || '—',
           `${w.areaDoneHa} ha`,
           w.worker?.name,
-          w.machine?.name,
+          w.machineAssignments?.length ? w.machineAssignments.map((a) => `${a.machine?.name}: ${a.areaDoneHa ?? 0} ha`).join("; ") : w.machine?.name,
           [w.workType?.name, materialSummary(w.materials)].filter(Boolean).join('\n'),
           w.startTime && w.endTime ? `${w.startTime} - ${w.endTime}` : '-',
           `${w.workHours || 0} h`,
@@ -551,8 +629,8 @@ const RadoviDashboard: React.FC = () => {
 
       doc.save(`nandra_dnevnik_radova_${new Date().toISOString().slice(0, 10)}.pdf`);
       showToast('PDF izveštaj uspešno generisan!', 'success');
-    } catch (err: any) {
-      showToast(err.message || 'Greška pri generisanju PDF-a.', 'error');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Greška pri generisanju PDF-a.', 'error');
     } finally {
       setIsExportingPdf(false);
     }
@@ -562,13 +640,21 @@ const RadoviDashboard: React.FC = () => {
   const totalWorks = worksData?.total || 0;
   const totalPages = worksData?.totalPages || 1;
 
-  // Dinamička statistika za trenutno izabrani period (Danas / Ova Nedelja / Ovaj Mesec / Prilagođen raspon)
-  const currentStats = statsData?.current || {
-    areaDoneHa: period === 'danas' ? (statsData?.today?.areaDoneHa || 0) : period === 'nedelja' ? (statsData?.week?.areaDoneHa || 0) : period === 'mesec' ? (statsData?.month?.areaDoneHa || 0) : 0,
-    workHours: period === 'danas' ? (statsData?.today?.workHours || 0) : period === 'nedelja' ? (statsData?.week?.workHours || 0) : 0,
-    count: period === 'danas' ? (statsData?.today?.count || 0) : period === 'nedelja' ? (statsData?.week?.count || 0) : period === 'mesec' ? (statsData?.month?.count || 0) : 0,
-    unassignedWarnings: period === 'danas' ? (statsData?.today?.unassignedWarnings || 0) : period === 'nedelja' ? (statsData?.week?.unassignedWarnings || 0) : period === 'mesec' ? (statsData?.month?.unassignedWarnings || 0) : (statsData?.unassignedWarningsTotal || 0),
-  };
+  // Dinamička statistika za trenutno izabrani period (čita iz keširanih preseta bez dodatnog zahteva)
+  const currentStats = isCustomRange
+    ? (statsData?.current ?? EMPTY_STATS)
+    : period === 'danas'
+      ? (statsData?.today ?? EMPTY_STATS)
+      : period === 'nedelja'
+        ? (statsData?.week ?? EMPTY_STATS)
+        : period === 'mesec'
+          ? (statsData?.month ?? EMPTY_STATS)
+          : (statsData?.all ?? statsData?.current ?? {
+              areaDoneHa: 0,
+              workHours: 0,
+              count: 0,
+              unassignedWarnings: statsData?.unassignedWarningsTotal || 0,
+            });
 
   // Dinamički labeli za KPI kartice na osnovu izabranog perioda
   const getPeriodLabelText = () => {
@@ -637,7 +723,6 @@ const RadoviDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  setParcelQuickTarget('filter');
                   setParcelToEdit(null);
                   setParcelQuickModalOpen(true);
                 }}
@@ -743,31 +828,31 @@ const RadoviDashboard: React.FC = () => {
             <div className={styles.periodButtons}>
               <button
                 className={`${styles.periodBtn} ${period === 'danas' ? styles.periodBtnActive : ''}`}
-                onClick={() => setPeriod('danas')}
+                onClick={() => handlePeriodChange('danas')}
               >
                 Danas
               </button>
               <button
                 className={`${styles.periodBtn} ${period === 'nedelja' ? styles.periodBtnActive : ''}`}
-                onClick={() => setPeriod('nedelja')}
+                onClick={() => handlePeriodChange('nedelja')}
               >
                 Ova Nedelja
               </button>
               <button
                 className={`${styles.periodBtn} ${period === 'mesec' ? styles.periodBtnActive : ''}`}
-                onClick={() => setPeriod('mesec')}
+                onClick={() => handlePeriodChange('mesec')}
               >
                 Ovaj Mesec
               </button>
               <button
                 className={`${styles.periodBtn} ${period === 'sve' ? styles.periodBtnActive : ''}`}
-                onClick={() => setPeriod('sve')}
+                onClick={() => handlePeriodChange('sve')}
               >
                 Svi Unosi
               </button>
               <button
                 className={`${styles.periodBtn} ${period === 'custom' ? styles.periodBtnActive : ''}`}
-                onClick={() => setPeriod('custom')}
+                onClick={() => handlePeriodChange('custom')}
               >
                 Prilagođen Raspon
               </button>
@@ -780,14 +865,20 @@ const RadoviDashboard: React.FC = () => {
                   type="date"
                   className={styles.dateInput}
                   value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
+                  onChange={(e) => {
+                    setDateFrom(e.target.value);
+                    setPage(1);
+                  }}
                 />
                 <span>Do:</span>
                 <input
                   type="date"
                   className={styles.dateInput}
                   value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
+                  onChange={(e) => {
+                    setDateTo(e.target.value);
+                    setPage(1);
+                  }}
                 />
               </div>
             )}
@@ -818,7 +909,6 @@ const RadoviDashboard: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => {
-                        setParcelQuickTarget('filter');
                         setParcelToEdit(null);
                         setParcelQuickModalOpen(true);
                       }}
@@ -832,9 +922,8 @@ const RadoviDashboard: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => {
-                          const found = parcelsData?.parcels?.find((p: any) => p.id === selectedParcel);
+                          const found = parcelsData?.parcels?.find((p: ParcelItem) => p.id === selectedParcel);
                           if (found) {
-                            setParcelQuickTarget('filter');
                             setParcelToEdit(found);
                             setParcelQuickModalOpen(true);
                           }
@@ -851,7 +940,10 @@ const RadoviDashboard: React.FC = () => {
               </div>
               <CustomSelect
                 value={selectedParcel}
-                onChange={(val) => setSelectedParcel(val)}
+                onChange={(val) => {
+                  setSelectedParcel(val);
+                  setPage(1);
+                }}
                 options={parcelFilterOptions}
                 placeholder="Sve parcele"
                 searchable
@@ -864,7 +956,10 @@ const RadoviDashboard: React.FC = () => {
               </div>
               <CustomSelect
                 value={selectedMachine}
-                onChange={(val) => setSelectedMachine(val)}
+                onChange={(val) => {
+                  setSelectedMachine(val);
+                  setPage(1);
+                }}
                 options={machineFilterOptions}
                 placeholder="Sve mašine"
                 searchable
@@ -878,7 +973,10 @@ const RadoviDashboard: React.FC = () => {
                 </div>
                 <CustomSelect
                   value={selectedWorker}
-                  onChange={(val) => setSelectedWorker(val)}
+                  onChange={(val) => {
+                    setSelectedWorker(val);
+                    setPage(1);
+                  }}
                   options={workerFilterOptions}
                   placeholder="Svi radnici"
                   searchable
@@ -892,7 +990,10 @@ const RadoviDashboard: React.FC = () => {
               </div>
               <CustomSelect
                 value={selectedWorkType}
-                onChange={(val) => setSelectedWorkType(val)}
+                onChange={(val) => {
+                  setSelectedWorkType(val);
+                  setPage(1);
+                }}
                 options={workTypeFilterOptions}
                 placeholder="Sve operacije"
                 searchable
@@ -906,11 +1007,12 @@ const RadoviDashboard: React.FC = () => {
           <div className={styles.tableHeaderBar}>
             <span className={styles.tableTitle}>Evidentirani Poslovi</span>
             <span className={styles.tableCountBadge}>
-              Ukupno: {totalWorks} | Strana {page} od {totalPages}
+              {isFetching && !isLoading && <Loader2 size={13} className="spin" />}
+              <span>Ukupno: {totalWorks} | Strana {page} od {totalPages}</span>
             </span>
           </div>
 
-          <div className={styles.tableWrapper}>
+          <div className={`${styles.tableWrapper} ${isFetching && !isLoading ? styles.tableWrapperFetching : ''}`}>
             {isLoading ? (
               <div className={styles.emptyState}>
                 <Loader2 size={32} className="spin" />
@@ -942,123 +1044,17 @@ const RadoviDashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {worksList.map((work: any) => {
-                    const dateFormatted = new Date(work.date).toLocaleDateString('sr-RS');
-                    return (
-                      <tr key={work.id}>
-                        <td>
-                          <strong>{dateFormatted}</strong>
-                        </td>
-                        <td>
-                          <span className={`${styles.shiftBadge} ${styles[`shift${work.shift}`]}`}>
-                            {work.shift === 'PRVA' ? '1. Smena' : work.shift === 'DRUGA' ? '2. Smena' : 'Noćna'}
-                          </span>
-                        </td>
-                        <td>
-                          <div>
-                            <strong>{work.parcel?.name}</strong>
-                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                              Šifra: {work.parcel?.code} ({work.parcel?.areaHa} ha)
-                            </div>
-                          </div>
-                        </td>
-                        <td>{work.contractor?.name || '—'}</td>
-                        <td>
-                          <span className={styles.areaHighlight}>{work.areaDoneHa} ha</span>
-                        </td>
-                        <td>
-                          <div className={styles.workerCell}>
-                            <span className={styles.workerName}>{work.worker?.name}</span>
-                            <span className={styles.machineName}>
-                              {work.machine?.name}
-                              {work.attachment && (
-                                <span style={{ color: '#0284c7', fontWeight: 600, fontSize: '0.74rem', display: 'block', marginTop: '1px' }}>
-                                  + {work.attachment.name}
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                        </td>
-                        <td>
-                          <strong>{work.workType?.name}</strong>
-                          <MaterialSummary items={work.materials} />
-                        </td>
-                        <td>
-                          {work.startTime && work.endTime ? (
-                            <div>
-                              <span>
-                                {work.startTime} - {work.endTime}
-                              </span>
-                              <div className={styles.hoursHighlight}>({work.workHours}h)</div>
-                            </div>
-                          ) : (
-                            <span>{work.workHours ? `${work.workHours} h` : '-'}</span>
-                          )}
-                        </td>
-                        <td>
-                          <span className={`${styles.statusBadge} ${styles[`status${work.status}`]}`}>
-                            {work.status === 'ZAVRSENO'
-                              ? 'Završeno'
-                              : work.status === 'U_TOKU'
-                                ? 'U toku'
-                                : 'Storno'}
-                          </span>
-                        </td>
-                        <td style={{ maxWidth: 200, color: 'var(--text-secondary)' }}>
-                          {work.notes || '-'}
-                          {work.photoUrl && (
-                            <button
-                              type="button"
-                              className={`${styles.btnSecondary} ${styles.photoButton}`}
-                              onClick={() => {
-                                setPhotoLoadError(false);
-                                setPhotoWork({ photoUrl: work.photoUrl, notes: work.notes });
-                              }}
-                            >
-                              <ImageIcon size={16} />
-                              Prikaži sliku
-                            </button>
-                          )}
-                        </td>
-                        {(isManager || isOperator) && (
-                          <td>
-                            <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
-                              {isManager || (isOperator && isSameCalendarDay(work.date)) ? (
-                                <button
-                                  className={styles.btnIcon}
-                                  title="Izmeni unos rada"
-                                  onClick={() => handleOpenEdit(work)}
-                                >
-                                  <Pencil size={14} />
-                                </button>
-                              ) : isOperator ? (
-                                <span
-                                  style={{
-                                    fontSize: '0.72rem',
-                                    color: 'var(--text-muted)',
-                                    fontStyle: 'italic',
-                                  }}
-                                  title="Istekao rok za izmenu (dozvoljeno samo na dan unosa)"
-                                >
-                                  Zaključano
-                                </span>
-                              ) : null}
-
-                              {isManager && (
-                                <button
-                                  className={`${styles.btnIcon} ${styles.btnDelete}`}
-                                  title="Storniraj rad"
-                                  onClick={() => handleDelete(work.id, work.parcel?.name || '')}
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        )}
-                      </tr>
-                    );
-                  })}
+                  {worksList.map((work: FieldWorkItem) => (
+                    <WorkTableRow
+                      key={work.id}
+                      work={work}
+                      isManager={isManager}
+                      isOperator={isOperator}
+                      onEdit={handleOpenEdit}
+                      onDelete={handleDelete}
+                      onShowPhoto={handleShowPhoto}
+                    />
+                  ))}
                 </tbody>
               </table>
             )}
@@ -1182,205 +1178,36 @@ const RadoviDashboard: React.FC = () => {
           </dialog>
         )}
 
-        {/* Modal za izmenu unosa sa elegantnim CustomSelect komponentama */}
-        {editModalOpen && (
-          <div className={styles.modalOverlay} onClick={() => setEditModalOpen(false)}>
-            <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-              <div className={styles.modalHeader}>
-                <h3 className={styles.modalTitle}>Izmena Zapisa o Radu</h3>
-                <button className={styles.modalCloseBtn} onClick={() => setEditModalOpen(false)}>
-                  <X size={20} />
-                </button>
-              </div>
-
-              <form onSubmit={handleSaveEdit}>
-                <div className={styles.modalBody}>
-                  <div className={styles.formRow}>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>
-                        Datum rada {isOperator && '(fiksiran na dan unosa)'}
-                      </label>
-                      <input
-                        type="date"
-                        className={styles.selectInput}
-                        value={editForm.date}
-                        onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
-                        disabled={isOperator}
-                        required
-                      />
-                    </div>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Smena</label>
-                      <CustomSelect
-                        value={editForm.shift}
-                        onChange={(val) => setEditForm({ ...editForm, shift: val })}
-                        options={shiftEditOptions}
-                        searchable={false}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formRow}>
-                    <div className={styles.formGroup}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
-                        <label className={styles.formLabel} style={{ marginBottom: 0 }}>Parcela</label>
-                        {isManager && (
-                          <ParcelQuickActions
-                            selectedParcel={parcelsData?.parcels?.find((p: any) => p.id === editForm.parcelId) || null}
-                            onAddClick={() => {
-                              setParcelQuickTarget('edit-work');
-                              setParcelToEdit(null);
-                              setParcelQuickModalOpen(true);
-                            }}
-                            onEditClick={(parcel) => {
-                              setParcelQuickTarget('edit-work');
-                              setParcelToEdit(parcel);
-                              setParcelQuickModalOpen(true);
-                            }}
-                          />
-                        )}
-                      </div>
-                      <CustomSelect
-                        value={editForm.parcelId}
-                        onChange={(val) => setEditForm({ ...editForm, parcelId: val })}
-                        options={parcelEditOptions}
-                        placeholder="— Izaberite parcelu —"
-                        searchable
-                      />
-                    </div>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Urađena površina (ha)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0.1"
-                        className={styles.selectInput}
-                        value={editForm.areaDoneHa}
-                        onChange={(e) => setEditForm({ ...editForm, areaDoneHa: e.target.value })}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formRow}>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Mašina / Traktor</label>
-                      <CustomSelect
-                        value={editForm.machineId}
-                        onChange={(val) => setEditForm({ ...editForm, machineId: val })}
-                        options={machineEditOptions}
-                        placeholder="— Izaberite mašinu —"
-                        searchable
-                      />
-                    </div>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>
-                        Radnik {isOperator && '(automatski vezan nalog)'}
-                      </label>
-                      <CustomSelect
-                        value={editForm.workerId}
-                        onChange={(val) => setEditForm({ ...editForm, workerId: val })}
-                        options={workerEditOptions}
-                        placeholder="— Izaberite radnika —"
-                        disabled={isOperator}
-                        searchable
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <ContractorSelect value={editForm.contractorId || ''} onChange={value => setEditForm({ ...editForm, contractorId: value || null })} canManage={isManager} />
-                  </div>
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Priključak / Oruđe (opciono)</label>
-                    <CustomSelect
-                      value={editForm.attachmentId || ''}
-                      onChange={(val) => setEditForm({ ...editForm, attachmentId: val })}
-                      options={attachmentEditOptions}
-                      placeholder="— Bez priključka —"
-                      searchable
-                    />
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Radna operacija</label>
-                    <CustomSelect
-                      value={editForm.workTypeId}
-                      onChange={(val) => setEditForm({ ...editForm, workTypeId: val, materials: val === editForm.workTypeId ? editForm.materials : [] })}
-                      options={workTypeEditOptions}
-                      placeholder="— Izaberite radnu operaciju —"
-                      searchable
-                    />
-                  </div>
-
-                  <WorkMaterialsEditor kind={workTypesData?.workTypes?.find((w: any) => w.id === editForm.workTypeId)?.materialKind}
-                    required={workTypesData?.workTypes?.find((w: any) => w.id === editForm.workTypeId)?.materialRequired} value={editForm.materials} onChange={materials => setEditForm({ ...editForm, materials })} canManage={isManager} />
-
-                  <div className={styles.formRow}>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Početak rada (HH:MM)</label>
-                      <input
-                        type="time"
-                        className={styles.selectInput}
-                        value={editForm.startTime}
-                        onChange={(e) => setEditForm({ ...editForm, startTime: e.target.value })}
-                      />
-                    </div>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Kraj rada (HH:MM)</label>
-                      <input
-                        type="time"
-                        className={styles.selectInput}
-                        value={editForm.endTime}
-                        onChange={(e) => setEditForm({ ...editForm, endTime: e.target.value })}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Napomena</label>
-                    <textarea
-                      rows={3}
-                      className={styles.selectInput}
-                      value={editForm.notes}
-                      onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                      placeholder="Uneti zapažanja, uslove na njivi ili specifičnosti..."
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.modalFooter}>
-                  <button
-                    type="button"
-                    className={styles.btnSecondary}
-                    onClick={() => setEditModalOpen(false)}
-                  >
-                    Otkaži
-                  </button>
-                  <button
-                    type="submit"
-                    className={styles.btnPrimary}
-                    disabled={updateMutation.isPending}
-                  >
-                    {updateMutation.isPending ? 'Čuvanje...' : 'Sačuvaj Izmene'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
+        {/* Modal za izmenu unosa izdvojen u zasebnu komponentu da kucanje ne re-renderuje tabelu */}
+        {editModalOpen && editingWork && (
+          <EditWorkModal
+            key={editingWork.id}
+            editingWork={editingWork}
+            parcels={parcelsData?.parcels || []}
+            machines={machinesData?.machines || []}
+            workers={workersData?.workers || []}
+            workTypes={workTypesData?.workTypes || []}
+            isManager={isManager}
+            isOperator={isOperator}
+            isSaving={updateMutation.isPending}
+            onClose={() => setEditModalOpen(false)}
+            onOpenMachineUsage={(workId) => {
+              setUsageId(workId);
+              setEditModalOpen(false);
+            }}
+            onNotify={showToast}
+            onSubmit={(id, data) => updateMutation.mutate({ id, data })}
+          />
         )}
 
-        {/* Brzi modal za dodavanje / izmenu parcele */}
+        {/* Brzi modal za dodavanje / izmenu parcele iz filtera */}
         <ParcelQuickModal
           isOpen={parcelQuickModalOpen}
           onClose={() => setParcelQuickModalOpen(false)}
           parcelToEdit={parcelToEdit}
           onSaved={(savedParcel, mode) => {
-            if (parcelQuickTarget === 'edit-work') {
-              setEditForm((prev) => ({ ...prev, parcelId: savedParcel.id }));
-            } else {
-              setSelectedParcel(savedParcel.id);
-            }
+            setSelectedParcel(savedParcel.id);
+            setPage(1);
             showToast(
               mode === 'edit'
                 ? `Parcela [${savedParcel.code}] ${savedParcel.name} je izmenjena.`
@@ -1390,6 +1217,7 @@ const RadoviDashboard: React.FC = () => {
           }}
         />
       </div>
+      {usageId && <MachineUsageModal contextType="work" contextId={usageId} onClose={() => setUsageId(null)} />}
     </AppLayout>
   );
 };

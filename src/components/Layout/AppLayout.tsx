@@ -48,7 +48,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         title: 'Komunikacija',
-        to: '/',
+        to: '/komunikacija',
         icon: <ClipboardList size={18} />,
         allowedRoles: ['DIREKTOR'],
       },
@@ -264,7 +264,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children, pageTitle }) => {
                   to={item.to}
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `${styles.navLink} ${isActive || (item.to !== '/' && location.pathname.startsWith(item.to))
+                    `${styles.navLink} ${item.to === '/komunikacija' ? styles.communicationLink : ''} ${isActive || (item.to !== '/' && location.pathname.startsWith(item.to))
                       ? styles.navLinkActive
                       : ''
                     }`

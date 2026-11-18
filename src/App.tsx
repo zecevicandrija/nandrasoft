@@ -18,6 +18,7 @@ const FertilizerDashboard = lazy(() => import('./Djubrivo/FertilizerDashboard'))
 const SeasonalWorkersDashboard = lazy(() => import('./Sezonci/SeasonalWorkersDashboard'));
 const OnionDashboard = lazy(() => import('./Luk/OnionDashboard'));
 const AnalitikaDashboard = lazy(() => import('./Analitika/AnalitikaDashboard'));
+const Komunikacija = lazy(() => import('./components/Komunikacija/Komunikacija'));
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
             <Route path="/" element={<PocetniEkran />} />
             <Route path="/admin" element={<AdminPanel />} />
             <Route path="/analitika" element={<AnalitikaDashboard />} />
+            <Route path="/komunikacija" element={<Komunikacija />} />
             <Route path="/revizija" element={<AuditLogDashboard />} />
             <Route path="/sifarnici" element={<SifarniciHub />} />
             <Route path="/nalozi" element={<RadniNaloziDashboard />} />

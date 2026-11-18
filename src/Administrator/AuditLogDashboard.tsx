@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import React, { useState, useEffect, useCallback } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
   History,
   Search,
@@ -7,8 +7,12 @@ import {
   Loader2,
   FileEdit,
   Trash2,
+  PlusCircle,
+  Ban,
   Eye,
   ArrowUpRight,
+  X,
+  AlertCircle,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { CustomSelect, type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
@@ -17,6 +21,91 @@ import styles from './AuditLog.module.css';
 import AuditDetails from './AuditDetails';
 
 const API = 'http://localhost:5000/api';
+
+const DATE_FORMATTER = new Intl.DateTimeFormat('sr-RS');
+const TIME_FORMATTER = new Intl.DateTimeFormat('sr-RS', {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
+function formatAuditDate(isoString: string): string {
+  const d = new Date(isoString);
+  return `${DATE_FORMATTER.format(d)} ${TIME_FORMATTER.format(d)}`;
+}
+
+interface AuditLogItem {
+  id: string;
+  entityType: string;
+  action: string;
+  userName: string;
+  userRole: string;
+  description: string;
+  createdAt: string;
+  user?: { email?: string } | null;
+}
+
+function renderActionIcon(action: string) {
+  if (action === 'KREIRANJE') return <PlusCircle size={12} aria-hidden="true" />;
+  if (action === 'IZMENA' || action === 'KOREKCIJA') return <FileEdit size={12} aria-hidden="true" />;
+  if (action === 'DEAKTIVACIJA') return <Ban size={12} aria-hidden="true" />;
+  return <Trash2 size={12} aria-hidden="true" />;
+}
+
+const AuditLogRow = React.memo(function AuditLogRow({
+  log,
+  onOpenDetails,
+}: {
+  log: AuditLogItem;
+  onOpenDetails: (id: string) => void;
+}) {
+  return (
+    <tr>
+      <td style={{ whiteSpace: 'nowrap' }}>
+        <strong>{formatAuditDate(log.createdAt)}</strong>
+      </td>
+      <td>
+        <div>
+          <strong>{log.userName}</strong>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            {log.user?.email}
+          </div>
+          <span className={`${styles.roleBadge} ${styles[`role${log.userRole}`] || ''}`}>
+            {log.userRole}
+          </span>
+        </div>
+      </td>
+      <td>
+        <span className={styles.entityBadge}>
+          {log.entityType === 'FieldWork' ? 'Rad na njivi' : log.entityType}
+        </span>
+      </td>
+      <td>
+        <span className={`${styles.actionBadge} ${styles[`action${log.action}`] || ''}`}>
+          {renderActionIcon(log.action)}
+          <span>{log.action}</span>
+        </span>
+      </td>
+      <td>
+        <div className={styles.diffBox}>
+          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+            {log.description}
+          </span>
+          <button
+            type="button"
+            onClick={() => onOpenDetails(log.id)}
+            className={styles.detailsButton}
+            aria-haspopup="dialog"
+          >
+            <Eye size={15} aria-hidden="true" />
+            Prikaži detalje
+            <ArrowUpRight size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 const ACTION_OPTIONS: CustomSelectOption[] = [
   { value: '', label: 'Sve akcije' },
@@ -31,9 +120,11 @@ const ACTION_OPTIONS: CustomSelectOption[] = [
 const AuditLogDashboard: React.FC = () => {
   const [detailId, setDetailId] = useState<string | null>(null);
   const { data: storage, isError: storageUnavailable } = useQuery({
-    queryKey: ['database-storage-usage'], refetchInterval: 60000,
-    queryFn: async () => {
-      const res = await fetch(`${API}/audit-logs/storage`, { credentials: 'include' });
+    queryKey: ['database-storage-usage'],
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${API}/audit-logs/storage`, { credentials: 'include', signal });
       if (!res.ok) throw new Error('Provera zauzeća nije dostupna.');
       return res.json();
     },
@@ -41,6 +132,7 @@ const AuditLogDashboard: React.FC = () => {
 
   // Filteri
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [action, setAction] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -49,25 +141,73 @@ const AuditLogDashboard: React.FC = () => {
   const [page, setPage] = useState(1);
   const pageSize = 25;
 
-  // Reset na stranu 1 pri promeni filtera
+  // Debounce pretrage + reset na stranu 1 u istom ciklusu (bez duplog upita)
   useEffect(() => {
+    const trimmed = search.trim();
+    if (trimmed === debouncedSearch) return;
+    const timer = setTimeout(() => {
+      setDebouncedSearch(trimmed);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [search, debouncedSearch]);
+
+  const handleActionChange = (nextAction: string) => {
+    setAction(nextAction);
     setPage(1);
-  }, [search, action, dateFrom, dateTo]);
+  };
+
+  const handleDateFromChange = (nextDateFrom: string) => {
+    setDateFrom(nextDateFrom);
+    setPage(1);
+  };
+
+  const handleDateToChange = (nextDateTo: string) => {
+    setDateTo(nextDateTo);
+    setPage(1);
+  };
+
+  const handleResetFilters = () => {
+    setSearch('');
+    setDebouncedSearch('');
+    setAction('');
+    setDateFrom('');
+    setDateTo('');
+    setPage(1);
+  };
+
+  const handleOpenDetails = useCallback((id: string) => {
+    setDetailId(id);
+  }, []);
+
+  const handleCloseDetails = useCallback(() => {
+    setDetailId(null);
+  }, []);
+
+  const handleClearSearch = () => {
+    setSearch('');
+    if (debouncedSearch !== '') {
+      setDebouncedSearch('');
+      setPage(1);
+    }
+  };
 
   // Upit za povlačenje audit logova
-  const { data: logsData, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['audit-logs', page, pageSize, search, action, dateFrom, dateTo],
-    queryFn: async () => {
+  const { data: logsData, isLoading, isFetching, isPlaceholderData, isError, error, refetch } = useQuery({
+    queryKey: ['audit-logs', page, pageSize, debouncedSearch, action, dateFrom, dateTo],
+    placeholderData: keepPreviousData,
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       params.append('page', String(page));
       params.append('limit', String(pageSize));
-      if (search) params.append('search', search);
+      if (debouncedSearch) params.append('search', debouncedSearch);
       if (action) params.append('action', action);
       if (dateFrom) params.append('dateFrom', dateFrom);
       if (dateTo) params.append('dateTo', dateTo);
 
       const res = await fetch(`${API}/audit-logs?${params.toString()}`, {
         credentials: 'include',
+        signal,
       });
       if (!res.ok) {
         throw new Error('Greška pri dohvatanju revizorskog traga.');
@@ -76,18 +216,9 @@ const AuditLogDashboard: React.FC = () => {
     },
   });
 
-  const logsList = logsData?.logs || [];
+  const logsList: AuditLogItem[] = logsData?.logs || [];
   const totalLogs = logsData?.total || 0;
   const totalPages = logsData?.totalPages || 1;
-
-  const formatDate = (isoString: string) => {
-    const d = new Date(isoString);
-    return `${d.toLocaleDateString('sr-RS')} ${d.toLocaleTimeString('sr-RS', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })}`;
-  };
 
   return (
     <AppLayout pageTitle="Revizija i Logovi">
@@ -97,7 +228,7 @@ const AuditLogDashboard: React.FC = () => {
           <strong>{storage.level === 'critical' ? 'Kritično zauzeće baze' : 'Baza se približava ograničenju prostora'}</strong>
           <p>Popunjeno je {storage.usedPercent}% podešene kvote ({(storage.databaseBytes / 1e9).toFixed(2)} GB od {(storage.quotaBytes / 1e9).toFixed(2)} GB). Potrebno je proveriti rast i raspoloživ prostor kod provajdera.</p>
         </div>}
-        {detailId && <AuditDetails id={detailId} onClose={() => setDetailId(null)} />}
+        {detailId && <AuditDetails id={detailId} onClose={handleCloseDetails} />}
         {/* Header Bar */}
         <div className={styles.headerBar}>
           <div className={styles.titleArea}>
@@ -105,9 +236,6 @@ const AuditLogDashboard: React.FC = () => {
               <History size={26} color="#d97706" />
               Dnevnik Revizije i Log Izmena
             </h2>
-            <div className={styles.subtitle}>
-              Sveobuhvatna evidencija svih izmena podataka, storniranja i aktivnosti korisnika u sistemu
-            </div>
           </div>
 
           <div className={styles.actionBtns}>
@@ -135,12 +263,23 @@ const AuditLogDashboard: React.FC = () => {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
+              {search && (
+                <button
+                  type="button"
+                  className={styles.clearSearchBtn}
+                  onClick={handleClearSearch}
+                  aria-label="Obriši pretragu"
+                  title="Obriši pretragu"
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              )}
             </div>
 
             <div style={{ minWidth: 230, flex: '1 1 230px' }}>
               <CustomSelect
                 value={action}
-                onChange={setAction}
+                onChange={handleActionChange}
                 options={ACTION_OPTIONS}
                 searchable={false}
                 placeholder="Sve akcije"
@@ -153,26 +292,21 @@ const AuditLogDashboard: React.FC = () => {
                 type="date"
                 className={styles.dateInput}
                 value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
+                onChange={(e) => handleDateFromChange(e.target.value)}
               />
               <span>Do:</span>
               <input
                 type="date"
                 className={styles.dateInput}
                 value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+                onChange={(e) => handleDateToChange(e.target.value)}
               />
             </div>
 
             {(search || action || dateFrom || dateTo) && (
               <button
                 className={styles.btnSecondary}
-                onClick={() => {
-                  setSearch('');
-                  setAction('');
-                  setDateFrom('');
-                  setDateTo('');
-                }}
+                onClick={handleResetFilters}
                 style={{ justifySelf: 'start' }}
               >
                 Poništi filtere
@@ -190,11 +324,31 @@ const AuditLogDashboard: React.FC = () => {
             </span>
           </div>
 
-          <div className={styles.tableWrapper}>
+          <div
+            className={`${styles.tableWrapper} ${isPlaceholderData ? styles.tableRefreshing : ''}`}
+            aria-busy={isFetching}
+          >
             {isLoading ? (
               <div className={styles.emptyState}>
                 <Loader2 size={32} className="spin" />
                 <div className={styles.emptyStateTitle}>Učitavanje revizorskog traga...</div>
+              </div>
+            ) : isError ? (
+              <div className={styles.emptyState} role="alert">
+                <AlertCircle size={40} color="#dc2626" />
+                <div className={styles.emptyStateTitle}>Greška pri učitavanju</div>
+                <div className={styles.emptyStateDesc}>
+                  {error instanceof Error ? error.message : 'Revizorski trag trenutno nije dostupan.'}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => refetch()}
+                  className={styles.btnSecondary}
+                  style={{ marginTop: '1rem' }}
+                >
+                  <RotateCw size={15} />
+                  Pokušaj ponovo
+                </button>
               </div>
             ) : logsList.length === 0 ? (
               <div className={styles.emptyState}>
@@ -216,60 +370,8 @@ const AuditLogDashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {logsList.map((log: any) => (
-                    <tr key={log.id}>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        <strong>{formatDate(log.createdAt)}</strong>
-                      </td>
-                      <td>
-                        <div>
-                          <strong>{log.userName}</strong>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                            {log.user?.email}
-                          </div>
-                          <span
-                            className={`${styles.roleBadge} ${
-                              styles[`role${log.userRole}`] || ''
-                            }`}
-                          >
-                            {log.userRole}
-                          </span>
-                        </div>
-                      </td>
-                      <td>
-                        <span className={styles.entityBadge}>
-                          {log.entityType === 'FieldWork'
-                            ? 'Rad na njivi'
-                            : log.entityType}
-                        </span>
-                      </td>
-                      <td>
-                        <span
-                          className={`${styles.actionBadge} ${
-                            styles[`action${log.action}`] || ''
-                          }`}
-                        >
-                          {log.action === 'IZMENA' ? (
-                            <FileEdit size={12} />
-                          ) : (
-                            <Trash2 size={12} />
-                          )}
-                          <span>{log.action}</span>
-                        </span>
-                      </td>
-                      <td>
-                        <div className={styles.diffBox}>
-                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                            {log.description}
-                          </span>
-                          <button type="button" onClick={() => setDetailId(log.id)} className={styles.detailsButton} aria-haspopup="dialog">
-                            <Eye size={15} aria-hidden="true" />
-                            Prikaži detalje
-                            <ArrowUpRight size={14} aria-hidden="true" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
+                  {logsList.map((log) => (
+                    <AuditLogRow key={log.id} log={log} onOpenDetails={handleOpenDetails} />
                   ))}
                 </tbody>
               </table>

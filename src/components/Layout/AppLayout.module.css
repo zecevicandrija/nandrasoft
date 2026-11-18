@@ -127,6 +127,44 @@
   flex-shrink: 0;
 }
 
+.communicationLink {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  border-left: 4px solid #3b82f6;
+  font-weight: 800;
+}
+
+.communicationLink:hover {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.communicationLink.navLinkActive {
+  background: linear-gradient(135deg, #2563eb, #1e40af) !important;
+  color: #ffffff !important;
+  border-color: #2563eb;
+  border-left-color: #93c5fd;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.2);
+}
+
+.communicationLink:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 3px;
+}
+
+:global([data-theme="dark"]) .communicationLink:not(.navLinkActive) {
+  background: rgba(59, 130, 246, 0.14);
+  color: #93c5fd;
+  border-color: #1e40af;
+  border-left-color: #60a5fa;
+}
+
+:global([data-theme="dark"]) .communicationLink:not(.navLinkActive):hover {
+  background: rgba(59, 130, 246, 0.24);
+  color: #bfdbfe;
+}
+
 .navBadge {
   margin-left: auto;
   font-size: 0.65rem;

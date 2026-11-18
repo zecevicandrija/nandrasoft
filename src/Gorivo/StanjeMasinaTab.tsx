@@ -12,13 +12,39 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
+import TablePagination from '../components/TablePagination/TablePagination';
 import { MasinaModal, type MachineStateItem } from './MasinaModal';
 import styles from './StanjeMasinaTab.module.css';
 
+export interface MachineStatesSummary {
+  totalMachines: number;
+  totalFuel: number;
+  activeWithTank: number;
+  lowFuelCount: number;
+}
+
+export interface MachineStatesPagination {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 interface StanjeMasinaTabProps {
   machines: MachineStateItem[];
+  pagination?: MachineStatesPagination;
+  summary?: MachineStatesSummary;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  search: string;
+  onSearchChange: (value: string) => void;
+  filterType: string;
+  onFilterTypeChange: (value: string) => void;
+  filterFuelLevel: string;
+  onFilterFuelLevelChange: (value: string) => void;
   isLoading: boolean;
-  onRefresh: () => void;
+  onRefresh?: () => void;
   userId?: string;
 }
 
@@ -42,16 +68,22 @@ const FILTER_FUEL_LEVEL_OPTIONS: CustomSelectOption[] = [
 
 export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
   machines,
+  pagination,
+  summary,
+  page,
+  pageSize,
+  onPageChange,
+  search,
+  onSearchChange,
+  filterType,
+  onFilterTypeChange,
+  filterFuelLevel,
+  onFilterFuelLevelChange,
   isLoading,
   onRefresh,
   userId,
 }) => {
   const queryClient = useQueryClient();
-
-  // Search & Filter state
-  const [search, setSearch] = useState('');
-  const [filterType, setFilterType] = useState('');
-  const [filterFuelLevel, setFilterFuelLevel] = useState('');
 
   // Modals state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -73,15 +105,17 @@ export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
     },
     onSuccess: () => {
       setMachineToDelete(null);
-      onRefresh();
+      onRefresh?.();
       queryClient.invalidateQueries({ queryKey: ['fuel', userId, 'machineStates'] });
       queryClient.invalidateQueries({ queryKey: ['fuel-master', userId, 'machines'] });
       queryClient.invalidateQueries({ queryKey: ['machines'] });
     },
   });
 
-  // KPI Calculations
+  // KPI Calculations (prefer backend summary across all machines)
   const kpis = useMemo(() => {
+    if (summary) return summary;
+
     let totalFuel = 0;
     let lowFuelCount = 0;
     let activeWithTank = 0;
@@ -106,47 +140,7 @@ export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
       activeWithTank,
       lowFuelCount,
     };
-  }, [machines]);
-
-  // Filtered Machines
-  const filteredMachines = useMemo(() => {
-    return machines.filter((m) => {
-      // Search
-      const searchLower = search.toLowerCase().trim();
-      if (searchLower) {
-        const matchesName = m.name?.toLowerCase().includes(searchLower);
-        const matchesBrand = m.brandModel?.toLowerCase().includes(searchLower);
-        const matchesReg = m.regNumber?.toLowerCase().includes(searchLower);
-        if (!matchesName && !matchesBrand && !matchesReg) return false;
-      }
-
-      // Type
-      if (filterType && m.type !== filterType) {
-        return false;
-      }
-
-      // Fuel Level
-      const capacity = m.tankCapacityLiters || 0;
-      const fuel = m.currentFuelLiters || 0;
-      const isNoTank = capacity <= 0 || m.type === 'PRIKLJUCAK' || m.fuelType === 'BEZ_GORIVA';
-      const pct = capacity > 0 ? (fuel / capacity) * 100 : 0;
-
-      if (filterFuelLevel === 'LOW' && (isNoTank || pct >= 20)) {
-        return false;
-      }
-      if (filterFuelLevel === 'EMPTY' && (isNoTank || fuel > 0)) {
-        return false;
-      }
-      if (filterFuelLevel === 'HIGH' && (isNoTank || pct < 80)) {
-        return false;
-      }
-      if (filterFuelLevel === 'NO_FUEL' && !isNoTank) {
-        return false;
-      }
-
-      return true;
-    });
-  }, [machines, search, filterType, filterFuelLevel]);
+  }, [summary, machines]);
 
   // Helper for fuel type label (matches "Seme, djubrivo, hemija.XLS" -> "ulja i gorivo")
   const renderFuelTypeBadge = (fuelType?: string | null, machineType?: string) => {
@@ -230,7 +224,7 @@ export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
               placeholder="Pretraži mašinu, model, registraciju..."
               className={styles.searchInput}
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => onSearchChange(e.target.value)}
               aria-label="Pretraga mašina"
             />
           </div>
@@ -238,7 +232,7 @@ export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
           <div className={styles.selectWrapper}>
             <CustomSelect
               value={filterType}
-              onChange={setFilterType}
+              onChange={onFilterTypeChange}
               options={FILTER_TYPE_OPTIONS}
               searchable={false}
             />
@@ -247,7 +241,7 @@ export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
           <div className={styles.selectWrapper}>
             <CustomSelect
               value={filterFuelLevel}
-              onChange={setFilterFuelLevel}
+              onChange={onFilterFuelLevelChange}
               options={FILTER_FUEL_LEVEL_OPTIONS}
               searchable={false}
             />
@@ -274,190 +268,201 @@ export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
             <RefreshCw size={32} className="animate-spin" color="#16a34a" />
             <div className={styles.emptyTitle}>Učitavanje stanja mašina...</div>
           </div>
-        ) : filteredMachines.length === 0 ? (
+        ) : machines.length === 0 ? (
           <div className={styles.emptyState}>
             <Truck size={42} color="#94a3b8" />
             <div className={styles.emptyTitle}>Nema pronađenih mašina</div>
             <p>Pokušajte sa izmenom unetih filtera ili dodajte novu mašinu u flotu.</p>
           </div>
         ) : (
-          <table className={styles.dataTable}>
-            <thead>
-              <tr>
-                <th>Mašina & Model</th>
-                <th>Status & Radni sati</th>
-                <th>Vrsta goriva</th>
-                <th>Stanje rezervoara</th>
-                <th>Poslednje punjenje</th>
-                <th>Akcije</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredMachines.map((m) => {
-                const capacity = m.tankCapacityLiters || 0;
-                const fuel = m.currentFuelLiters || 0;
-                const isNoTank = capacity <= 0 || m.type === 'PRIKLJUCAK' || m.fuelType === 'BEZ_GORIVA';
-                const percentage = capacity > 0 ? Math.min(100, Math.round((fuel / capacity) * 100)) : 0;
+          <>
+            <table className={styles.dataTable}>
+              <thead>
+                <tr>
+                  <th>Mašina & Model</th>
+                  <th>Status & Radni sati</th>
+                  <th>Vrsta goriva</th>
+                  <th>Stanje rezervoara</th>
+                  <th>Poslednje punjenje</th>
+                  <th>Akcije</th>
+                </tr>
+              </thead>
+              <tbody>
+                {machines.map((m) => {
+                  const capacity = m.tankCapacityLiters || 0;
+                  const fuel = m.currentFuelLiters || 0;
+                  const isNoTank = capacity <= 0 || m.type === 'PRIKLJUCAK' || m.fuelType === 'BEZ_GORIVA';
+                  const percentage = capacity > 0 ? Math.min(100, Math.round((fuel / capacity) * 100)) : 0;
 
-                // Color coding for progress bar
-                let fillClass = styles.fillGreen;
-                let pctColor = '#16a34a';
-                if (isNoTank) {
-                  fillClass = styles.fillGray;
-                  pctColor = '#64748b';
-                } else if (percentage < 20) {
-                  fillClass = styles.fillRed;
-                  pctColor = '#ef4444';
-                } else if (percentage < 40) {
-                  fillClass = styles.fillYellow;
-                  pctColor = '#d97706';
-                }
-
-                // Last refuel date parsing
-                let lastRefuelDateStr = '—';
-                let lastRefuelTimeStr = '';
-                if (m.lastRefueledDate) {
-                  const d = new Date(m.lastRefueledDate);
-                  if (!isNaN(d.getTime())) {
-                    lastRefuelDateStr = d.toLocaleDateString('sr-RS');
-                    lastRefuelTimeStr = d.toLocaleTimeString('sr-RS', { hour: '2-digit', minute: '2-digit' });
+                  // Color coding for progress bar
+                  let fillClass = styles.fillGreen;
+                  let pctColor = '#16a34a';
+                  if (isNoTank) {
+                    fillClass = styles.fillGray;
+                    pctColor = '#64748b';
+                  } else if (percentage < 20) {
+                    fillClass = styles.fillRed;
+                    pctColor = '#ef4444';
+                  } else if (percentage < 40) {
+                    fillClass = styles.fillYellow;
+                    pctColor = '#d97706';
                   }
-                }
 
-                return (
-                  <tr key={m.id}>
-                    {/* 1. Mašina & Model */}
-                    <td>
-                      <div className={styles.machineNameCell}>
-                        <div className={styles.machineTitleRow}>
-                          <span className={styles.machineName}>{m.name}</span>
-                          <span className={`${styles.badge} ${styles.badgeType}`}>{m.type}</span>
-                        </div>
-                        <div className={styles.machineSubtext}>
-                          {m.brandModel && <span>{m.brandModel}</span>}
-                          {m.brandModel && m.regNumber && <span> • </span>}
-                          {m.regNumber && <span>Reg: {m.regNumber}</span>}
-                          {m.year && <span> ({m.year})</span>}
-                        </div>
-                      </div>
-                    </td>
+                  // Last refuel date parsing
+                  let lastRefuelDateStr = '—';
+                  let lastRefuelTimeStr = '';
+                  if (m.lastRefueledDate) {
+                    const d = new Date(m.lastRefueledDate);
+                    if (!isNaN(d.getTime())) {
+                      lastRefuelDateStr = d.toLocaleDateString('sr-RS');
+                      lastRefuelTimeStr = d.toLocaleTimeString('sr-RS', { hour: '2-digit', minute: '2-digit' });
+                    }
+                  }
 
-                    {/* 2. Status & Radni Sati */}
-                    <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                        <div>{renderStatusBadge(m.status)}</div>
-                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                          {m.currentHours !== undefined ? `${m.currentHours} rh` : '0 rh'}
-                        </span>
-                      </div>
-                    </td>
-
-                    {/* 3. Vrsta goriva */}
-                    <td>
-                      {renderFuelTypeBadge(m.fuelType, m.type)}
-                    </td>
-
-                    {/* 4. Stanje rezervoara */}
-                    <td>
-                      <div className={styles.tankLevelCell}>
-                        {isNoTank ? (
-                          <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-                            Bez motora / rezervoara
+                  return (
+                    <tr key={m.id}>
+                      {/* 1. Mašina & Model */}
+                      <td>
+                        <div className={styles.machineNameCell}>
+                          <div className={styles.machineTitleRow}>
+                            <span className={styles.machineName}>{m.name}</span>
+                            <span className={`${styles.badge} ${styles.badgeType}`}>{m.type}</span>
                           </div>
-                        ) : (
-                          <>
-                            <div className={styles.tankTextRow}>
-                              <div>
-                                <span className={styles.tankNumbers}>{fuel.toLocaleString('sr-RS')} L</span>
-                                <span className={styles.tankCapacity}> / {capacity} L</span>
-                              </div>
-                              <span className={styles.tankPercentage} style={{ color: pctColor }}>
-                                {percentage}%
-                              </span>
-                            </div>
-                            <div className={styles.progressBarTrack}>
-                              <div
-                                className={`${styles.progressBarFill} ${fillClass}`}
-                                style={{ width: `${Math.max(4, percentage)}%` }}
-                              />
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </td>
+                          <div className={styles.machineSubtext}>
+                            {m.brandModel && <span>{m.brandModel}</span>}
+                            {m.brandModel && m.regNumber && <span> • </span>}
+                            {m.regNumber && <span>Reg: {m.regNumber}</span>}
+                            {m.year && <span> ({m.year})</span>}
+                          </div>
+                        </div>
+                      </td>
 
-                    {/* 5. Poslednje punjenje */}
-                    <td>
-                      <div className={styles.refuelCell}>
-                        {m.lastRefueledDate ? (
-                          <>
-                            <span className={styles.refuelDate}>
-                              {lastRefuelDateStr} {lastRefuelTimeStr && `(${lastRefuelTimeStr})`}
-                            </span>
-                            <div className={styles.refuelDetails}>
-                              {m.lastRefueledLiters && (
-                                <span style={{ fontWeight: 700, color: '#16a34a' }}>
-                                  +{m.lastRefueledLiters} L
+                      {/* 2. Status & Radni Sati */}
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                          <div>{renderStatusBadge(m.status)}</div>
+                          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                            {m.currentHours !== undefined ? `${m.currentHours} rh` : '0 rh'}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* 3. Vrsta goriva */}
+                      <td>
+                        {renderFuelTypeBadge(m.fuelType, m.type)}
+                      </td>
+
+                      {/* 4. Stanje rezervoara */}
+                      <td>
+                        <div className={styles.tankLevelCell}>
+                          {isNoTank ? (
+                            <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                              Bez motora / rezervoara
+                            </div>
+                          ) : (
+                            <>
+                              <div className={styles.tankTextRow}>
+                                <div>
+                                  <span className={styles.tankNumbers}>{fuel.toLocaleString('sr-RS')} L</span>
+                                  <span className={styles.tankCapacity}> / {capacity} L</span>
+                                </div>
+                                <span className={styles.tankPercentage} style={{ color: pctColor }}>
+                                  {percentage}%
                                 </span>
-                              )}
-                              {m.lastRefueledSource && (
-                                <span
-                                  className={`${styles.refuelSourceBadge} ${m.lastRefueledSource === 'CISTERNA'
+                              </div>
+                              <div className={styles.progressBarTrack}>
+                                <div
+                                  className={`${styles.progressBarFill} ${fillClass}`}
+                                  style={{ width: `${Math.max(4, percentage)}%` }}
+                                />
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* 5. Poslednje punjenje */}
+                      <td>
+                        <div className={styles.refuelCell}>
+                          {m.lastRefueledDate ? (
+                            <>
+                              <span className={styles.refuelDate}>
+                                {lastRefuelDateStr} {lastRefuelTimeStr && `(${lastRefuelTimeStr})`}
+                              </span>
+                              <div className={styles.refuelDetails}>
+                                {m.lastRefueledLiters && (
+                                  <span style={{ fontWeight: 700, color: '#16a34a' }}>
+                                    +{m.lastRefueledLiters} L
+                                  </span>
+                                )}
+                                {m.lastRefueledSource && (
+                                  <span
+                                    className={`${styles.refuelSourceBadge} ${m.lastRefueledSource === 'CISTERNA'
                                       ? styles.sourceCisterna
                                       : m.lastRefueledSource === 'PUMPA'
                                         ? styles.sourcePumpa
                                         : styles.sourceKanister
-                                    }`}
-                                >
-                                  {m.lastRefueledSource === 'CISTERNA'
-                                    ? 'Cisterna'
-                                    : m.lastRefueledSource === 'PUMPA'
-                                      ? 'Pumpa'
-                                      : 'Kanister'}
-                                </span>
-                              )}
-                              {m.lastRefueledWorker && (
-                                <span>• {m.lastRefueledWorker}</span>
-                              )}
-                            </div>
-                          </>
-                        ) : (
-                          <span className={styles.noRefuelText}>Nema evidentiranih točenja</span>
-                        )}
-                      </div>
-                    </td>
+                                      }`}
+                                  >
+                                    {m.lastRefueledSource === 'CISTERNA'
+                                      ? 'Cisterna'
+                                      : m.lastRefueledSource === 'PUMPA'
+                                        ? 'Pumpa'
+                                        : 'Kanister'}
+                                  </span>
+                                )}
+                                {m.lastRefueledWorker && (
+                                  <span>• {m.lastRefueledWorker}</span>
+                                )}
+                              </div>
+                            </>
+                          ) : (
+                            <span className={styles.noRefuelText}>Nema evidentiranih točenja</span>
+                          )}
+                        </div>
+                      </td>
 
-                    {/* 6. Akcije */}
-                    <td>
-                      <div className={styles.actionGroup}>
-                        <button
-                          type="button"
-                          className={styles.editBtn}
-                          onClick={() => {
-                            setSelectedMachineForEdit(m);
-                            setIsModalOpen(true);
-                          }}
-                          title="Izmeni podatke o mašini ili nivo goriva"
-                        >
-                          <Pencil size={13} />
-                          <span>Izmeni</span>
-                        </button>
+                      {/* 6. Akcije */}
+                      <td>
+                        <div className={styles.actionGroup}>
+                          <button
+                            type="button"
+                            className={styles.editBtn}
+                            onClick={() => {
+                              setSelectedMachineForEdit(m);
+                              setIsModalOpen(true);
+                            }}
+                            title="Izmeni podatke o mašini ili nivo goriva"
+                          >
+                            <Pencil size={13} />
+                            <span>Izmeni</span>
+                          </button>
 
-                        <button
-                          type="button"
-                          className={styles.deleteBtn}
-                          onClick={() => setMachineToDelete(m)}
-                          title="Arhiviraj / Obriši mašinu"
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                          <button
+                            type="button"
+                            className={styles.deleteBtn}
+                            onClick={() => setMachineToDelete(m)}
+                            title="Arhiviraj / Obriši mašinu"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            <TablePagination
+              currentPage={page}
+              totalPages={pagination?.totalPages || 1}
+              totalItems={pagination?.total ?? machines.length}
+              pageSize={pageSize}
+              onPageChange={onPageChange}
+              itemName="mašina"
+            />
+          </>
         )}
       </div>
 
@@ -469,7 +474,7 @@ export const StanjeMasinaTab: React.FC<StanjeMasinaTabProps> = ({
           setSelectedMachineForEdit(null);
         }}
         onSuccess={() => {
-          onRefresh();
+          onRefresh?.();
           queryClient.invalidateQueries({ queryKey: ['fuel', userId, 'machineStates'] });
           queryClient.invalidateQueries({ queryKey: ['fuel-master', userId, 'machines'] });
           queryClient.invalidateQueries({ queryKey: ['machines'] });

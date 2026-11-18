@@ -962,7 +962,7 @@ const FertilizerDashboard: React.FC = () => {
     <AppLayout pageTitle="Magacin Veštačkog Đubriva">
       <div className={styles.container}>
         {activeTab !== 'issue' && <SubmissionRecovery pending={!!issueDraft.pending} busy={issueLoading} error={issueDraft.storageError || issueError}
-                onRetry={() => void handleIssueSubmit(undefined, true)} />}
+          onRetry={() => void handleIssueSubmit(undefined, true)} />}
 
         {/* Toast obaveštenje */}
         {toast && (
@@ -1010,10 +1010,6 @@ const FertilizerDashboard: React.FC = () => {
               </span>
               Magacin Veštačkog Đubriva & Zalihe
             </h2>
-            <p className={styles.subtitle}>
-              Evidencija prijema robe od dobavljača, izdavanje na parcele, automatski obračun doze
-              (kg/ha) i praćenje minimalnih zaliha
-            </p>
           </div>
 
           <div className={styles.actionBtns}>
@@ -1735,7 +1731,7 @@ const FertilizerDashboard: React.FC = () => {
 
               <form onSubmit={handleIssueSubmit} className={styles.formGrid}>
                 <SubmissionRecovery pending={!!issueDraft.pending} busy={issueLoading} error={issueDraft.storageError || issueError}
-                onRetry={() => void handleIssueSubmit(undefined, true)} />
+                  onRetry={() => void handleIssueSubmit(undefined, true)} />
                 <div className={styles.formField}>
                   <label>Vrsta promene *</label>
                   <CustomSelect

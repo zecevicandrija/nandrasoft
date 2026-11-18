@@ -1,6 +1,6 @@
 import { PhotoUpload } from '../components/PhotoUpload';
 import PhotoAttachment from '../components/PhotoAttachment';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { operationalQueryOptions, operationalKey, cancelInactiveWorkshopQueries } from '../lib/operationalQueries';
 import QueryErrorNotice from '../components/QueryErrorNotice';
 import React, { useState, useEffect, useMemo } from 'react';
@@ -23,6 +23,7 @@ import {
   RefreshCw,
   RotateCcw,
   Pencil,
+  Trash2,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
@@ -45,6 +46,61 @@ const LUBRICANT_OPTIONS = [
   'LITIJUMSKA MAST EP-2 (Ležajevi i zglobovi)',
   'OSTALO',
 ];
+
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('sr-RS', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+const formatDate = (dateStr?: string) => {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '-';
+  return DATE_TIME_FORMATTER.format(d);
+};
+
+const ISSUE_STATUS_OPTIONS: CustomSelectOption[] = [
+  { value: 'AKTIVNI', label: 'Svi aktivni kvarovi', badge: 'AKTIVNO', badgeType: 'warning' },
+  { value: 'OTVOREN', label: 'Prijavljeni (Otvoreni)', badge: 'OTVOREN', badgeType: 'danger' },
+  { value: 'U_RADU', label: 'U radu (Mehaničar radi)', badge: 'U RADU', badgeType: 'warning' },
+  { value: 'CEKA_DELOVE', label: 'Čeka rezervne delove', badge: 'ČEKA DELOVE', badgeType: 'warning' },
+  { value: 'POPRAVLJENO', label: 'Popravljeno (Arhiva)', badge: 'POPRAVLJENO', badgeType: 'success' },
+  { value: 'OTKAZAN', label: 'Otkazano', badge: 'OTKAZANO', badgeType: 'danger' },
+  { value: 'SVE', label: 'Svi statusi (uključujući završene)' },
+];
+
+const PRIORITY_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Svi prioriteti' },
+  { value: 'KRITICNA', label: 'Kritičan prioritet', badge: 'KRITIČNO', badgeType: 'danger' },
+  { value: 'VISOKA', label: 'Visok prioritet', badge: 'VISOK', badgeType: 'warning' },
+  { value: 'SREDNJA', label: 'Srednji prioritet', badge: 'SREDNJI', badgeType: 'default' },
+  { value: 'NISKA', label: 'Nizak prioritet', badge: 'NIZAK', badgeType: 'default' },
+];
+
+const MODAL_PRIORITY_OPTIONS: CustomSelectOption[] = [
+  { value: 'KRITICNA', label: 'Kritičan prioritet', badge: 'KRITIČNO', badgeType: 'danger' },
+  { value: 'VISOKA', label: 'Visok prioritet', badge: 'VISOK', badgeType: 'warning' },
+  { value: 'SREDNJA', label: 'Srednji prioritet', badge: 'SREDNJI', badgeType: 'default' },
+  { value: 'NISKA', label: 'Nizak prioritet', badge: 'NIZAK', badgeType: 'default' },
+];
+
+const SERVICE_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: 'REDOVAN_SERVIS', label: 'Redovan servis (zamena ulja/filtera)', badge: 'REDOVAN' },
+  { value: 'GENERALNI_REMONT', label: 'Generalni remont mehanizacije', badge: 'REMONT' },
+  { value: 'KVAR_NJIVA', label: 'Vanredni kvar sa terena/njive', badge: 'KVAR', badgeType: 'danger' },
+];
+
+const toLubricantSelectOption = (opt: string): CustomSelectOption => ({
+  value: opt,
+  label: opt,
+  badge: opt.startsWith('BEZ') ? 'BEZ MAZIVA' : 'ULJE / MAST',
+  badgeType: opt.startsWith('BEZ') ? 'default' : 'success',
+});
+
+const BASE_LUBRICANT_SELECT_OPTIONS: CustomSelectOption[] = LUBRICANT_OPTIONS.map(toLubricantSelectOption);
 
 interface Toast {
   message: string;
@@ -156,36 +212,46 @@ const RadionicaKvarovi: React.FC = () => {
 
   const userId = currentUser?.id as string | undefined;
   const queryClient = useQueryClient();
+  const needsWorkers = activeTab === 'nalozi' || isRemontModalOpen;
   const statsQuery = useQuery(operationalQueryOptions<{
     brokenIssues: number; inRepairIssues: number; waitingPartsIssues: number; repairedIssues: number;
     totalActiveIssues: number; freeMachines: number; brokenMachines: number; serviceMachines: number; remontOrders: number;
   }>(userId, userRole, 'stats'));
   const machinesQuery = useQuery(operationalQueryOptions<{ machines: any[] }>(userId, userRole, 'machines'));
-  const workersQuery = useQuery(operationalQueryOptions<{ workers: any[] }>(userId, userRole, 'workers'));
+  const workersQuery = useQuery({
+    ...operationalQueryOptions<{ workers: any[] }>(userId, userRole, 'workers'),
+    enabled: Boolean(userId) && needsWorkers,
+  });
   const machines = machinesQuery.data?.machines || [];
   const workers = workersQuery.data?.workers || [];
   const stats = statsQuery.data || {
     brokenIssues: 0, inRepairIssues: 0, waitingPartsIssues: 0, repairedIssues: 0,
     totalActiveIssues: 0, freeMachines: 0, brokenMachines: 0, serviceMachines: 0, remontOrders: 0
   };
-  const masterFeedback = <>{[machinesQuery, workersQuery].map((query, index) => query.isError ? <QueryErrorNotice key={index}
+  const masterFeedback = <>{[machinesQuery, ...(needsWorkers ? [workersQuery] : [])].map((query, index) => query.isError ? <QueryErrorNotice key={index}
     title={index === 0 ? 'Mašine nisu učitane.' : 'Radnici nisu učitani.'} error={query.error} pending={query.isFetching}
     onRetry={() => { void query.refetch(); }} /> : null)}
-    {(machinesQuery.isPending || workersQuery.isPending) && <p role="status">Učitavanje šifarnika...</p>}</>;
+    {(machinesQuery.isLoading || (needsWorkers && workersQuery.isLoading)) && <p role="status">Učitavanje šifarnika...</p>}</>;
   const issuesQuery = useQuery({
     ...operationalQueryOptions<{ issues: any[]; total: number; totalPages: number }>(userId, userRole, 'issues', {
       page: issuesPage, limit: PAGE_SIZE, status: issueStatusFilter, priority: issuePriorityFilter, machineId: issueMachineFilter, search: debouncedIssueSearch.trim(),
-    }), enabled: Boolean(userId) && activeTab === 'kvarovi'
+    }),
+    enabled: Boolean(userId) && activeTab === 'kvarovi',
+    placeholderData: keepPreviousData,
   });
   const remontQuery = useQuery({
     ...operationalQueryOptions<{ orders: any[]; total: number; totalPages: number }>(userId, userRole, 'remont', {
       page: remontPage, limit: PAGE_SIZE, machineId: remontMachineFilter, workerId: remontWorkerFilter, search: debouncedRemontSearch.trim(),
-    }), enabled: Boolean(userId) && activeTab === 'nalozi'
+    }),
+    enabled: Boolean(userId) && activeTab === 'nalozi',
+    placeholderData: keepPreviousData,
   });
   const historyQuery = useQuery({
     ...operationalQueryOptions<{ history: any[]; total: number; totalPages: number }>(userId, userRole, 'history', {
       page: historyPage, limit: PAGE_SIZE, machineId: historyMachineFilter, dateFrom: historyDateFrom, dateTo: historyDateTo, search: debouncedHistorySearch.trim(),
-    }), enabled: Boolean(userId) && activeTab === 'istorijat'
+    }),
+    enabled: Boolean(userId) && activeTab === 'istorijat',
+    placeholderData: keepPreviousData,
   });
   const issues = issuesQuery.data?.issues || [];
   const issuesTotal = issuesQuery.data?.total ?? issues.length;
@@ -200,8 +266,11 @@ const RadionicaKvarovi: React.FC = () => {
   const historyTotalPages = historyQuery.data?.totalPages || 1;
   const loadingHistory = historyQuery.isPending;
   useEffect(() => { void cancelInactiveWorkshopQueries(queryClient, userId, userRole, activeTab); }, [queryClient, userId, userRole, activeTab]);
-  const refreshStats = () => {
-    for (const resource of ['stats', 'machines', 'workers'] as const) {
+  const refreshStats = (includeWorkers = false) => {
+    const resources = includeWorkers
+      ? (['stats', 'machines', 'workers'] as const)
+      : (['stats', 'machines'] as const);
+    for (const resource of resources) {
       void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, resource) });
     }
   };
@@ -261,10 +330,39 @@ const RadionicaKvarovi: React.FC = () => {
         refreshStats();
         refreshIssues();
         refreshRemontOrders();
-        refreshHistory();
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri promeni statusa.', 'error');
+      }
+    } catch (err) {
+      showToast('Greška na serveru.', 'error');
+    }
+  };
+
+  // Trajno brisanje otkazane prijave (i povezanog radnog naloga ako postoji)
+  const handleDeleteIssue = async (issue: any) => {
+    const confirmMsg = issue.workOrder
+      ? `Da li ste sigurni da želite TRAJNO da obrišete otkazanu prijavu "${issue.title}" i povezani radni nalog ${issue.workOrder.orderNumber}?`
+      : `Da li ste sigurni da želite TRAJNO da obrišete otkazanu prijavu "${issue.title}"?`;
+
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/maintenance/issues/${issue.id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'Otkazana prijava je trajno obrisana.');
+        refreshStats();
+        refreshIssues();
+        refreshRemontOrders();
+        void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'orders') });
+      } else {
+        showToast(data.error || 'Greška pri brisanju prijave.', 'error');
       }
     } catch (err) {
       showToast('Greška na serveru.', 'error');
@@ -394,10 +492,15 @@ const RadionicaKvarovi: React.FC = () => {
         );
         setSelectedIssueToResolve(null);
         setIsEditingCompletedReport(false);
-        refreshStats();
-        refreshIssues();
-        refreshRemontOrders();
-        refreshHistory();
+        if (isEditingCompletedReport) {
+          refreshRemontOrders();
+          refreshHistory();
+        } else {
+          refreshStats();
+          refreshIssues();
+          refreshRemontOrders();
+          refreshHistory();
+        }
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri obradi popravke.', 'error');
@@ -444,7 +547,6 @@ const RadionicaKvarovi: React.FC = () => {
         refreshStats();
         refreshIssues(1);
         refreshRemontOrders(1);
-        refreshHistory();
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri izdavanju radnog naloga.', 'error');
@@ -490,8 +592,6 @@ const RadionicaKvarovi: React.FC = () => {
         setNewIssuePhoto(null);
         refreshStats();
         refreshIssues(1);
-        refreshRemontOrders();
-        refreshHistory();
       } else {
         const data = await res.json();
         showToast(data.error || 'Greška pri prijavi kvara.', 'error');
@@ -501,19 +601,6 @@ const RadionicaKvarovi: React.FC = () => {
     } finally {
       setSubmittingNewIssue(false);
     }
-  };
-
-  // Formatiranje datuma
-  const formatDate = (dateStr?: string) => {
-    if (!dateStr) return '-';
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('sr-RS', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
   };
 
   // ==========================================
@@ -571,46 +658,18 @@ const RadionicaKvarovi: React.FC = () => {
     })),
   ], [workers]);
 
-  const issueStatusOptions: CustomSelectOption[] = [
-    { value: 'AKTIVNI', label: 'Svi aktivni kvarovi', badge: 'AKTIVNO', badgeType: 'warning' },
-    { value: 'OTVOREN', label: 'Prijavljeni (Otvoreni)', badge: 'OTVOREN', badgeType: 'danger' },
-    { value: 'U_RADU', label: 'U radu (Mehaničar radi)', badge: 'U RADU', badgeType: 'warning' },
-    { value: 'CEKA_DELOVE', label: 'Čeka rezervne delove', badge: 'ČEKA DELOVE', badgeType: 'warning' },
-    { value: 'POPRAVLJENO', label: 'Popravljeno (Arhiva)', badge: 'POPRAVLJENO', badgeType: 'success' },
-    { value: 'SVE', label: 'Svi statusi (uključujući završene)' },
-  ];
-
-  const priorityOptions: CustomSelectOption[] = [
-    { value: '', label: 'Svi prioriteti' },
-    { value: 'KRITICNA', label: 'Kritičan prioritet', badge: 'KRITIČNO', badgeType: 'danger' },
-    { value: 'VISOKA', label: 'Visok prioritet', badge: 'VISOK', badgeType: 'warning' },
-    { value: 'SREDNJA', label: 'Srednji prioritet', badge: 'SREDNJI', badgeType: 'default' },
-    { value: 'NISKA', label: 'Nizak prioritet', badge: 'NIZAK', badgeType: 'default' },
-  ];
-
-  const modalPriorityOptions: CustomSelectOption[] = [
-    { value: 'KRITICNA', label: 'Kritičan prioritet', badge: 'KRITIČNO', badgeType: 'danger' },
-    { value: 'VISOKA', label: 'Visok prioritet', badge: 'VISOK', badgeType: 'warning' },
-    { value: 'SREDNJA', label: 'Srednji prioritet', badge: 'SREDNJI', badgeType: 'default' },
-    { value: 'NISKA', label: 'Nizak prioritet', badge: 'NIZAK', badgeType: 'default' },
-  ];
-
-  const serviceTypeOptions: CustomSelectOption[] = [
-    { value: 'REDOVAN_SERVIS', label: 'Redovan servis (zamena ulja/filtera)', badge: 'REDOVAN' },
-    { value: 'GENERALNI_REMONT', label: 'Generalni remont mehanizacije', badge: 'REMONT' },
-    { value: 'KVAR_NJIVA', label: 'Vanredni kvar sa terena/njive', badge: 'KVAR', badgeType: 'danger' },
-  ];
+  const issueStatusOptions = ISSUE_STATUS_OPTIONS;
+  const priorityOptions = PRIORITY_OPTIONS;
+  const modalPriorityOptions = MODAL_PRIORITY_OPTIONS;
+  const serviceTypeOptions = SERVICE_TYPE_OPTIONS;
 
   // Keep previously saved lubricant descriptions selectable when editing history.
-  const lubricantSelectOptions: CustomSelectOption[] = Array.from(new Set([
-    ...LUBRICANT_OPTIONS,
-    ...(resolveLubricantType ? [resolveLubricantType] : []),
-  ])).map((opt) => ({
-    value: opt,
-    label: opt,
-    badge: opt.startsWith('BEZ') ? 'BEZ MAZIVA' : 'ULJE / MAST',
-    badgeType: opt.startsWith('BEZ') ? 'default' : 'success',
-  }));
+  const lubricantSelectOptions: CustomSelectOption[] = useMemo(() => {
+    if (!resolveLubricantType || LUBRICANT_OPTIONS.includes(resolveLubricantType)) {
+      return BASE_LUBRICANT_SELECT_OPTIONS;
+    }
+    return [...BASE_LUBRICANT_SELECT_OPTIONS, toLubricantSelectOption(resolveLubricantType)];
+  }, [resolveLubricantType]);
 
   // Pomoćna provera aktivnih filtera za Reset dugmad
   const hasActiveIssueFilters =
@@ -647,7 +706,7 @@ const RadionicaKvarovi: React.FC = () => {
           <div className={styles.headerActions}>
             <button
               onClick={() => {
-                refreshStats();
+                refreshStats(needsWorkers);
                 if (activeTab === 'kvarovi') refreshIssues();
                 if (activeTab === 'nalozi') refreshRemontOrders();
                 if (activeTab === 'istorijat') refreshHistory();
@@ -871,12 +930,12 @@ const RadionicaKvarovi: React.FC = () => {
                     <div
                       key={issue.id}
                       className={`${styles.issueCard} ${isCritical
-                          ? styles.cardBorderCritical
-                          : isHigh
-                            ? styles.cardBorderHigh
-                            : isMedium
-                              ? styles.cardBorderMedium
-                              : styles.cardBorderLow
+                        ? styles.cardBorderCritical
+                        : isHigh
+                          ? styles.cardBorderHigh
+                          : isMedium
+                            ? styles.cardBorderMedium
+                            : styles.cardBorderLow
                         }`}
                     >
                       <div className={styles.cardHeader}>
@@ -902,12 +961,12 @@ const RadionicaKvarovi: React.FC = () => {
                           {/* Priority Badge */}
                           <span
                             className={`${styles.badge} ${isCritical
-                                ? styles.badgePriorityCritical
-                                : isHigh
-                                  ? styles.badgePriorityHigh
-                                  : isMedium
-                                    ? styles.badgePriorityMedium
-                                    : styles.badgePriorityLow
+                              ? styles.badgePriorityCritical
+                              : isHigh
+                                ? styles.badgePriorityHigh
+                                : isMedium
+                                  ? styles.badgePriorityMedium
+                                  : styles.badgePriorityLow
                               }`}
                           >
                             {issue.priority}
@@ -915,19 +974,20 @@ const RadionicaKvarovi: React.FC = () => {
 
                           {/* Status Badge */}
                           <span
-                            className={`${styles.badge} ${issue.status === 'OTVOREN'
-                                ? styles.badgeStatusOtvoren
-                                : issue.status === 'U_RADU'
-                                  ? styles.badgeStatusURadu
-                                  : issue.status === 'CEKA_DELOVE'
-                                    ? styles.badgeStatusCekaDelove
-                                    : styles.badgeStatusPopravljeno
+                            className={`${styles.badge} ${issue.status === 'OTVOREN' || issue.status === 'OTKAZAN'
+                              ? styles.badgeStatusOtvoren
+                              : issue.status === 'U_RADU'
+                                ? styles.badgeStatusURadu
+                                : issue.status === 'CEKA_DELOVE'
+                                  ? styles.badgeStatusCekaDelove
+                                  : styles.badgeStatusPopravljeno
                               }`}
                           >
                             {issue.status === 'OTVOREN' && '🔴 Otvoren'}
                             {issue.status === 'U_RADU' && '🟡 U radu'}
                             {issue.status === 'CEKA_DELOVE' && '🟠 Čeka delove'}
                             {issue.status === 'POPRAVLJENO' && '🟢 Popravljeno'}
+                            {issue.status === 'OTKAZAN' && '⛔ Otkazan'}
                           </span>
                         </div>
                       </div>
@@ -942,7 +1002,15 @@ const RadionicaKvarovi: React.FC = () => {
                         <div className={styles.reporterDetails}>
                           <div className={styles.reporterItem}>
                             <User size={14} />
-                            <span>Prijavio: {issue.reportedBy?.name || 'Radnik na razduživanju'}</span>
+                            <span>
+                              {issue.workOrder
+                                ? `Izdao: ${issue.workOrder.issuedBy?.name || issue.createdBy?.name || issue.reportedBy?.name || 'Rukovodilac'}`
+                                : `Prijavio: ${
+                                    issue.reportedById && issue.reportedById === issue.mechanicId && issue.createdBy?.name
+                                      ? issue.createdBy.name
+                                      : issue.reportedBy?.name || issue.createdBy?.name || 'Radnik na razduživanju'
+                                  }`}
+                            </span>
                           </div>
                           <div className={styles.reporterItem}>
                             <Calendar size={14} />
@@ -1030,6 +1098,34 @@ const RadionicaKvarovi: React.FC = () => {
                                 <span>Završi popravku i oslobodi mašinu</span>
                               </button>
                             </>
+                          )}
+
+                          {isManagerOrDirector && ['OTVOREN', 'U_RADU', 'CEKA_DELOVE'].includes(issue.status) && (
+                            <button
+                              type="button"
+                              className={styles.btnActionCancel}
+                              onClick={() => {
+                                if (window.confirm(`Da li ste sigurni da želite da otkažete prijavu "${issue.title}"?`)) {
+                                  void handleUpdateStatus(issue.id, 'OTKAZAN');
+                                }
+                              }}
+                              title="Otkaži prijavu kvara / servisa i oslobodi mašinu"
+                            >
+                              <X size={14} />
+                              <span>Otkaži</span>
+                            </button>
+                          )}
+
+                          {isManagerOrDirector && issue.status === 'OTKAZAN' && (
+                            <button
+                              type="button"
+                              className={styles.btnActionCancel}
+                              onClick={() => { void handleDeleteIssue(issue); }}
+                              title="Trajno obriši otkazanu prijavu i povezani radni nalog"
+                            >
+                              <Trash2 size={14} />
+                              <span>Obriši trajno</span>
+                            </button>
                           )}
                         </div>
                       </div>
@@ -1169,12 +1265,12 @@ const RadionicaKvarovi: React.FC = () => {
                         <div className={styles.badgesGroup}>
                           <span
                             className={`${styles.badge} ${isDone
-                                ? styles.badgeStatusPopravljeno
-                                : order.maintenance?.status === 'CEKA_DELOVE'
-                                  ? styles.badgeStatusCekaDelove
-                                  : order.status === 'U_TOKU' || order.maintenance?.status === 'U_RADU'
-                                    ? styles.badgeStatusURadu
-                                    : styles.badgeStatusOtvoren
+                              ? styles.badgeStatusPopravljeno
+                              : order.maintenance?.status === 'CEKA_DELOVE'
+                                ? styles.badgeStatusCekaDelove
+                                : order.status === 'U_TOKU' || order.maintenance?.status === 'U_RADU'
+                                  ? styles.badgeStatusURadu
+                                  : styles.badgeStatusOtvoren
                               }`}
                           >
                             {isDone

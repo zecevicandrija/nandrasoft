@@ -1,6 +1,6 @@
 import { masterQueryKeys } from '../lib/masterQueryKeys';
 import React, { useState, useMemo, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   Users,
   Clock,
@@ -48,6 +48,14 @@ const COMMON_JOBS = [
   'Čišćenje i prebiranje',
 ];
 
+const ACTIVE_FILTER_OPTIONS: CustomSelectOption[] = [
+  { value: 'ALL', label: 'Svi statusi' },
+  { value: 'true', label: 'Samo Aktivni' },
+  { value: 'false', label: 'Samo Neaktivni' },
+];
+
+const SR_DATE_FORMATTER = new Intl.DateTimeFormat('sr-RS');
+
 interface SeasonalWorker {
   id: string;
   name: string;
@@ -94,8 +102,9 @@ interface SeasonalWorkLog {
 const SeasonalWorkersDashboard: React.FC = () => {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
-  const singleSubmission = useDurableSubmission('seasonal-single-log', session?.user?.id, {}, () => {});
-  const groupSubmission = useDurableSubmission('seasonal-group-log', session?.user?.id, {}, () => {});
+  const userId = (session as { user?: { id?: string } } | null)?.user?.id;
+  const singleSubmission = useDurableSubmission('seasonal-single-log', userId, {}, () => { });
+  const groupSubmission = useDurableSubmission('seasonal-group-log', userId, {}, () => { });
 
   // Tab state
   const [activeTab, setActiveTab] = useState<'dnevnik' | 'analitika' | 'sifarnik'>('dnevnik');
@@ -114,6 +123,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
 
   const [logPage, setLogPage] = useState(1);
   const [logSearch, setLogSearch] = useState('');
+  const [debouncedLogSearch, setDebouncedLogSearch] = useState('');
   const [logWorkerId, setLogWorkerId] = useState('ALL');
   const [logParcelId, setLogParcelId] = useState('ALL');
   const [logGroupName, setLogGroupName] = useState('ALL');
@@ -121,10 +131,19 @@ const SeasonalWorkersDashboard: React.FC = () => {
   const [logDateFrom, setLogDateFrom] = useState('');
   const [logDateTo, setLogDateTo] = useState('');
 
-  // Reset strane pri promeni filtera dnevnika
+  // Debounce pretrage dnevnika + reset strane u istom koraku
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedLogSearch(logSearch);
+      setLogPage(1);
+    }, logSearch ? 250 : 0);
+    return () => clearTimeout(timer);
+  }, [logSearch]);
+
+  // Reset strane pri promeni ostalih filtera dnevnika
   useEffect(() => {
     setLogPage(1);
-  }, [logSearch, logWorkerId, logParcelId, logGroupName, logDateFrom, logDateTo]);
+  }, [logWorkerId, logParcelId, logGroupName, logDateFrom, logDateTo]);
 
   // ==========================================
   // TAB 2: Analitika filteri & paginacija
@@ -212,12 +231,21 @@ const SeasonalWorkersDashboard: React.FC = () => {
   // ==========================================
   const [wPage, setWPage] = useState(1);
   const [wSearch, setWSearch] = useState('');
+  const [debouncedWSearch, setDebouncedWSearch] = useState('');
   const [wFilterGroup, setWFilterGroup] = useState('ALL');
   const [wFilterActive, setWFilterActive] = useState('ALL');
 
   useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedWSearch(wSearch);
+      setWPage(1);
+    }, wSearch ? 250 : 0);
+    return () => clearTimeout(timer);
+  }, [wSearch]);
+
+  useEffect(() => {
     setWPage(1);
-  }, [wSearch, wFilterGroup, wFilterActive]);
+  }, [wFilterGroup, wFilterActive]);
 
   // ==========================================
   // Modali state
@@ -291,8 +319,14 @@ const SeasonalWorkersDashboard: React.FC = () => {
       return res.json();
     },
   });
-  const allActiveWorkers: SeasonalWorker[] = allActiveWorkersData?.workers || [];
-  const groupNamesList: string[] = allActiveWorkersData?.groupNames || [];
+  const allActiveWorkers: SeasonalWorker[] = useMemo(
+    () => allActiveWorkersData?.workers || [],
+    [allActiveWorkersData]
+  );
+  const groupNamesList: string[] = useMemo(
+    () => allActiveWorkersData?.groupNames || [],
+    [allActiveWorkersData]
+  );
 
   // 2. Parcele iz šifarnika
   const { data: parcelsData } = useQuery({
@@ -303,7 +337,10 @@ const SeasonalWorkersDashboard: React.FC = () => {
       return res.json();
     },
   });
-  const parcelsList: any[] = parcelsData?.parcels || [];
+  const parcelsList: any[] = useMemo(
+    () => parcelsData?.parcels || [],
+    [parcelsData]
+  );
 
   // 3. Dnevnik rada (paginirano)
   const {
@@ -313,7 +350,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
     queryKey: [
       'seasonal-logs',
       logPage,
-      logSearch,
+      debouncedLogSearch,
       logWorkerId,
       logParcelId,
       logGroupName,
@@ -324,7 +361,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
       const params = new URLSearchParams();
       params.append('page', String(logPage));
       params.append('limit', String(PAGE_SIZE));
-      if (logSearch) params.append('search', logSearch);
+      if (debouncedLogSearch) params.append('search', debouncedLogSearch);
       if (logWorkerId && logWorkerId !== 'ALL') params.append('workerId', logWorkerId);
       if (logParcelId && logParcelId !== 'ALL') params.append('parcelId', logParcelId);
       if (logGroupName && logGroupName !== 'ALL') params.append('groupName', logGroupName);
@@ -338,15 +375,37 @@ const SeasonalWorkersDashboard: React.FC = () => {
       return res.json();
     },
     enabled: activeTab === 'dnevnik',
+    placeholderData: keepPreviousData,
   });
 
   const logsList: SeasonalWorkLog[] = logsData?.logs || [];
   const totalLogsCount = logsData?.total || 0;
   const totalLogsPages = logsData?.totalPages || 1;
 
-  // 4. Analitika (Zbir sati)
+  // 4a. Lagani KPI zbirovi za zaglavlje kada tab Analitika nije aktivan
+  const { data: summaryTotalsData } = useQuery({
+    queryKey: ['seasonal-summary', 'totals', anDateFrom, anDateTo, anParcelId, anWorkerId, anGroupName],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      params.append('totalsOnly', 'true');
+      if (anDateFrom) params.append('dateFrom', anDateFrom);
+      if (anDateTo) params.append('dateTo', anDateTo);
+      if (anParcelId && anParcelId !== 'ALL') params.append('parcelId', anParcelId);
+      if (anWorkerId && anWorkerId !== 'ALL') params.append('workerId', anWorkerId);
+      if (anGroupName && anGroupName !== 'ALL') params.append('groupName', anGroupName);
+
+      const res = await fetch(`${API}/seasonal/summary?${params.toString()}`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Greška pri dohvatanju analitike.');
+      return res.json();
+    },
+    enabled: activeTab !== 'analitika',
+  });
+
+  // 4b. Puna Analitika (Zbir sati) - učitava se tek na tabu Analitika
   const { data: summaryData } = useQuery({
-    queryKey: ['seasonal-summary', anDateFrom, anDateTo, anParcelId, anWorkerId, anGroupName],
+    queryKey: ['seasonal-summary', 'full', anDateFrom, anDateTo, anParcelId, anWorkerId, anGroupName],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (anDateFrom) params.append('dateFrom', anDateFrom);
@@ -361,60 +420,71 @@ const SeasonalWorkersDashboard: React.FC = () => {
       if (!res.ok) throw new Error('Greška pri dohvatanju analitike.');
       return res.json();
     },
+    enabled: activeTab === 'analitika',
   });
 
+  const summaryTotals = activeTab === 'analitika'
+    ? (summaryData?.totals ?? summaryTotalsData?.totals)
+    : summaryTotalsData?.totals;
+
   // Analitika paginacija - brojevi stavki i stranica
-  const workerTotalItems = summaryData?.byWorker?.length || 0;
+  const byWorker = summaryData?.byWorker;
+  const workerTotalItems = byWorker?.length || 0;
   const workerTotalPages = Math.max(1, Math.ceil(workerTotalItems / AN_PAGE_SIZE));
   const pagedByWorker = useMemo(() => {
-    if (!summaryData?.byWorker) return [];
+    if (!byWorker) return [];
     const start = (anWorkerPage - 1) * AN_PAGE_SIZE;
-    return summaryData.byWorker.slice(start, start + AN_PAGE_SIZE);
-  }, [summaryData?.byWorker, anWorkerPage]);
+    return byWorker.slice(start, start + AN_PAGE_SIZE);
+  }, [byWorker, anWorkerPage]);
 
-  const parcelTotalItems = summaryData?.byParcel?.length || 0;
+  const byParcel = summaryData?.byParcel;
+  const parcelTotalItems = byParcel?.length || 0;
   const parcelTotalPages = Math.max(1, Math.ceil(parcelTotalItems / AN_PAGE_SIZE));
   const pagedByParcel = useMemo(() => {
-    if (!summaryData?.byParcel) return [];
+    if (!byParcel) return [];
     const start = (anParcelPage - 1) * AN_PAGE_SIZE;
-    return summaryData.byParcel.slice(start, start + AN_PAGE_SIZE);
-  }, [summaryData?.byParcel, anParcelPage]);
+    return byParcel.slice(start, start + AN_PAGE_SIZE);
+  }, [byParcel, anParcelPage]);
 
-  const dayTotalItems = summaryData?.byDay?.length || 0;
+  const byDay = summaryData?.byDay;
+  const dayTotalItems = byDay?.length || 0;
   const dayTotalPages = Math.max(1, Math.ceil(dayTotalItems / AN_PAGE_SIZE));
   const pagedByDay = useMemo(() => {
-    if (!summaryData?.byDay) return [];
+    if (!byDay) return [];
     const start = (anDayPage - 1) * AN_PAGE_SIZE;
-    return summaryData.byDay.slice(start, start + AN_PAGE_SIZE);
-  }, [summaryData?.byDay, anDayPage]);
+    return byDay.slice(start, start + AN_PAGE_SIZE);
+  }, [byDay, anDayPage]);
 
-  const jobTotalItems = summaryData?.byJob?.length || 0;
+  const byJob = summaryData?.byJob;
+  const jobTotalItems = byJob?.length || 0;
   const jobTotalPages = Math.max(1, Math.ceil(jobTotalItems / AN_PAGE_SIZE));
   const pagedByJob = useMemo(() => {
-    if (!summaryData?.byJob) return [];
+    if (!byJob) return [];
     const start = (anJobPage - 1) * AN_PAGE_SIZE;
-    return summaryData.byJob.slice(start, start + AN_PAGE_SIZE);
-  }, [summaryData?.byJob, anJobPage]);
+    return byJob.slice(start, start + AN_PAGE_SIZE);
+  }, [byJob, anJobPage]);
 
-  const groupTotalItems = summaryData?.byGroup?.length || 0;
+  const byGroup = summaryData?.byGroup;
+  const groupTotalItems = byGroup?.length || 0;
   const groupTotalPages = Math.max(1, Math.ceil(groupTotalItems / AN_PAGE_SIZE));
   const pagedByGroup = useMemo(() => {
-    if (!summaryData?.byGroup) return [];
+    if (!byGroup) return [];
     const start = (anGroupPage - 1) * AN_PAGE_SIZE;
-    return summaryData.byGroup.slice(start, start + AN_PAGE_SIZE);
-  }, [summaryData?.byGroup, anGroupPage]);
+    return byGroup.slice(start, start + AN_PAGE_SIZE);
+  }, [byGroup, anGroupPage]);
 
   // 5. Šifarnik radnika (paginirano)
   const {
     data: workersData,
     isLoading: workersLoading,
   } = useQuery({
-    queryKey: ['seasonal-workers-paged', wPage, wSearch, wFilterGroup, wFilterActive],
+    queryKey: ['seasonal-workers-paged', wPage, debouncedWSearch, wFilterGroup, wFilterActive],
     queryFn: async () => {
       const params = new URLSearchParams();
       params.append('page', String(wPage));
       params.append('limit', String(PAGE_SIZE));
-      if (wSearch) params.append('search', wSearch);
+      params.append('includeGroups', 'false');
+      if (debouncedWSearch) params.append('search', debouncedWSearch);
       if (wFilterGroup && wFilterGroup !== 'ALL') params.append('groupName', wFilterGroup);
       if (wFilterActive && wFilterActive !== 'ALL') params.append('isActive', wFilterActive);
 
@@ -425,23 +495,31 @@ const SeasonalWorkersDashboard: React.FC = () => {
       return res.json();
     },
     enabled: activeTab === 'sifarnik',
+    placeholderData: keepPreviousData,
   });
 
   const pagedWorkersList: SeasonalWorker[] = workersData?.workers || [];
   const totalWorkersCount = workersData?.total || 0;
   const totalWorkersPages = workersData?.totalPages || 1;
 
-  // 6. Sve grupe sezonaca
-  const { data: groupsData, refetch: refetchGroups } = useQuery({
+  // 6. Sve grupe sezonaca (učitava se tek na tabu Šifarnik ili pri otvaranju modala grupa)
+  const { data: groupsData } = useQuery({
     queryKey: ['seasonal-groups'],
     queryFn: async () => {
       const res = await fetch(`${API}/seasonal/groups`, { credentials: 'include' });
       if (!res.ok) throw new Error('Greška pri dohvatanju grupa.');
       return res.json();
     },
+    enabled: activeTab === 'sifarnik' || groupManagerModalOpen,
   });
-  const groupsList: { name: string; count: number; workers: SeasonalWorker[] }[] = groupsData?.groups || [];
-  const unassignedWorkers: SeasonalWorker[] = groupsData?.unassigned || [];
+  const groupsList: { name: string; count: number; workers: SeasonalWorker[] }[] = useMemo(
+    () => groupsData?.groups || [],
+    [groupsData]
+  );
+  const unassignedWorkers: SeasonalWorker[] = useMemo(
+    () => groupsData?.unassigned || [],
+    [groupsData]
+  );
 
   // ==========================================
   // Opcije za CustomSelect komponente
@@ -495,11 +573,54 @@ const SeasonalWorkersDashboard: React.FC = () => {
     ];
   }, [groupNamesList]);
 
-  const activeFilterOptions: CustomSelectOption[] = [
-    { value: 'ALL', label: 'Svi statusi' },
-    { value: 'true', label: 'Samo Aktivni' },
-    { value: 'false', label: 'Samo Neaktivni' },
-  ];
+  // Memoizacija za modale (O(1) provera selekcije i izbegavanje ponovnog filtriranja pri kucanju)
+  const selectedWorkerIdSet = useMemo(
+    () => new Set(gSelectedWorkerIds),
+    [gSelectedWorkerIds]
+  );
+
+  const selectedGroupWorkers = useMemo(
+    () => allActiveWorkers.filter((w) => selectedWorkerIdSet.has(w.id)),
+    [allActiveWorkers, selectedWorkerIdSet]
+  );
+
+  const singleEffectiveHours = useMemo(
+    () => (sLogHours ? Number(sLogHours) : workHours(sLogStartTime, sLogEndTime, sLogBreak)),
+    [sLogHours, sLogStartTime, sLogEndTime, sLogBreak]
+  );
+
+  const groupEffectiveHours = useMemo(
+    () => (gHours ? Number(gHours) : workHours(gStartTime, gEndTime, gBreak)),
+    [gHours, gStartTime, gEndTime, gBreak]
+  );
+
+  const groupTotalEarnings = useMemo(() => {
+    const unifiedRate = gUnifiedWage ? Number(gUnifiedWage) : null;
+    return selectedGroupWorkers.reduce(
+      (sum, w) => sum + earnings(groupEffectiveHours, Number(unifiedRate ?? w.hourlyRate ?? 0)),
+      0
+    );
+  }, [selectedGroupWorkers, groupEffectiveHours, gUnifiedWage]);
+
+  const availableOptionsByGroup = useMemo(() => {
+    const map = new Map<string, CustomSelectOption[]>();
+    if (!groupManagerModalOpen) return map;
+    for (const grp of groupsList) {
+      map.set(
+        grp.name,
+        allActiveWorkers
+          .filter((w) => w.groupName !== grp.name)
+          .map((aw) => ({
+            value: aw.id,
+            label: aw.name,
+            subLabel: aw.city ? `Mesto: ${aw.city}` : undefined,
+            badge: aw.groupName ? `U grupi: ${aw.groupName}` : 'Slobodan (bez grupe)',
+            badgeType: aw.groupName ? 'warning' : 'success',
+          }))
+      );
+    }
+    return map;
+  }, [groupManagerModalOpen, groupsList, allActiveWorkers]);
 
   // ==========================================
   // Mutacije (CRUD)
@@ -526,6 +647,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
       setEditingWorker(null);
       queryClient.invalidateQueries({ queryKey: ['seasonal-workers-paged'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-all-workers'] });
+      queryClient.invalidateQueries({ queryKey: ['seasonal-groups'] });
     },
     onError: (err: any) => {
       showToast(err.message, 'error');
@@ -547,6 +669,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
       showToast(data.message);
       queryClient.invalidateQueries({ queryKey: ['seasonal-workers-paged'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-all-workers'] });
+      queryClient.invalidateQueries({ queryKey: ['seasonal-groups'] });
     },
     onError: (err: any) => {
       showToast(err.message, 'error');
@@ -652,7 +775,6 @@ const SeasonalWorkersDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['seasonal-groups'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-all-workers'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-workers-paged'] });
-      refetchGroups();
     },
     onError: (err: any) => {
       showToast(err.message, 'error');
@@ -678,7 +800,6 @@ const SeasonalWorkersDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['seasonal-all-workers'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-workers-paged'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-summary'] });
-      refetchGroups();
     },
     onError: (err: any) => {
       showToast(err.message, 'error');
@@ -702,7 +823,6 @@ const SeasonalWorkersDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['seasonal-all-workers'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-workers-paged'] });
       queryClient.invalidateQueries({ queryKey: ['seasonal-summary'] });
-      refetchGroups();
     },
     onError: (err: any) => {
       showToast(err.message, 'error');
@@ -1102,10 +1222,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
   };
 
   // Formatiranje datuma
-  const formatDate = (iso: string) => {
-    const d = new Date(iso);
-    return d.toLocaleDateString('sr-RS');
-  };
+  const formatDate = (iso: string) => SR_DATE_FORMATTER.format(new Date(iso));
 
   return (
     <AppLayout pageTitle="Sezonski Radnici">
@@ -1154,9 +1271,6 @@ const SeasonalWorkersDashboard: React.FC = () => {
               <Users size={26} color="#16a34a" />
               Sezonski Radnici & Dnevna Evidencija
             </h2>
-            <div className={styles.subtitle}>
-              Evidencija ručnog rada na parcelama, grupni unos rada, zbir sati i blagajnički spisak
-            </div>
           </div>
 
           <div className={styles.headerActions}>
@@ -1202,11 +1316,11 @@ const SeasonalWorkersDashboard: React.FC = () => {
               <ClipboardList size={24} />
             </div>
             <div className={styles.statInfo}>
-              <div className={styles.statValue}>{summaryData?.totals?.totalLogs || 0}</div>
+              <div className={styles.statValue}>{summaryTotals?.totalLogs || 0}</div>
               <div className={styles.statLabel}>Evidentiranih unosa</div>
               <div className={styles.statSubtext}>
-                {summaryData?.totals?.totalDailyWage
-                  ? `${summaryData.totals.totalDailyWage.toLocaleString('sr-RS')} RSD dnevnica`
+                {summaryTotals?.totalDailyWage
+                  ? `${summaryTotals.totalDailyWage.toLocaleString('sr-RS')} RSD dnevnica`
                   : 'Bez unetih dnevnica'}
               </div>
             </div>
@@ -2447,7 +2561,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                   <CustomSelect
                     value={wFilterActive}
                     onChange={setWFilterActive}
-                    options={activeFilterOptions}
+                    options={ACTIVE_FILTER_OPTIONS}
                     searchable={false}
                     placeholder="Filter statusa"
                   />
@@ -2457,10 +2571,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                   <button
                     type="button"
                     className={styles.btnSecondary}
-                    onClick={() => {
-                      refetchGroups();
-                      setGroupManagerModalOpen(true);
-                    }}
+                    onClick={() => setGroupManagerModalOpen(true)}
                   >
                     <Users size={16} />
                     <span>Grupe sezonaca ({groupsList.length})</span>
@@ -2875,7 +2986,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                     <small>Pri direktnom unosu unesite sate bez pauze.</small>
                   </div>
                   <div className={styles.formGroup} aria-live="polite">
-                    <strong>{(sLogHours ? Number(sLogHours) : workHours(sLogStartTime, sLogEndTime, sLogBreak)).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} h × {Number(sLogWage || 0).toLocaleString('sr-RS')} RSD/h = {earnings((sLogHours ? Number(sLogHours) : workHours(sLogStartTime, sLogEndTime, sLogBreak)), Number(sLogWage || 0)).toLocaleString('sr-RS')} RSD</strong>
+                    <strong>{singleEffectiveHours.toLocaleString('sr-RS', { maximumFractionDigits: 2 })} h × {Number(sLogWage || 0).toLocaleString('sr-RS')} RSD/h = {earnings(singleEffectiveHours, Number(sLogWage || 0)).toLocaleString('sr-RS')} RSD</strong>
                     <small> Zarada za ovaj rad računa se automatski iz efektivnih sati.</small>
                   </div>
                   <div className={styles.formGroup}>
@@ -2907,8 +3018,8 @@ const SeasonalWorkersDashboard: React.FC = () => {
                           ? 'Čuvanje izmena...'
                           : 'Sačuvaj izmene'
                         : createSingleLogMutation.isPending
-                        ? 'Evidentiranje...'
-                        : 'Evidentiraj rad'}
+                          ? 'Evidentiranje...'
+                          : 'Evidentiraj rad'}
                     </button>
                   </div>
                 </div>
@@ -2984,7 +3095,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
 
                     <div className={styles.workerCheckboxGrid}>
                       {allActiveWorkers.map((w) => {
-                        const isChecked = gSelectedWorkerIds.includes(w.id);
+                        const isChecked = selectedWorkerIdSet.has(w.id);
                         return (
                           <label
                             key={w.id}
@@ -3113,15 +3224,15 @@ const SeasonalWorkersDashboard: React.FC = () => {
                     <label className={styles.formLabel}>Efektivni sati po radniku (opciono, umesto vremena rada)</label>
                     <input type="number" min="0.01" max="24" step="any" className={styles.formInput} value={gHours} onChange={(e) => setGHours(e.target.value)} placeholder="Automatski iz vremena rada i pauze" />
                     <small>Pri direktnom unosu unesite sate bez pauze.</small>
-                    <strong>Obračun za {(gHours ? Number(gHours) : workHours(gStartTime, gEndTime, gBreak)).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} h po radniku</strong>
+                    <strong>Obračun za {groupEffectiveHours.toLocaleString('sr-RS', { maximumFractionDigits: 2 })} h po radniku</strong>
                     <small> Prazna zajednička satnica koristi osnovnu satnicu svakog radnika.</small>
-                    {allActiveWorkers.filter((w) => gSelectedWorkerIds.includes(w.id)).map((w) => {
+                    {selectedGroupWorkers.map((w) => {
                       const appliedRate = gUnifiedWage ? Number(gUnifiedWage) : w.hourlyRate;
                       return <div key={w.id}>{w.name}: {appliedRate != null
-                        ? `${Number(appliedRate).toLocaleString('sr-RS')} RSD/h = ${earnings((gHours ? Number(gHours) : workHours(gStartTime, gEndTime, gBreak)), Number(appliedRate)).toLocaleString('sr-RS')} RSD`
+                        ? `${Number(appliedRate).toLocaleString('sr-RS')} RSD/h = ${earnings(groupEffectiveHours, Number(appliedRate)).toLocaleString('sr-RS')} RSD`
                         : 'Unesite satnicu radnika ili zajedničku satnicu'}</div>;
                     })}
-                    <strong>Ukupno: {allActiveWorkers.filter((w) => gSelectedWorkerIds.includes(w.id)).reduce((sum, w) => sum + earnings((gHours ? Number(gHours) : workHours(gStartTime, gEndTime, gBreak)), Number(gUnifiedWage || w.hourlyRate || 0)), 0).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} RSD</strong>
+                    <strong>Ukupno: {groupTotalEarnings.toLocaleString('sr-RS', { maximumFractionDigits: 2 })} RSD</strong>
                   </div>
                   <div className={styles.formGroup}>
                     <label className={styles.formLabel}>Napomena grupe</label>
@@ -3223,8 +3334,8 @@ const SeasonalWorkersDashboard: React.FC = () => {
                     </div>
                   ) : (
                     groupsList.map((grp) => {
-                      // Sezonci koji još uvek nisu u ovoj grupi, da bismo mogli da ih dodamo
-                      const availableToAdd = allActiveWorkers.filter((w) => w.groupName !== grp.name);
+                      // Prekomputirane opcije radnika koji još uvek nisu u ovoj grupi
+                      const availableOptions = availableOptionsByGroup.get(grp.name) || [];
 
                       return (
                         <div key={grp.name} className={styles.groupCard}>
@@ -3281,7 +3392,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                           </div>
 
                           {/* Dodavanje radnika u ovu grupu */}
-                          {availableToAdd.length > 0 ? (
+                          {availableOptions.length > 0 ? (
                             <div className={styles.addWorkerToGroupRow}>
                               <div style={{ flex: 1, minWidth: 260 }}>
                                 <CustomSelect
@@ -3290,13 +3401,7 @@ const SeasonalWorkersDashboard: React.FC = () => {
                                     setGroupToAddTo(grp.name);
                                     setWorkerToAddToGroup(val);
                                   }}
-                                  options={availableToAdd.map((aw) => ({
-                                    value: aw.id,
-                                    label: aw.name,
-                                    subLabel: aw.city ? `Mesto: ${aw.city}` : undefined,
-                                    badge: aw.groupName ? `U grupi: ${aw.groupName}` : 'Slobodan (bez grupe)',
-                                    badgeType: aw.groupName ? 'warning' : 'success',
-                                  }))}
+                                  options={availableOptions}
                                   placeholder="+ Izaberi radnika za dodavanje u grupu..."
                                   searchable={true}
                                 />

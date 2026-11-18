@@ -1,11 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query';
 
-export type TabKey = 'dovoz' | 'skladiste' | 'sortiranje' | 'pakovanje' | 'isporuka' | 'otpis' | 'sledljivost';
+export type TabKey = 'dovoz' | 'skladiste' | 'pakovanje' | 'isporuka' | 'otpis' | 'sledljivost';
 
 const tabQueries: Record<TabKey, readonly string[]> = {
   dovoz: ['onion-harvest', 'onion-lots'],
   skladiste: ['onion-storage'],
-  sortiranje: ['onion-sorting'],
   pakovanje: ['onion-packaging'],
   isporuka: ['onion-shipment'],
   otpis: ['onion-waste'],
@@ -23,7 +22,7 @@ const mutationQueries = {
   harvestStored: [...stockQueries, 'onion-harvest', 'onion-storage'],
   storage: [...stockQueries, 'onion-storage'],
   chamber: ['onion-lookup', 'onion-dashboard', 'onion-storage', 'onion-traceability'],
-  sorting: [...stockQueries, 'onion-storage', 'onion-sorting'],
+  sorting: [...stockQueries, 'onion-storage', 'onion-packaging', 'onion-waste'],
   packaging: [...stockQueries, 'onion-packaging'],
   packagingUpdate: [...stockQueries, 'onion-packaging', 'onion-shipment'],
   shipment: [...stockQueries, 'onion-packaging', 'onion-shipment'],

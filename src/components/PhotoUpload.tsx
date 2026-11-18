@@ -12,7 +12,7 @@ import { compressImage } from '../utils/imageCompressor';
 import styles from '../Gorivo/GorivoDashboard.module.css';
 import photoStyles from './PhotoAttachment.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 interface PhotoUploadProps {
   photoUrl: string | null;

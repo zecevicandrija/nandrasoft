@@ -286,6 +286,7 @@
   color: var(--text-primary);
   line-height: 1.2;
   word-break: break-word;
+  font-variant-numeric: tabular-nums;
 }
 
 .statUnit {
@@ -431,6 +432,7 @@
   font-size: 1.05rem;
   font-weight: 800;
   line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
 .balanceOk {
@@ -661,12 +663,51 @@
 
 /* Table Card & Desktop Table */
 .tableCard {
+  position: relative;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 14px;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
   box-sizing: border-box;
+}
+
+.fetchingBar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  padding: 0.45rem 1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #0284c7;
+  background: rgba(2, 132, 199, 0.08);
+  border-bottom: 1px solid rgba(2, 132, 199, 0.18);
+}
+
+:global([data-theme="dark"]) .fetchingBar {
+  color: #38bdf8;
+  background: rgba(2, 132, 199, 0.16);
+  border-bottom-color: rgba(2, 132, 199, 0.3);
+}
+
+.tableContentFetching {
+  opacity: 0.65;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.thRight {
+  text-align: right;
+}
+
+.vehicleNamePrimary {
+  font-weight: 700;
+}
+
+.paginationContainer {
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border-color);
 }
 
 .tableWrapper {
@@ -742,6 +783,7 @@
   color: var(--text-primary);
   font-size: 0.95rem;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .topUpAmountBadge {
@@ -749,6 +791,7 @@
   color: #16a34a;
   font-size: 0.95rem;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 :global([data-theme="dark"]) .topUpAmountBadge {
@@ -850,104 +893,6 @@
   white-space: nowrap;
 }
 
-/* Pagination Bar */
-.paginationBar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.85rem 1.25rem;
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-card-secondary, var(--bg-secondary));
-  flex-wrap: wrap;
-  gap: 0.85rem;
-}
-
-.paginationInfo {
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-}
-
-.paginationInfo strong {
-  color: var(--text-primary);
-  font-weight: 700;
-}
-
-.paginationButtons {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.paginationBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.35rem;
-  padding: 0.4rem 0.75rem;
-  min-height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.paginationBtn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: var(--border-hover);
-}
-
-.paginationBtn:disabled {
-  opacity: 0.42;
-  cursor: not-allowed;
-}
-
-.pageNumbers {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.paginationPageBtn {
-  min-width: 32px;
-  height: 32px;
-  padding: 0 0.45rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.paginationPageBtn:hover:not(.paginationPageBtnActive) {
-  background: var(--bg-hover);
-  border-color: var(--border-hover);
-}
-
-.paginationPageBtnActive {
-  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
-  color: #ffffff;
-  border-color: #0284c7;
-  font-weight: 700;
-  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.28);
-}
-
-.paginationEllipsis {
-  padding: 0 0.3rem;
-  color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
 .emptyState {
   padding: 3.5rem 1.5rem;
   text-align: center;
@@ -969,10 +914,10 @@
 }
 
 /* ========================================================
-   MOBILE CARD LIST (Visible on < 768px, hidden on desktop)
+   MOBILE CARD LIST (Mounted on <= 768px)
    ======================================================== */
 .mobileCardList {
-  display: none;
+  display: flex;
   flex-direction: column;
   gap: 0.85rem;
   padding: 0.85rem;
@@ -1276,15 +1221,6 @@
     padding: 1rem 1.15rem;
   }
 
-  /* Switch Table to Mobile Cards on < 768px */
-  .tableWrapper {
-    display: none;
-  }
-
-  .mobileCardList {
-    display: flex;
-  }
-
   .statsGrid {
     grid-template-columns: repeat(2, 1fr);
     gap: 0.75rem;
@@ -1379,18 +1315,6 @@
 
   .formGrid {
     grid-template-columns: 1fr;
-  }
-
-  .paginationBar {
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding: 0.85rem;
-  }
-
-  .paginationButtons {
-    justify-content: center;
-    width: 100%;
   }
 }
 

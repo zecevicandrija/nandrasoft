@@ -2,7 +2,7 @@ import { fetchFuelEfficiency, fetchFuelExport, fuelFilterParams } from './fuelEf
 import { FuelEfficiency } from './FuelEfficiency';
 import { fuelOperationRows, fuelCriticalRows, fuelHeaders, criticalFuelHeaders } from './fuelEfficiencyReport';
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
   BarChart3,
   Tractor,
@@ -22,6 +22,9 @@ import {
   Sprout,
   CheckCircle2,
   Package,
+  ClipboardList,
+  Clock,
+  Calendar,
 } from 'lucide-react';
 import { applyUnicodeFont } from '../lib/pdfFont';
 import AppLayout from '../components/Layout/AppLayout';
@@ -31,10 +34,11 @@ import { useSession } from '../lib/auth-client';
 import styles from './AnalitikaDashboard.module.css';
 
 type PresetType = 'DANAS' | 'ZADNJIH_7' | 'MESEC' | 'ZADNJIH_30' | 'GODINA' | 'SVE' | 'CUSTOM';
-type ActiveTab = 'pregled' | 'masine' | 'radnici' | 'troskovi' | 'parcele' | 'gorivo';
+type ActiveTab = 'pregled' | 'masine' | 'radnici' | 'radovi' | 'troskovi' | 'parcele' | 'gorivo';
 
 const API = '/api';
 const PAGE_SIZE = 10;
+const WORKS_PAGE_SIZE = 10;
 
 interface TableSyncScrollbarProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -151,16 +155,18 @@ export const AnalitikaDashboard: React.FC = () => {
   const [selectedWorker, setSelectedWorker] = useState('');
   const [selectedParcel, setSelectedParcel] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [fuelSearch, setFuelSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   useEffect(() => {
-    const timer = window.setTimeout(() => setFuelSearch(searchTerm), 300);
+    const timer = window.setTimeout(() => setDebouncedSearch(searchTerm), 300);
     return () => window.clearTimeout(timer);
   }, [searchTerm]);
 
-  // Paginacija za svih 5 sekcija (10 po stranici na nivou baze)
+  // Paginacija za sekcije
   const [topMachinesPage, setTopMachinesPage] = useState(1);
   const [machinesPage, setMachinesPage] = useState(1);
   const [workersPage, setWorkersPage] = useState(1);
+  const [worksPage, setWorksPage] = useState(1);
+  const [selectedWorkTypeId, setSelectedWorkTypeId] = useState('');
   const [financialPage, setFinancialPage] = useState(1);
   const [parcelsPage, setParcelsPage] = useState(1);
 
@@ -206,10 +212,13 @@ export const AnalitikaDashboard: React.FC = () => {
     setSelectedMachine('');
     setSelectedWorker('');
     setSelectedParcel('');
+    setSelectedWorkTypeId('');
     setSearchTerm('');
+    setDebouncedSearch('');
     setTopMachinesPage(1);
     setMachinesPage(1);
     setWorkersPage(1);
+    setWorksPage(1);
     setFinancialPage(1);
     setParcelsPage(1);
   };
@@ -217,23 +226,27 @@ export const AnalitikaDashboard: React.FC = () => {
   // Resetovanje paginacije pri promeni pretrage ili filtera
   useEffect(() => {
     setMachinesPage(1);
-  }, [searchTerm, selectedMachine, dateFrom, dateTo, preset]);
+  }, [debouncedSearch, selectedMachine, selectedWorker, selectedParcel, dateFrom, dateTo, preset]);
 
   useEffect(() => {
     setWorkersPage(1);
-  }, [searchTerm, selectedWorker, dateFrom, dateTo, preset]);
+  }, [debouncedSearch, selectedMachine, selectedWorker, selectedParcel, dateFrom, dateTo, preset]);
+
+  useEffect(() => {
+    setWorksPage(1);
+  }, [debouncedSearch, selectedMachine, selectedWorker, selectedParcel, selectedWorkTypeId, dateFrom, dateTo, preset]);
 
   useEffect(() => {
     setParcelsPage(1);
-  }, [selectedParcel, dateFrom, dateTo, preset]);
+  }, [debouncedSearch, selectedMachine, selectedWorker, selectedParcel, dateFrom, dateTo, preset]);
 
   useEffect(() => {
     setFinancialPage(1);
-  }, [dateFrom, dateTo, preset]);
+  }, [selectedMachine, selectedWorker, selectedParcel, dateFrom, dateTo, preset]);
 
   useEffect(() => {
     setTopMachinesPage(1);
-  }, [dateFrom, dateTo, preset]);
+  }, [selectedMachine, selectedWorker, selectedParcel, dateFrom, dateTo, preset]);
 
   // 1. ŠIFARNICI ZA DROPDOWN LISTE
   const { data: filtersData } = useQuery({
@@ -280,13 +293,33 @@ export const AnalitikaDashboard: React.FC = () => {
     return [{ value: '', label: 'Sve parcele' }, ...list];
   }, [filtersData?.parcels]);
 
-  // Query parametri za API pozive
+  // Query parametri za API pozive (svi tabovi dele aktivne filtere)
   const queryParams = useMemo(() => {
     const params = new URLSearchParams();
     if (dateFrom) params.append('dateFrom', dateFrom);
     if (dateTo) params.append('dateTo', dateTo);
+    if (selectedMachine) params.append('machineId', selectedMachine);
+    if (selectedWorker) params.append('workerId', selectedWorker);
+    if (selectedParcel) params.append('parcelId', selectedParcel);
     return params.toString();
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, selectedMachine, selectedWorker, selectedParcel]);
+
+  const activeFilterSummary = useMemo(() => {
+    const parts: string[] = [];
+    if (selectedMachine) {
+      const m = (filtersData?.machines || []).find((item: any) => item.id === selectedMachine);
+      if (m) parts.push(`Mašina: ${m.name}`);
+    }
+    if (selectedWorker) {
+      const w = (filtersData?.workers || []).find((item: any) => item.id === selectedWorker);
+      if (w) parts.push(`Radnik: ${w.name}`);
+    }
+    if (selectedParcel) {
+      const p = (filtersData?.parcels || []).find((item: any) => item.id === selectedParcel);
+      if (p) parts.push(`Parcela: [${p.code}] ${p.name}`);
+    }
+    return parts.join(' • ');
+  }, [filtersData, selectedMachine, selectedWorker, selectedParcel]);
 
   // 2. GENERALNI PREGLED (KPIs)
   const { data: overviewData, isLoading: overviewLoading, refetch: refetchOverview } = useQuery({
@@ -297,6 +330,7 @@ export const AnalitikaDashboard: React.FC = () => {
       return res.json();
     },
     enabled: isDirector && activeTab === 'pregled',
+    placeholderData: keepPreviousData,
   });
 
   // 1.1 NAJAKTIVNIJE MAŠINE (Sa DB paginacijom)
@@ -311,15 +345,15 @@ export const AnalitikaDashboard: React.FC = () => {
       return res.json();
     },
     enabled: isDirector && activeTab === 'pregled',
+    placeholderData: keepPreviousData,
   });
 
   // 3. ANALITIKA PO MAŠINAMA (Sa DB paginacijom & search)
   const { data: machinesData, refetch: refetchMachines } = useQuery({
-    queryKey: ['analytics-machines', queryParams, selectedMachine, searchTerm, machinesPage],
+    queryKey: ['analytics-machines', queryParams, debouncedSearch, machinesPage],
     queryFn: async () => {
       const p = new URLSearchParams(queryParams);
-      if (selectedMachine) p.append('machineId', selectedMachine);
-      if (searchTerm.trim()) p.append('search', searchTerm.trim());
+      if (debouncedSearch.trim()) p.append('search', debouncedSearch.trim());
       p.append('page', String(machinesPage));
       p.append('limit', String(PAGE_SIZE));
       const res = await fetch(`${API}/analytics/machines?${p.toString()}`, { credentials: 'include' });
@@ -327,15 +361,15 @@ export const AnalitikaDashboard: React.FC = () => {
       return res.json();
     },
     enabled: isDirector && activeTab === 'masine',
+    placeholderData: keepPreviousData,
   });
 
   // 4. ANALITIKA PO RADNICIMA (Sa DB paginacijom & search)
   const { data: workersData, refetch: refetchWorkers } = useQuery({
-    queryKey: ['analytics-workers', queryParams, selectedWorker, searchTerm, workersPage],
+    queryKey: ['analytics-workers', queryParams, debouncedSearch, workersPage],
     queryFn: async () => {
       const p = new URLSearchParams(queryParams);
-      if (selectedWorker) p.append('workerId', selectedWorker);
-      if (searchTerm.trim()) p.append('search', searchTerm.trim());
+      if (debouncedSearch.trim()) p.append('search', debouncedSearch.trim());
       p.append('page', String(workersPage));
       p.append('limit', String(PAGE_SIZE));
       const res = await fetch(`${API}/analytics/workers?${p.toString()}`, { credentials: 'include' });
@@ -343,14 +377,15 @@ export const AnalitikaDashboard: React.FC = () => {
       return res.json();
     },
     enabled: isDirector && activeTab === 'radnici',
+    placeholderData: keepPreviousData,
   });
 
-  // 5. ANALITIKA PO PARCELAMA (Sa DB paginacijom)
+  // 5. ANALITIKA PO PARCELAMA (Sa DB paginacijom & search)
   const { data: parcelsData, refetch: refetchParcels } = useQuery({
-    queryKey: ['analytics-parcels', queryParams, selectedParcel, parcelsPage],
+    queryKey: ['analytics-parcels', queryParams, debouncedSearch, parcelsPage],
     queryFn: async () => {
       const p = new URLSearchParams(queryParams);
-      if (selectedParcel) p.append('parcelId', selectedParcel);
+      if (debouncedSearch.trim()) p.append('search', debouncedSearch.trim());
       p.append('page', String(parcelsPage));
       p.append('limit', String(PAGE_SIZE));
       const res = await fetch(`${API}/analytics/parcels?${p.toString()}`, { credentials: 'include' });
@@ -358,6 +393,7 @@ export const AnalitikaDashboard: React.FC = () => {
       return res.json();
     },
     enabled: isDirector && activeTab === 'parcele',
+    placeholderData: keepPreviousData,
   });
 
   // 6. FINANSIJSKI TOKOVI (Sa DB paginacijom meseci)
@@ -372,9 +408,27 @@ export const AnalitikaDashboard: React.FC = () => {
       return res.json();
     },
     enabled: isDirector && activeTab === 'troskovi',
+    placeholderData: keepPreviousData,
   });
 
-  const fuelFilters = fuelFilterParams({ dateFrom, dateTo, machineId: selectedMachine, workerId: selectedWorker, parcelId: selectedParcel, search: fuelSearch });
+  // 7. DETALJAN DNEVNIK RADOVA (Svi radovi + statistike po filterima)
+  const { data: worksData, isLoading: worksLoading, refetch: refetchWorks } = useQuery({
+    queryKey: ['analytics-works', queryParams, debouncedSearch, selectedWorkTypeId, worksPage],
+    queryFn: async () => {
+      const p = new URLSearchParams(queryParams);
+      if (debouncedSearch.trim()) p.append('search', debouncedSearch.trim());
+      if (selectedWorkTypeId) p.append('workTypeId', selectedWorkTypeId);
+      p.append('page', String(worksPage));
+      p.append('limit', String(WORKS_PAGE_SIZE));
+      const res = await fetch(`${API}/analytics/works?${p.toString()}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Greška pri dohvatanju dnevnika radova');
+      return res.json();
+    },
+    enabled: isDirector && activeTab === 'radovi',
+    placeholderData: keepPreviousData,
+  });
+
+  const fuelFilters = fuelFilterParams({ dateFrom, dateTo, machineId: selectedMachine, workerId: selectedWorker, parcelId: selectedParcel, search: debouncedSearch });
   const [fuelPages, setFuelPages] = useState({ filters: '', operations: 1, critical: 1 });
   const fuelOperationsPage = fuelPages.filters === fuelFilters ? fuelPages.operations : 1;
   const fuelCriticalPage = fuelPages.filters === fuelFilters ? fuelPages.critical : 1;
@@ -399,6 +453,7 @@ export const AnalitikaDashboard: React.FC = () => {
         break;
       case 'masine': void refetchMachines(); break;
       case 'radnici': void refetchWorkers(); break;
+      case 'radovi': void refetchWorks(); break;
       case 'parcele': void refetchParcels(); break;
       case 'troskovi': void refetchFinancial(); break;
     }
@@ -438,10 +493,8 @@ export const AnalitikaDashboard: React.FC = () => {
 
       // Povlačenje svih stavki sa servera za celovit PDF
       const exportParams = new URLSearchParams(queryParams);
-      exportParams.append('all', 'true');
-      if (selectedMachine) exportParams.append('machineId', selectedMachine);
-      if (selectedWorker) exportParams.append('workerId', selectedWorker);
-      if (searchTerm.trim()) exportParams.append('search', searchTerm.trim());
+      exportParams.set('all', 'true');
+      if (searchTerm.trim()) exportParams.set('search', searchTerm.trim());
 
       const [exportMachinesRes, exportWorkersRes] = await Promise.all([
         fetch(`${API}/analytics/machines?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
@@ -615,17 +668,15 @@ export const AnalitikaDashboard: React.FC = () => {
       const wb = XLSX.utils.book_new();
 
       const exportParams = new URLSearchParams(queryParams);
-      exportParams.append('all', 'true');
-      if (selectedMachine) exportParams.append('machineId', selectedMachine);
-      if (selectedWorker) exportParams.append('workerId', selectedWorker);
-      if (selectedParcel) exportParams.append('parcelId', selectedParcel);
-      if (searchTerm.trim()) exportParams.append('search', searchTerm.trim());
+      exportParams.set('all', 'true');
+      if (searchTerm.trim()) exportParams.set('search', searchTerm.trim());
 
-      const [exportMachinesRes, exportWorkersRes, exportParcelsRes, exportFinancialRes] = await Promise.all([
+      const [exportMachinesRes, exportWorkersRes, exportParcelsRes, exportFinancialRes, exportWorksRes] = await Promise.all([
         fetch(`${API}/analytics/machines?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
         fetch(`${API}/analytics/workers?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
         fetch(`${API}/analytics/parcels?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
         fetch(`${API}/analytics/financial?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
+        fetch(`${API}/analytics/works?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
       ]);
 
       // Sheet 1: Pregled
@@ -754,6 +805,24 @@ export const AnalitikaDashboard: React.FC = () => {
         XLSX.utils.book_append_sheet(wb, wsMonthly, 'Mesečni Troškovi');
       }
 
+      const workRows = (exportWorksRes?.works || []).map((w: any) => ({
+        Datum: w.date ? new Date(w.date).toLocaleDateString('sr-RS') : '',
+        Smena: w.shift || '',
+        Radnik: w.worker?.name || '',
+        Operacija: w.workType?.name || '',
+        Parcela: w.parcel ? `[${w.parcel.code}] ${w.parcel.name}` : '',
+        Mašina: w.machine?.name || '',
+        Priključak: w.attachment?.name || '',
+        'Urađeno (ha)': w.areaDoneHa || 0,
+        'Radni sati (h)': w.workHours || 0,
+        'Vreme': w.startTime && w.endTime ? `${w.startTime} - ${w.endTime}` : '',
+        Napomena: w.notes || '',
+      }));
+      if (workRows.length > 0) {
+        const wsWorks = XLSX.utils.json_to_sheet(workRows);
+        XLSX.utils.book_append_sheet(wb, wsWorks, 'Dnevnik Radova');
+      }
+
       const fuelExport = await fetchFuelExport(fuelFilters);
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
         ['Bilans zaduzenja sa dopunama; raspodela po satima ili hektarima.'],
@@ -803,6 +872,22 @@ export const AnalitikaDashboard: React.FC = () => {
   const parcelsList = parcelsData?.parcels || [];
   const parcelsPagination = parcelsData?.pagination || { total: 0, totalPages: 1 };
 
+  const worksList = worksData?.works || [];
+  const worksByWorkType = worksData?.byWorkType || [];
+  const worksSummary = worksData?.summary || {
+    totalWorks: 0,
+    totalHa: 0,
+    totalHours: 0,
+    avgHaPerHour: null,
+    avgHaPerWork: null,
+    distinctParcels: 0,
+    distinctWorkTypes: 0,
+    distinctDays: 0,
+    avgHoursPerDay: null,
+    estimatedLabourCost: null,
+  };
+  const worksPagination = worksData?.pagination || { total: 0, totalPages: 1 };
+
   return (
     <AppLayout pageTitle="Analitika & Poslovni Izveštaji">
       <div className={styles.container}>
@@ -819,9 +904,6 @@ export const AnalitikaDashboard: React.FC = () => {
                 Analitika Poslovanja
               </h2>
             </div>
-            <p className={styles.subtitle}>
-              Sveobuhvatna statistika rada mehanizacije, goriva, uloga u popravke, radnika, parcela i finansija
-            </p>
           </div>
 
           <div className={styles.headerActions}>
@@ -1001,6 +1083,15 @@ export const AnalitikaDashboard: React.FC = () => {
           </button>
 
           <button
+            className={`${styles.tabBtn} ${activeTab === 'radovi' ? styles.tabBtnActive : ''}`}
+            onClick={() => setActiveTab('radovi')}
+          >
+            <ClipboardList size={18} />
+            Radovi
+            <span className={styles.tabBadge}>{worksPagination.total}</span>
+          </button>
+
+          <button
             className={`${styles.tabBtn} ${activeTab === 'troskovi' ? styles.tabBtnActive : ''}`}
             onClick={() => setActiveTab('troskovi')}
           >
@@ -1030,7 +1121,10 @@ export const AnalitikaDashboard: React.FC = () => {
             {/* Executive Total Cost Banner */}
             <div className={styles.executiveBanner}>
               <div className={styles.bannerInfo}>
-                <h3>Ukupni operativni troškovi poslovanja (u izabranom periodu)</h3>
+                <h3>
+                  Ukupni operativni troškovi poslovanja (u izabranom periodu)
+                  {activeFilterSummary ? ` — ${activeFilterSummary}` : ''}
+                </h3>
                 <div className={styles.bannerTotal}>{totalOperatingCosts.toLocaleString('sr-RS')} RSD</div>
               </div>
 
@@ -1272,10 +1366,17 @@ export const AnalitikaDashboard: React.FC = () => {
         {activeTab === 'masine' && (
           <div className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>
-                <Tractor size={20} color="#0284c7" />
-                Analitika Mašina i Flote ({machinesPagination.total})
-              </h3>
+              <div>
+                <h3 className={styles.cardTitle}>
+                  <Tractor size={20} color="#0284c7" />
+                  Analitika Mašina i Flote ({machinesPagination.total})
+                </h3>
+                {activeFilterSummary && (
+                  <span style={{ fontSize: '0.82rem', color: '#0284c7', fontWeight: 600 }}>
+                    Aktivni filteri: {activeFilterSummary}
+                  </span>
+                )}
+              </div>
 
               <div className={styles.searchBox}>
                 <Search size={16} color="var(--text-secondary)" />
@@ -1562,10 +1663,17 @@ export const AnalitikaDashboard: React.FC = () => {
         {activeTab === 'radnici' && (
           <div className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>
-                <Users size={20} color="#16a34a" />
-                Analitika Učinka Zaposlenih ({workersPagination.total})
-              </h3>
+              <div>
+                <h3 className={styles.cardTitle}>
+                  <Users size={20} color="#16a34a" />
+                  Analitika Učinka Zaposlenih ({workersPagination.total})
+                </h3>
+                {activeFilterSummary && (
+                  <span style={{ fontSize: '0.82rem', color: '#0284c7', fontWeight: 600 }}>
+                    Aktivni filteri: {activeFilterSummary}
+                  </span>
+                )}
+              </div>
 
               <div className={styles.searchBox}>
                 <Search size={16} color="var(--text-secondary)" />
@@ -1807,10 +1915,17 @@ export const AnalitikaDashboard: React.FC = () => {
         {activeTab === 'troskovi' && (
           <div className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>
-                <Coins size={20} color="#0284c7" />
-                Mesečni Finansijski Tokovi i Troškovi Poslovanja ({financialPagination.total})
-              </h3>
+              <div>
+                <h3 className={styles.cardTitle}>
+                  <Coins size={20} color="#0284c7" />
+                  Mesečni Finansijski Tokovi i Troškovi Poslovanja ({financialPagination.total})
+                </h3>
+                {activeFilterSummary && (
+                  <span style={{ fontSize: '0.82rem', color: '#0284c7', fontWeight: 600 }}>
+                    Aktivni filteri: {activeFilterSummary}
+                  </span>
+                )}
+              </div>
               <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                 Uporedni mesečni pregled troškova goriva, servisa, putarina i sezonske radne snage (10 po stranici)
               </span>
@@ -1885,13 +2000,27 @@ export const AnalitikaDashboard: React.FC = () => {
         {activeTab === 'parcele' && (
           <div className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>
-                <Sprout size={20} color="#16a34a" />
-                Učinak i Ulaganja po Parcelama ({parcelsPagination.total})
-              </h3>
-              <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                10 parcela po stranici (iz baze podataka)
-              </span>
+              <div>
+                <h3 className={styles.cardTitle}>
+                  <Sprout size={20} color="#16a34a" />
+                  Učinak i Ulaganja po Parcelama ({parcelsPagination.total})
+                </h3>
+                {activeFilterSummary && (
+                  <span style={{ fontSize: '0.82rem', color: '#0284c7', fontWeight: 600 }}>
+                    Aktivni filteri: {activeFilterSummary}
+                  </span>
+                )}
+              </div>
+
+              <div className={styles.searchBox}>
+                <Search size={16} color="var(--text-secondary)" />
+                <input
+                  type="text"
+                  placeholder="Pretraži parcelu po nazivu ili šifri..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
             </div>
 
             <div className={styles.tableContainer}>
@@ -1919,7 +2048,7 @@ export const AnalitikaDashboard: React.FC = () => {
                         <span style={{ fontWeight: 700, color: '#16a34a' }}>
                           {(p.fieldWork?.totalHa || 0).toFixed(1)} ha
                         </span>{' '}
-                        ({p.fieldWork?.count || 0} radova)
+                        ({p.fieldWork?.count || 0} radova · {(p.fieldWork?.totalWorkHours || 0).toFixed(1)} h)
                       </td>
                       <td>
                         {(p.fertilizer?.totalQuantity || 0).toLocaleString('sr-RS')} kg/L
@@ -1959,6 +2088,282 @@ export const AnalitikaDashboard: React.FC = () => {
               </div>
             )}
           </div>
+        )}
+
+        {/* ========================================================
+            TAB 6: DETALJAN DNEVNIK RADOVA (DB paginacija 15 po strani)
+           ======================================================== */}
+        {activeTab === 'radovi' && (
+          <>
+            <div className={styles.kpiGrid}>
+              <div className={styles.kpiCard}>
+                <div className={styles.kpiCardHeader}>
+                  <span className={styles.kpiLabel}>Ukupno radova</span>
+                  <div className={`${styles.kpiIconWrapper} ${styles.iconBlue}`}>
+                    <ClipboardList size={18} />
+                  </div>
+                </div>
+                <div className={styles.kpiMainValue}>{worksSummary.totalWorks}</div>
+                <div className={styles.kpiFooter}>
+                  <span>{worksSummary.distinctParcels} parcela</span>
+                  <span className={styles.kpiHighlight}>{worksSummary.distinctWorkTypes} vrsta posla</span>
+                </div>
+              </div>
+
+              <div className={styles.kpiCard}>
+                <div className={styles.kpiCardHeader}>
+                  <span className={styles.kpiLabel}>Urađena površina</span>
+                  <div className={`${styles.kpiIconWrapper} ${styles.iconGreen}`}>
+                    <Layers size={18} />
+                  </div>
+                </div>
+                <div className={styles.kpiMainValue}>
+                  {(worksSummary.totalHa || 0).toFixed(1)} <span style={{ fontSize: '1rem' }}>ha</span>
+                </div>
+                <div className={styles.kpiFooter}>
+                  <span>Prosek po radu:</span>
+                  <span className={styles.kpiHighlight}>
+                    {worksSummary.avgHaPerWork != null ? `${worksSummary.avgHaPerWork.toFixed(2)} ha` : '-'}
+                  </span>
+                </div>
+              </div>
+
+              <div className={styles.kpiCard}>
+                <div className={styles.kpiCardHeader}>
+                  <span className={styles.kpiLabel}>Ukupno radnih sati</span>
+                  <div className={`${styles.kpiIconWrapper} ${styles.iconAmber}`}>
+                    <Clock size={18} />
+                  </div>
+                </div>
+                <div className={styles.kpiMainValue}>
+                  {(worksSummary.totalHours || 0).toFixed(1)} <span style={{ fontSize: '1rem' }}>h</span>
+                </div>
+                <div className={styles.kpiFooter}>
+                  <span>Prosečan učinak:</span>
+                  <span className={styles.kpiHighlight}>
+                    {worksSummary.avgHaPerHour != null ? `${worksSummary.avgHaPerHour.toFixed(2)} ha/h` : '-'}
+                  </span>
+                </div>
+              </div>
+
+              <div className={styles.kpiCard}>
+                <div className={styles.kpiCardHeader}>
+                  <span className={styles.kpiLabel}>Radnih dana na terenu</span>
+                  <div className={`${styles.kpiIconWrapper} ${styles.iconPurple}`}>
+                    <Calendar size={18} />
+                  </div>
+                </div>
+                <div className={styles.kpiMainValue}>
+                  {worksSummary.distinctDays} <span style={{ fontSize: '1rem' }}>dana</span>
+                </div>
+                <div className={styles.kpiFooter}>
+                  <span>
+                    {worksSummary.avgHoursPerDay != null ? `Prosek: ${worksSummary.avgHoursPerDay.toFixed(1)} h/dan` : 'Bez satnice'}
+                  </span>
+                  {worksSummary.estimatedLabourCost != null && (
+                    <span className={styles.kpiHighlight}>
+                      {worksSummary.estimatedLabourCost.toLocaleString('sr-RS')} RSD
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {worksByWorkType.length > 0 && (
+              <div className={styles.card}>
+                <div className={styles.cardHeader}>
+                  <div>
+                    <h3 className={styles.cardTitle}>
+                      <Layers size={18} color="#16a34a" />
+                      Struktura poslova ({worksByWorkType.length})
+                    </h3>
+                    <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                      Klikni na operaciju da filtriraš spisak radova ispod
+                    </span>
+                  </div>
+                  {selectedWorkTypeId && (
+                    <button
+                      type="button"
+                      className={styles.btnSecondary}
+                      onClick={() => setSelectedWorkTypeId('')}
+                    >
+                      Prikaži sve operacije
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.55rem' }}>
+                  {worksByWorkType.map((wt: any) => {
+                    const isSelected = selectedWorkTypeId === wt.workTypeId;
+                    return (
+                      <button
+                        key={wt.workTypeId}
+                        type="button"
+                        onClick={() => setSelectedWorkTypeId(isSelected ? '' : wt.workTypeId)}
+                        className={`${styles.presetPill} ${isSelected ? styles.presetPillActive : ''}`}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
+                      >
+                        <strong>{wt.name}</strong>
+                        <span>
+                          {(wt.totalHa || 0).toFixed(1)} ha · {(wt.totalHours || 0).toFixed(1)} h ({wt.count}x)
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className={styles.card}>
+              <div className={styles.cardHeader}>
+                <div>
+                  <h3 className={styles.cardTitle}>
+                    <ClipboardList size={20} color="#0284c7" />
+                    Dnevnik izvršenih radova ({worksPagination.total})
+                  </h3>
+                  {activeFilterSummary && (
+                    <span style={{ fontSize: '0.82rem', color: '#0284c7', fontWeight: 600 }}>
+                      Aktivni filteri: {activeFilterSummary}
+                    </span>
+                  )}
+                </div>
+
+                <div className={styles.searchBox}>
+                  <Search size={16} color="var(--text-secondary)" />
+                  <input
+                    type="text"
+                    placeholder="Pretraži rad, parcelu, mašinu, napomenu..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className={styles.tableContainer}>
+                <table className={styles.dataTable} style={{ minWidth: '1020px' }}>
+                  <thead>
+                    <tr>
+                      <th>Datum & Vreme</th>
+                      <th>Radnik</th>
+                      <th>Operacija & Materijal</th>
+                      <th>Parcela</th>
+                      <th>Mašina & Priključak</th>
+                      <th>Urađeno</th>
+                      <th>Radni sati</th>
+                      <th>Napomena</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {worksList.map((w: any) => {
+                      const eff = w.workHours && w.areaDoneHa ? (w.areaDoneHa / w.workHours).toFixed(2) : null;
+                      const assignedMachines = (w.machineAssignments || [])
+                        .map((a: any) => a.machine?.name)
+                        .filter(Boolean);
+                      const uniqueAssignedMachines = [...new Set(assignedMachines)];
+                      const hasReplacementMachines =
+                        uniqueAssignedMachines.length > 1 ||
+                        (uniqueAssignedMachines.length === 1 && uniqueAssignedMachines[0] !== w.machine?.name);
+
+                      return (
+                        <tr key={w.id}>
+                          <td>
+                            <div style={{ fontWeight: 700 }}>
+                              {new Date(w.date).toLocaleDateString('sr-RS')}
+                            </div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                              {w.shift}
+                              {w.startTime && w.endTime ? ` · ${w.startTime}–${w.endTime}` : ''}
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>{w.worker?.name || '-'}</div>
+                            {w.worker?.role && (
+                              <span className={styles.typeBadge}>{w.worker.role}</span>
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 700 }}>{w.workType?.name || '-'}</div>
+                            {w.materials && w.materials.length > 0 && (
+                              <div style={{ fontSize: '0.75rem', color: '#0284c7', marginTop: '0.15rem' }}>
+                                {w.materials
+                                  .map((mat: any) =>
+                                    `${mat.name}${mat.dosePerHa != null ? ` (${mat.dosePerHa} ${mat.unit}/ha)` : ''}`
+                                  )
+                                  .join(', ')}
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>
+                              {w.parcel ? `[${w.parcel.code}] ${w.parcel.name}` : '-'}
+                            </div>
+                            {w.parcel?.currentCrop && (
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                {w.parcel.currentCrop}
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>
+                              {hasReplacementMachines
+                                ? uniqueAssignedMachines.join(' → ')
+                                : w.machine?.name || w.contractor?.name || '-'}
+                            </div>
+                            {w.attachment?.name && (
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                + {w.attachment.name}
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ fontWeight: 700, color: '#16a34a' }}>
+                            {(w.areaDoneHa || 0).toFixed(1)} ha
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>
+                              {w.workHours != null ? `${Number(w.workHours).toFixed(1)} h` : '-'}
+                            </div>
+                            {eff && (
+                              <div style={{ fontSize: '0.75rem', color: '#0284c7' }}>{eff} ha/h</div>
+                            )}
+                          </td>
+                          <td style={{ maxWidth: '220px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                            {w.notes || '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!worksLoading && worksList.length === 0 && (
+                      <tr>
+                        <td colSpan={8} style={{ textAlign: 'center', padding: '2rem' }}>
+                          Nema evidentiranih radova koji odgovaraju zadatim filterima.
+                        </td>
+                      </tr>
+                    )}
+                    {worksLoading && (
+                      <tr>
+                        <td colSpan={8} style={{ textAlign: 'center', padding: '2rem' }}>
+                          Učitavanje radova...
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {worksPagination.total > 0 && (
+                <div style={{ marginTop: '0.5rem', borderRadius: 10, border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                  <TablePagination
+                    currentPage={worksPage}
+                    totalPages={worksPagination.totalPages}
+                    totalItems={worksPagination.total}
+                    pageSize={WORKS_PAGE_SIZE}
+                    onPageChange={setWorksPage}
+                    itemName="radova"
+                  />
+                </div>
+              )}
+            </div>
+          </>
         )}
       </div>
     </AppLayout>

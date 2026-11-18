@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { remainingLotStock } from '../src/Luk/onionStock.ts';
+import { remainingLotStock, suggestPacking, suggestPallets } from '../src/Luk/onionStock.ts';
 
 test('two delivered turas leave only raw, unpacked and small onion in the remaining LOT total', () => {
   const result = remainingLotStock({
@@ -27,4 +27,13 @@ test('an unprocessed LOT and a fully delivered LOT show their actual remaining m
   assert.equal(remainingLotStock({ rawStockKg: 5000, sortedQualityKg: 0, sortedSmallKg: 0, packagings: [] }).totalKg, 5000);
   assert.equal(remainingLotStock({ rawStockKg: 0, sortedQualityKg: 5000, sortedSmallKg: 0,
     packagings: [{ totalWeightKg: 5000, availableWeightKg: 0 }] }).totalKg, 0);
+});
+
+test('packing suggests whole bags and rounds only a partial pallet up', () => {
+  assert.deepEqual(suggestPacking(3000, 10, 'DZAK_10KG'), { packageCount: '300', palletsCount: '3' });
+  assert.deepEqual(suggestPacking(3100, 10, 'DZAK_10KG'), { packageCount: '310', palletsCount: '4' });
+  assert.deepEqual(suggestPacking(1604, 5, 'DZAK_5KG'), { packageCount: '320', palletsCount: '2' });
+  assert.deepEqual(suggestPacking(1009, 10, 'DZAK_10KG'), { packageCount: '100', palletsCount: '1' });
+  assert.deepEqual(suggestPacking(4, 5, 'DZAK_5KG'), { packageCount: '', palletsCount: '' });
+  assert.equal(suggestPallets(160, 10, 'DZAK_10KG'), '2');
 });

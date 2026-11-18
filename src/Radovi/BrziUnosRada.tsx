@@ -1,3 +1,6 @@
+import MachineUsageCompletion, { type UsageCompletionData } from '../components/MachineUsageCompletion';
+import MachineUsageModal from '../components/MachineUsageModal';
+import MachineUsageAction from '../components/MachineUsageAction';
 import { PhotoUpload } from '../components/PhotoUpload';
 import PhotoAttachment from '../components/PhotoAttachment';
 import WorkMaterialsEditor, { MaterialSummary } from '../components/WorkMaterialsEditor';
@@ -64,6 +67,9 @@ const BrziUnosRada: React.FC = () => {
   const [contractorId, setContractorId] = useState('');
   const initializedContractorOrder = useRef<string | null>(null);
   const [machineId, setMachineId] = useState('');
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [cancelRemainder, setCancelRemainder] = useState(searchParams.get('cancelRemainder') === 'true');
+  const [usageCompletion, setUsageCompletion] = useState<UsageCompletionData>({ usageAreas: [], machineReturns: [] });
   const [attachmentId, setAttachmentId] = useState('');
   const [workerId, setWorkerId] = useState('');
   const [workTypeId, setWorkTypeId] = useState('');
@@ -87,10 +93,12 @@ const BrziUnosRada: React.FC = () => {
   const [submittedData, setSubmittedData] = useState<any | null>(null);
 
   const durable = useDurableSubmission(`field-work:${orderIdParam || 'manual'}`, currentUser?.id,
-    { shift, parcelId, contractorId, materials, machineId, attachmentId, workerId, workTypeId, areaDoneHa, startTime, endTime, notes, photoUrl, endFuelLiters, endHours, isOperational, returnNotes, fuelSnapshot },
+    { shift, parcelId, contractorId, materials, machineId, attachmentId, workerId, workTypeId, areaDoneHa, startTime, endTime, notes, photoUrl, endFuelLiters, endHours, isOperational, returnNotes, fuelSnapshot, usageCompletion, cancelRemainder },
     (draft) => {
       setMaterials(draft.materials ?? []);
       setContractorId(draft.contractorId || '');
+      setCancelRemainder(draft.cancelRemainder || false);
+      setUsageCompletion(draft.usageCompletion || { usageAreas: [], machineReturns: [] });
       setShift(draft.shift); setParcelId(draft.parcelId); setMachineId(draft.machineId);
       setAttachmentId(draft.attachmentId); setWorkerId(draft.workerId); setWorkTypeId(draft.workTypeId);
       setAreaDoneHa(draft.areaDoneHa); setStartTime(draft.startTime); setEndTime(draft.endTime);
@@ -198,7 +206,7 @@ const BrziUnosRada: React.FC = () => {
         initializedContractorOrder.current = wo.id;
       }
       if (wo.parcelId && !parcelId) setParcelId(wo.parcelId);
-      if (wo.machineId && !machineId) setMachineId(wo.machineId);
+      if (wo.machineId) setMachineId(wo.machineId);
       if (wo.attachmentId && !attachmentId) setAttachmentId(wo.attachmentId);
       if (wo.workTypeId && !workTypeId) setWorkTypeId(wo.workTypeId);
       if (wo.workerId && !workerId) setWorkerId(wo.workerId);
@@ -230,7 +238,7 @@ const BrziUnosRada: React.FC = () => {
     // machine, must be entered again rather than paired with a fresh token.
     setEndFuelLiters('');
   }, [machineId, selectedMachineObj?.updatedAt, fuelSnapshot?.machineId]);
-  const linkedAssignment = orderData?.workOrder?.machineAssignments?.[0] || userActiveAssignment;
+  const linkedAssignment = orderData?.workOrder?.machineAssignments?.find((a: any) => !a.voidedAt && a.machineId === machineId && a.status === 'ZADUZENA') || userActiveAssignment;
   const baselineHours = linkedAssignment?.startHours ?? selectedMachineObj?.currentHours;
   const isEndHoursInvalid =
     endHours !== '' &&
@@ -391,6 +399,8 @@ const BrziUnosRada: React.FC = () => {
     }
 
     const payload: any = {
+      ...usageCompletion,
+      cancelRemainder,
       shift,
       parcelId,
       contractorId: contractorId || null,
@@ -1095,6 +1105,12 @@ const BrziUnosRada: React.FC = () => {
                 </div>
 
                 <PhotoUpload photoUrl={photoUrl} label="Fotografija sa terena (opciono)" onChange={setPhotoUrl} onUploadStateChange={setPhotoUploading} disabled={submitMutation.isPending} />
+              {(orderIdParam || linkedAssignment?.id) && <>
+                  <MachineUsageAction onClick={() => setUsageOpen(true)} />
+                  <MachineUsageCompletion type={orderIdParam ? 'order' : 'assignment'} id={orderIdParam || linkedAssignment.id}
+                    primaryMachineId={machineId} totalArea={currentNumericArea} value={usageCompletion} onChange={setUsageCompletion} />
+                </>}
+                {['DIREKTOR', 'RUKOVODILAC'].includes(currentUser?.role || '') && orderIdParam && <label className={styles.cancelRemainderOption}><input type="checkbox" checked={cancelRemainder} onChange={e => setCancelRemainder(e.target.checked)} /><span><strong>Otkaži preostali posao</strong><small>Obavljeni deo ostaje evidentiran, a mašine se razdužuju.</small></span></label>}
                 {/* TASTER ZA SLANJE */}
                 <button
                   type="submit"
@@ -1132,6 +1148,8 @@ const BrziUnosRada: React.FC = () => {
           }}
         />
       </div>
+      {usageOpen && (orderIdParam || linkedAssignment?.id) && <MachineUsageModal contextType={orderIdParam ? 'order' : 'assignment'} contextId={orderIdParam || linkedAssignment.id}
+        onClose={() => setUsageOpen(false)} onSaved={() => { setEndHours(''); setEndFuelLiters(''); setFuelSnapshot(null); setUsageCompletion({ usageAreas: [], machineReturns: [] }); }} />}
     </AppLayout>
   );
 };

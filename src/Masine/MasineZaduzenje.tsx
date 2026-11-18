@@ -1,20 +1,18 @@
+import MachineUsageModal from '../components/MachineUsageModal';
 import { PhotoUpload } from '../components/PhotoUpload';
-import PhotoAttachment from '../components/PhotoAttachment';
 import { masterQueryKeys } from '../lib/masterQueryKeys';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import { refreshMachineFuel } from '../lib/machineFuel';
 import SubmissionRecovery from '../components/SubmissionRecovery';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import {
   Tractor,
   KeyRound,
   CheckCircle2,
   Clock,
-  Fuel,
   User,
-  FileText,
   Plus,
   Loader2,
   X,
@@ -23,43 +21,48 @@ import {
   ShieldCheck,
   Zap,
   ArrowLeft,
-  Pencil,
-  Search,
-  RotateCcw,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
-import TablePagination from '../components/TablePagination/TablePagination';
 import { useSession } from '../lib/auth-client';
+import ActiveAssignmentsSection from './ActiveAssignmentsSection';
+import AssignmentHistorySection, { type HistoryPeriodType } from './AssignmentHistorySection';
+import EditAssignmentModal from './EditAssignmentModal';
+import AssignmentPhotoModal from './AssignmentPhotoModal';
 import styles from './MasineZaduzenje.module.css';
 
 const API = 'http://localhost:5000/api';
+const EMPTY_LIST: any[] = [];
 
 type TabType = 'active' | 'checkout' | 'history' | 'direct';
-type HistoryPeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve' | 'custom';
 
 interface Toast {
   message: string;
   type: 'success' | 'error';
 }
 
+const HISTORY_STATUS_FILTER_OPTIONS: CustomSelectOption[] = [
+  { value: '', label: 'Svi statusi' },
+  { value: 'ZADUZENA', label: 'Zadužena (Na njivi)' },
+  { value: 'RAZDUZENA', label: 'Razdužena (Završeno)' },
+  { value: 'POKVARENA', label: 'Prijavljen kvar' },
+];
+
+async function fetchJson<T = any>(url: string): Promise<T> {
+  const res = await fetch(url, { credentials: 'include' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((data as any)?.error || 'Greška pri učitavanju podataka.');
+  }
+  return data as T;
+}
+
 const MasineZaduzenje: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [usageId, setUsageId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('active');
   const [toast, setToast] = useState<Toast | null>(null);
-
-  // Pomoćna funkcija: da li je datum jednak današnjem kalendarskom danu
-  const isSameCalendarDay = (date1: string | Date) => {
-    if (!date1) return false;
-    const d1 = new Date(date1);
-    const d2 = new Date();
-    return (
-      d1.getFullYear() === d2.getFullYear() &&
-      d1.getMonth() === d2.getMonth() &&
-      d1.getDate() === d2.getDate()
-    );
-  };
 
   // Form states za novo zaduženje (Checkout)
   const [checkoutMachineId, setCheckoutMachineId] = useState('');
@@ -80,15 +83,31 @@ const MasineZaduzenje: React.FC = () => {
   const [checkinPhoto, setCheckinPhoto] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
 
-  // Edit Modal states (izmena zaduženja)
+  // Edit & Photo Modal states (izmena zaduženja / pregled fotografije)
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState<Record<string, any>>({});
+  const [photoModalAssignment, setPhotoModalAssignment] = useState<any | null>(null);
 
-  const showToast = (message: string, type: 'success' | 'error') => {
+  const toastTimerRef = useRef<number | null>(null);
+
+  const showToast = useCallback((message: string, type: 'success' | 'error') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
-  };
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   // Uloga korisnika
   const { data: session } = useSession();
@@ -142,7 +161,7 @@ const MasineZaduzenje: React.FC = () => {
     setHistoryPage(1);
   }, [historyPeriod, historyDateFrom, historyDateTo, historyMachineId, historyWorkerId, historyStatus, historySearch]);
 
-  const getHistoryDateRange = () => {
+  const historyRange = useMemo(() => {
     const today = new Date();
     const yyyy = today.getFullYear();
     const mm = String(today.getMonth() + 1).padStart(2, '0');
@@ -167,17 +186,15 @@ const MasineZaduzenje: React.FC = () => {
       return { from: historyDateFrom, to: historyDateTo };
     }
     return { from: '', to: '' };
-  };
+  }, [historyPeriod, historyDateFrom, historyDateTo]);
 
-  const historyRange = getHistoryDateRange();
+  const needMachinesCatalogue = activeTab !== 'active' || isDirectParam;
+  const needWorkersCatalogue = Boolean(currentUser) && !isOperator && needMachinesCatalogue;
 
   // 1. STATISTIKA ZADUŽENJA
   const { data: statsData } = useQuery({
     queryKey: ['assignments-stats'],
-    queryFn: async () => {
-      const res = await fetch(`${API}/assignments/stats`, { credentials: 'include' });
-      return res.json();
-    },
+    queryFn: () => fetchJson(`${API}/assignments/stats`),
     staleTime: 0,
     refetchOnMount: 'always',
   });
@@ -185,15 +202,13 @@ const MasineZaduzenje: React.FC = () => {
   // 2. AKTIVNA ZADUŽENJA (Paginacija 25 po strani)
   const { data: activeData, isLoading: loadingActive } = useQuery({
     queryKey: ['assignments-active', activePage],
-    queryFn: async () => {
-      const res = await fetch(`${API}/assignments/active?page=${activePage}&limit=25`, { credentials: 'include' });
-      return res.json();
-    },
+    queryFn: () => fetchJson(`${API}/assignments/active?page=${activePage}&limit=25`),
     staleTime: 0,
     refetchOnMount: 'always',
+    placeholderData: keepPreviousData,
   });
 
-  // 3. SVA ZADUŽENJA (ISTORIJAT SA FILTERIMA I PAGINACIJOM)
+  // 3. SVA ZADUŽENJA (ISTORIJAT SA FILTERIMA I PAGINACIJOM — učitava se tek kad je tab otvoren)
   const { data: historyData, isLoading: loadingHistory } = useQuery({
     queryKey: [
       'assignments-history',
@@ -205,7 +220,7 @@ const MasineZaduzenje: React.FC = () => {
       historyWorkerId,
       historyStatus,
     ],
-    queryFn: async () => {
+    queryFn: () => {
       const params = new URLSearchParams();
       params.append('page', String(historyPage));
       params.append('limit', '25');
@@ -215,34 +230,41 @@ const MasineZaduzenje: React.FC = () => {
       if (historyRange.from) params.append('dateFrom', historyRange.from);
       if (historyRange.to) params.append('dateTo', historyRange.to);
 
-      const res = await fetch(`${API}/assignments?${params.toString()}`, { credentials: 'include' });
-      return res.json();
+      return fetchJson(`${API}/assignments?${params.toString()}`);
     },
+    enabled: activeTab === 'history',
     staleTime: 0,
     refetchOnMount: 'always',
+    placeholderData: keepPreviousData,
   });
 
-  // 4. ŠIFARNICI
+  // 4. ŠIFARNICI (učitavaju se tek kada su potrebni za formu ili filtere)
   const { data: machinesData } = useQuery({
     queryKey: masterQueryKeys.machines,
-    queryFn: async () => {
-      const res = await fetch(`${API}/master/machines`, { credentials: 'include' });
-      return res.json();
-    },
+    queryFn: () => fetchJson(`${API}/master/machines`),
+    enabled: needMachinesCatalogue,
     staleTime: 0,
     refetchOnMount: 'always',
   });
 
   const { data: workersData } = useQuery({
     queryKey: ['workers-all'],
-    queryFn: async () => {
-      const res = await fetch(`${API}/master/workers`, { credentials: 'include' });
-      return res.json();
-    },
+    queryFn: () => fetchJson(`${API}/master/workers`),
+    enabled: needWorkersCatalogue,
   });
 
+  const machinesList = machinesData?.machines || [];
+  const machinesById = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const m of machinesList) map.set(m.id, m);
+    return map;
+  }, [machinesList]);
+
   // Slobodne mašine za zaduženje
-  const freeMachines = machinesData?.machines?.filter((m: any) => m.status === 'SLOBODNA') || [];
+  const freeMachines = useMemo(
+    () => machinesList.filter((m: any) => m.status === 'SLOBODNA'),
+    [machinesList]
+  );
 
   // Opcije za CustomSelect komponente
   const freeMachineOptions: CustomSelectOption[] = useMemo(() => {
@@ -259,24 +281,24 @@ const MasineZaduzenje: React.FC = () => {
       label: w.name,
       sublabel: `Tip: ${w.type || 'RADNIK'}${w.phone ? ` • Tel: ${w.phone}` : ''}`,
     }));
-  }, [workersData]);
+  }, [workersData?.workers]);
 
   const allMachineOptions: CustomSelectOption[] = useMemo(() => {
-    return (machinesData?.machines || []).map((m: any) => ({
+    return machinesList.map((m: any) => ({
       value: m.id,
       label: m.name,
       sublabel: `${m.brandModel || m.type || ''} • Stanje: ${m.currentHours ?? 0} rh`,
     }));
-  }, [machinesData]);
+  }, [machinesList]);
 
   const historyMachineFilterOptions: CustomSelectOption[] = useMemo(() => {
-    const list = (machinesData?.machines || []).map((m: any) => ({
+    const list = machinesList.map((m: any) => ({
       value: m.id,
       label: m.name,
       sublabel: `${m.brandModel || m.type || ''}`,
     }));
     return [{ value: '', label: 'Sve mašine' }, ...list];
-  }, [machinesData]);
+  }, [machinesList]);
 
   const historyWorkerFilterOptions: CustomSelectOption[] = useMemo(() => {
     const list = (workersData?.workers || []).map((w: any) => ({
@@ -285,19 +307,21 @@ const MasineZaduzenje: React.FC = () => {
       sublabel: w.type || 'RADNIK',
     }));
     return [{ value: '', label: 'Svi radnici' }, ...list];
-  }, [workersData]);
+  }, [workersData?.workers]);
 
-  const historyStatusFilterOptions: CustomSelectOption[] = [
-    { value: '', label: 'Svi statusi' },
-    { value: 'ZADUZENA', label: 'Zadužena (Na njivi)' },
-    { value: 'RAZDUZENA', label: 'Razdužena (Završeno)' },
-    { value: 'POKVARENA', label: 'Prijavljen kvar' },
-  ];
+  const historyStatusFilterOptions = HISTORY_STATUS_FILTER_OPTIONS;
+
+  const invalidateAssignmentQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
+    queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
+    queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
+    queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
+  }, [queryClient]);
 
   // Prilikom izbora mašine, automatski preuzmi njene trenutne radne sate i kapacitet goriva
   const handleSelectMachine = (machineId: string) => {
     setCheckoutMachineId(machineId);
-    const m = machinesData?.machines?.find((item: any) => item.id === machineId);
+    const m = machinesById.get(machineId);
     if (m) {
       setCheckoutFuelVersion(m.updatedAt);
       setCheckoutStartHours(m.currentHours || 0);
@@ -321,10 +345,7 @@ const MasineZaduzenje: React.FC = () => {
       return data;
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
+      invalidateAssignmentQueries();
 
       // Reset form
       setCheckoutMachineId('');
@@ -349,10 +370,7 @@ const MasineZaduzenje: React.FC = () => {
     },
     onSuccess: (data) => {
       checkinDraft.clear();
-      queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
+      invalidateAssignmentQueries();
 
       setCheckinModalOpen(false);
       setSelectedAssignment(null);
@@ -363,7 +381,7 @@ const MasineZaduzenje: React.FC = () => {
     },
   });
 
-  const handleOpenCheckin = (assignment: any) => {
+  const handleOpenCheckin = useCallback((assignment: any) => {
     if (checkinDraft.pending) { setCheckinModalOpen(true); return; }
     checkinDraft.resume();
     if (checkinDraft.hasDraft && selectedAssignment?.id === assignment.id) { setCheckinModalOpen(true); return; }
@@ -380,7 +398,10 @@ const MasineZaduzenje: React.FC = () => {
     setCheckinNotes('');
     setCheckinPhoto(null);
     setCheckinModalOpen(true);
-  };
+  }, [checkinDraft, selectedAssignment?.id]);
+
+  const handleGoToCheckout = useCallback(() => setActiveTab('checkout'), []);
+  const handleOpenUsage = useCallback((assignmentId: string) => setUsageId(assignmentId), []);
 
   const handleCheckoutSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -394,7 +415,7 @@ const MasineZaduzenje: React.FC = () => {
       return;
     }
 
-    const selectedM = machinesData?.machines?.find((item: any) => item.id === checkoutMachineId);
+    const selectedM = machinesById.get(checkoutMachineId);
     const maxTank = selectedM?.tankCapacityLiters;
     const fuelVal = Number(checkoutFuelLiters);
 
@@ -451,26 +472,11 @@ const MasineZaduzenje: React.FC = () => {
     });
   };
 
-  // MUTACIJA I HANDLERI ZA IZMENU ZADUŽENJA (EDIT)
-  const handleOpenEdit = (assignment: any) => {
+  // MUTACIJA I HANDLERI ZA IZMENU ZADUŽENJA (EDIT) I PREGLED FOTOGRAFIJE
+  const handleOpenEdit = useCallback((assignment: any) => {
     setEditingAssignment(assignment);
-    setEditForm({
-      startHours: assignment.startHours,
-      endHours: assignment.endHours !== null && assignment.endHours !== undefined ? assignment.endHours : '',
-      startFuelLiters:
-        assignment.startFuelLiters !== null && assignment.startFuelLiters !== undefined
-          ? assignment.startFuelLiters
-          : '',
-      endFuelLiters:
-        assignment.endFuelLiters !== null && assignment.endFuelLiters !== undefined
-          ? assignment.endFuelLiters
-          : '',
-      isOperational: assignment.isOperational ?? true,
-      assignNotes: assignment.assignNotes || '',
-      returnNotes: assignment.returnNotes || '',
-    });
     setEditModalOpen(true);
-  };
+  }, []);
 
   const updateAssignmentMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: any }) => {
@@ -487,10 +493,7 @@ const MasineZaduzenje: React.FC = () => {
       return resData;
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
+      invalidateAssignmentQueries();
       setEditModalOpen(false);
       setEditingAssignment(null);
       showToast(data.message || 'Zaduženje uspešno izmenjeno.', 'success');
@@ -500,67 +503,33 @@ const MasineZaduzenje: React.FC = () => {
     },
   });
 
-  const handleSaveEdit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingAssignment) return;
+  const { mutate: updateAssignmentMutate } = updateAssignmentMutation;
 
-    const startH = Number(editForm.startHours);
-    if (isNaN(startH) || startH < 0) {
-      showToast('Početni radni sati moraju biti pozitivan broj.', 'error');
-      return;
-    }
+  const handleUpdateAssignmentSubmit = useCallback(
+    (id: string, payload: Record<string, any>) => {
+      updateAssignmentMutate({ id, data: payload });
+    },
+    [updateAssignmentMutate]
+  );
 
-    const maxTank = editingAssignment.machine?.tankCapacityLiters;
-    const startLiters =
-      editForm.startFuelLiters !== '' && editForm.startFuelLiters !== null
-        ? Number(editForm.startFuelLiters)
-        : null;
-    const endLiters =
-      editForm.endFuelLiters !== '' && editForm.endFuelLiters !== null
-        ? Number(editForm.endFuelLiters)
-        : null;
+  const handleCloseEditModal = useCallback(() => setEditModalOpen(false), []);
+  const handleOpenUsageFromEdit = useCallback((assignmentId: string) => {
+    setUsageId(assignmentId);
+    setEditModalOpen(false);
+  }, []);
 
-    if (maxTank && startLiters !== null && startLiters > maxTank) {
-      showToast(
-        `Početno gorivo (${startLiters} L) ne može biti veće od kapaciteta rezervoara (${maxTank} L).`,
-        'error'
-      );
-      return;
-    }
+  const handleShowPhoto = useCallback((assignment: any) => setPhotoModalAssignment(assignment), []);
+  const handleClosePhotoModal = useCallback(() => setPhotoModalAssignment(null), []);
 
-    if (maxTank && endLiters !== null && endLiters > maxTank) {
-      showToast(
-        `Krajnje gorivo (${endLiters} L) ne može biti veće od kapaciteta rezervoara (${maxTank} L).`,
-        'error'
-      );
-      return;
-    }
-
-    const payload: any = {
-      startHours: startH,
-      startFuelLiters: startLiters,
-      assignNotes: editForm.assignNotes || null,
-    };
-
-    if (editingAssignment.status !== 'ZADUZENA') {
-      if (editForm.endHours !== '' && editForm.endHours !== null && editForm.endHours !== undefined) {
-        const endH = Number(editForm.endHours);
-        if (isNaN(endH) || endH < startH) {
-          showToast(`Krajnji radni sati (${endH} rh) ne mogu biti manji od početnih (${startH} rh).`, 'error');
-          return;
-        }
-        payload.endHours = endH;
-      }
-      payload.endFuelLiters = endLiters;
-      payload.isOperational = Boolean(editForm.isOperational);
-      payload.returnNotes = editForm.returnNotes || null;
-    }
-
-    updateAssignmentMutation.mutate({
-      id: editingAssignment.id,
-      data: payload,
-    });
-  };
+  const handleResetHistoryFilters = useCallback(() => {
+    setHistoryPeriod('sve');
+    setHistoryDateFrom('');
+    setHistoryDateTo('');
+    setHistoryMachineId('');
+    setHistoryWorkerId('');
+    setHistoryStatus('');
+    setHistorySearch('');
+  }, []);
 
   // Učitavanje i automatsko popunjavanje direktnog zaduženja iz URL parametara
   useEffect(() => {
@@ -570,7 +539,7 @@ const MasineZaduzenje: React.FC = () => {
       if (paramWorkerId) setDirectWorkerId(paramWorkerId);
       if (paramDate) setDirectDate(paramDate);
 
-      const m = machinesData?.machines?.find((item: any) => item.id === paramMachineId);
+      const m = machinesById.get(paramMachineId);
       if (m) {
         const currentH = Number(m.currentHours) || 0;
         setDirectStartHours(currentH);
@@ -586,7 +555,7 @@ const MasineZaduzenje: React.FC = () => {
         }
       }
     }
-  }, [isDirectParam, isManager, paramMachineId, paramWorkerId, paramDate, paramWorkHours, machinesData]);
+  }, [isDirectParam, isManager, paramMachineId, paramWorkerId, paramDate, paramWorkHours, machinesById]);
 
   // Automatsko otvaranje modala za razduživanje ako je korisnik došao preko 'Razduži Mašinu i završi dan'
   useEffect(() => {
@@ -613,10 +582,9 @@ const MasineZaduzenje: React.FC = () => {
 
   const handleSelectDirectMachine = (id: string) => {
     if (id !== directMachineId) { setDirectStartFuelLiters(''); setDirectEndFuelLiters(''); }
-    const selected = machinesData?.machines?.find((m: any) => m.id === id);
-    setDirectFuelSnapshot(selected?.updatedAt ? { machineId: id, updatedAt: selected.updatedAt } : null);
+    const m = machinesById.get(id);
+    setDirectFuelSnapshot(m?.updatedAt ? { machineId: id, updatedAt: m.updatedAt } : null);
     setDirectMachineId(id);
-    const m = machinesData?.machines?.find((item: any) => item.id === id);
     if (m) {
       const currentH = Number(m.currentHours) || 0;
       setDirectStartHours(currentH);
@@ -645,10 +613,7 @@ const MasineZaduzenje: React.FC = () => {
       return data;
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
+      invalidateAssignmentQueries();
       queryClient.invalidateQueries({ queryKey: ['unassigned-warnings'] });
       queryClient.invalidateQueries({ queryKey: ['field-work-stats'] });
       showToast(data.message || 'Zaduženje i razduženje uspešno završeno!', 'success');
@@ -676,7 +641,7 @@ const MasineZaduzenje: React.FC = () => {
       return;
     }
 
-    const selectedDirectM = machinesData?.machines?.find((m: any) => m.id === directMachineId);
+    const selectedDirectM = machinesById.get(directMachineId);
     const maxTank = selectedDirectM?.tankCapacityLiters;
     const startFuelVal = Number(directStartFuelLiters);
     const endFuelVal = Number(directEndFuelLiters);
@@ -705,16 +670,16 @@ const MasineZaduzenje: React.FC = () => {
   };
 
   useEffect(() => {
-    const machine = machinesData?.machines?.find((m: any) => m.id === directMachineId);
+    const machine = machinesById.get(directMachineId);
     if (machine?.updatedAt) setDirectFuelSnapshot((previous) => previous?.machineId === directMachineId
       ? previous : { machineId: directMachineId, updatedAt: machine.updatedAt });
-  }, [directMachineId, machinesData?.machines]);
+  }, [directMachineId, machinesById]);
 
-  const activeAssignments = activeData?.assignments || [];
+  const activeAssignments = activeData?.assignments ?? EMPTY_LIST;
   const activeTotal = activeData?.total || 0;
   const activeTotalPages = activeData?.totalPages || 1;
 
-  const rawHistoryList = historyData?.assignments || [];
+  const rawHistoryList = historyData?.assignments ?? EMPTY_LIST;
   const historyList = useMemo(() => {
     if (!historySearch.trim()) return rawHistoryList;
     const q = historySearch.toLowerCase();
@@ -816,7 +781,7 @@ const MasineZaduzenje: React.FC = () => {
           >
             <Clock size={18} />
             <span className={styles.tabBtnText}>Dnevnik Zaduženja (Istorijat)</span>
-            <span className={styles.tabBadge}>{historyTotal}</span>
+            {historyData?.total !== undefined && <span className={styles.tabBadge}>{historyTotal}</span>}
           </button>
 
           {isManager && (
@@ -833,147 +798,17 @@ const MasineZaduzenje: React.FC = () => {
 
         {/* TAB 1: AKTIVNA ZADUŽENJA */}
         {activeTab === 'active' && (
-          <div>
-            {loadingActive ? (
-              <div style={{ textAlign: 'center', padding: '3rem' }}>
-                <Loader2 size={32} className="spin" />
-              </div>
-            ) : activeAssignments.length === 0 ? (
-              <div
-                style={{
-                  textAlign: 'center',
-                  padding: '3.5rem',
-                  backgroundColor: 'var(--bg-card)',
-                  borderRadius: 16,
-                  border: '1px solid var(--border-color)',
-                }}
-              >
-                <Tractor size={42} color="var(--text-muted)" style={{ margin: '0 auto 0.75rem' }} />
-                <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>Nema aktivno zaduženih mašina</h3>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginTop: '0.4rem' }}>
-                  Sve mašine su trenutno parkirane u dvorištu firme. Kliknite na "Novo Zaduženje" da preuzmete traktor.
-                </p>
-                <button
-                  onClick={() => setActiveTab('checkout')}
-                  className={styles.btnCheckoutSubmit}
-                  style={{ maxWidth: 220, margin: '1rem auto 0' }}
-                >
-                  <Plus size={16} />
-                  <span>Zaduži Mašinu</span>
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className={styles.activeGrid}>
-                  {activeAssignments.map((a: any) => {
-                    const assignedTime = new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    });
-                    const assignedDate = new Date(a.assignedAt).toLocaleDateString('sr-RS');
-
-                    return (
-                      <div key={a.id} className={styles.checkoutCard}>
-                        <div className={styles.checkoutHeader}>
-                          <div>
-                            <div className={styles.machineName}>
-                              <Tractor size={18} color="#d97706" />
-                              <span>{a.machine?.name}</span>
-                            </div>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                              {a.machine?.brandModel}
-                            </span>
-                          </div>
-                          {a.machine?.regNumber && (
-                            <span className={styles.regBadge}>{a.machine?.regNumber}</span>
-                          )}
-                        </div>
-
-                        <div className={styles.checkoutDetails}>
-                          <div className={styles.detailRow}>
-                            <span className={styles.detailLabel}>
-                              <User size={14} /> Radnik:
-                            </span>
-                            <span className={styles.detailValue}>{a.worker?.name}</span>
-                          </div>
-
-                          <div className={styles.detailRow}>
-                            <span className={styles.detailLabel}>
-                              <Clock size={14} /> Zaduženo:
-                            </span>
-                            <span className={styles.detailValue}>
-                              {assignedDate} u {assignedTime}
-                            </span>
-                          </div>
-
-                          <div className={styles.detailRow}>
-                            <span className={styles.detailLabel}>
-                              <Tractor size={14} /> Početni sati:
-                            </span>
-                            <span className={`${styles.detailValue} ${styles.hoursBadge}`}>
-                              {a.startHours} rh
-                            </span>
-                          </div>
-
-                          {(a.startFuelLiters !== null && a.startFuelLiters !== undefined) ? (
-                            <div className={styles.detailRow}>
-                              <span className={styles.detailLabel}>
-                                <Fuel size={14} /> Gorivo na polasku:
-                              </span>
-                              <span className={`${styles.detailValue} ${styles.fuelBadge}`}>
-                                {a.startFuelLiters} L
-                              </span>
-                            </div>
-                          ) : a.startFuelLevel !== null && (
-                            <div className={styles.detailRow}>
-                              <span className={styles.detailLabel}>
-                                <Fuel size={14} /> Gorivo na polasku:
-                              </span>
-                              <span className={`${styles.detailValue} ${styles.fuelBadge}`}>
-                                {a.startFuelLevel}%
-                              </span>
-                            </div>
-                          )}
-
-                          {a.assignNotes && (
-                            <div className={styles.detailRow} style={{ marginTop: '0.2rem' }}>
-                              <span className={styles.detailLabel}>
-                                <FileText size={14} /> Napomena:
-                              </span>
-                              <span className={styles.notesValue}>
-                                {a.assignNotes}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-
-                        <button
-                          className={styles.btnCheckin}
-                          onClick={() => handleOpenCheckin(a)}
-                          title="Razduži mašinu i upiši radne sate"
-                        >
-                          <CheckCircle2 size={16} />
-                          <span>Razduži Mašinu (Kraj Smene)</span>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {activeTotal > 0 && (
-                  <div style={{ marginTop: '1.25rem' }}>
-                    <TablePagination
-                      currentPage={activePage}
-                      totalPages={activeTotalPages}
-                      onPageChange={(p) => setActivePage(p)}
-                      totalItems={activeTotal}
-                      pageSize={25}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <ActiveAssignmentsSection
+            loading={loadingActive}
+            assignments={activeAssignments}
+            total={activeTotal}
+            page={activePage}
+            totalPages={activeTotalPages}
+            onPageChange={setActivePage}
+            onGoToCheckout={handleGoToCheckout}
+            onOpenCheckin={handleOpenCheckin}
+            onOpenUsage={handleOpenUsage}
+          />
         )}
 
         {/* TAB 2: NOVO ZADUŽENJE (CHECKOUT FORMA) */}
@@ -1067,7 +902,7 @@ const MasineZaduzenje: React.FC = () => {
 
               {/* Početno stanje goriva u litrima */}
               {(() => {
-                const selectedM = machinesData?.machines?.find((m: any) => m.id === checkoutMachineId);
+                const selectedM = machinesById.get(checkoutMachineId);
                 const tankCap = selectedM?.tankCapacityLiters || 200;
                 const isOverCap = Boolean(tankCap && Number(checkoutFuelLiters) > tankCap);
 
@@ -1274,7 +1109,7 @@ const MasineZaduzenje: React.FC = () => {
 
               {/* Nivoi goriva u litrima */}
               {(() => {
-                const selectedDirectM = machinesData?.machines?.find((m: any) => m.id === directMachineId);
+                const selectedDirectM = machinesById.get(directMachineId);
                 const tankCap = selectedDirectM?.tankCapacityLiters || 200;
 
                 return (
@@ -1418,397 +1253,36 @@ const MasineZaduzenje: React.FC = () => {
 
         {/* TAB 3: ISTORIJAT ZADUŽENJA (DNEVNIK) */}
         {activeTab === 'history' && (
-          <div>
-            {/* Brzi Periodi i Filteri */}
-            <div className={styles.historyFilterCard}>
-              <div className={styles.periodButtonsRow}>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${historyPeriod === 'danas' ? styles.periodBtnActive : ''}`}
-                  onClick={() => setHistoryPeriod('danas')}
-                >
-                  Danas
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${historyPeriod === 'nedelja' ? styles.periodBtnActive : ''}`}
-                  onClick={() => setHistoryPeriod('nedelja')}
-                >
-                  Ova Nedelja
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${historyPeriod === 'mesec' ? styles.periodBtnActive : ''}`}
-                  onClick={() => setHistoryPeriod('mesec')}
-                >
-                  Ovaj Mesec
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${historyPeriod === 'sve' ? styles.periodBtnActive : ''}`}
-                  onClick={() => setHistoryPeriod('sve')}
-                >
-                  Svi Unosi
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.periodBtn} ${historyPeriod === 'custom' ? styles.periodBtnActive : ''}`}
-                  onClick={() => setHistoryPeriod('custom')}
-                >
-                  Prilagođen Raspon
-                </button>
-              </div>
-
-              {historyPeriod === 'custom' && (
-                <div className={styles.customDateRangeBox}>
-                  <span>Od:</span>
-                  <input
-                    type="date"
-                    className={styles.dateInput}
-                    value={historyDateFrom}
-                    onChange={(e) => setHistoryDateFrom(e.target.value)}
-                  />
-                  <span>Do:</span>
-                  <input
-                    type="date"
-                    className={styles.dateInput}
-                    value={historyDateTo}
-                    onChange={(e) => setHistoryDateTo(e.target.value)}
-                  />
-                </div>
-              )}
-
-              <div className={styles.filterControlsGrid}>
-                <div className={styles.filterControlCol}>
-                  <span className={styles.filterFieldLabel}>Pretraga</span>
-                  <div className={styles.searchBox}>
-                    <Search size={16} color="var(--text-muted)" />
-                    <input
-                      type="text"
-                      placeholder="Pretraži mašinu, radnika, napomene..."
-                      className={styles.searchInput}
-                      value={historySearch}
-                      onChange={(e) => setHistorySearch(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.filterControlCol}>
-                  <span className={styles.filterFieldLabel}>Mašina</span>
-                  <CustomSelect
-                    value={historyMachineId}
-                    onChange={(val) => setHistoryMachineId(val)}
-                    options={historyMachineFilterOptions}
-                    placeholder="Sve mašine"
-                    searchable
-                  />
-                </div>
-
-                {!isOperator && (
-                  <div className={styles.filterControlCol}>
-                    <span className={styles.filterFieldLabel}>Radnik</span>
-                    <CustomSelect
-                      value={historyWorkerId}
-                      onChange={(val) => setHistoryWorkerId(val)}
-                      options={historyWorkerFilterOptions}
-                      placeholder="Svi radnici"
-                      searchable
-                    />
-                  </div>
-                )}
-
-                <div className={styles.filterControlCol}>
-                  <span className={styles.filterFieldLabel}>Status</span>
-                  <CustomSelect
-                    value={historyStatus}
-                    onChange={(val) => setHistoryStatus(val)}
-                    options={historyStatusFilterOptions}
-                    placeholder="Svi statusi"
-                    searchable={false}
-                  />
-                </div>
-
-                <div className={styles.filterControlCol}>
-                  <button
-                    type="button"
-                    className={styles.btnResetFilters}
-                    onClick={() => {
-                      setHistoryPeriod('sve');
-                      setHistoryDateFrom('');
-                      setHistoryDateTo('');
-                      setHistoryMachineId('');
-                      setHistoryWorkerId('');
-                      setHistoryStatus('');
-                      setHistorySearch('');
-                    }}
-                    title="Poništi sve filtere"
-                  >
-                    <RotateCcw size={15} />
-                    <span>Reset</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className={styles.tableCard}>
-              {loadingHistory ? (
-                <div style={{ textAlign: 'center', padding: '3rem' }}>
-                  <Loader2 size={32} className="spin" />
-                </div>
-              ) : historyList.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                  Nema zabeleženih zaduženja u istorijatu.
-                </div>
-              ) : (
-                <>
-                  {/* Desktop View: Full Table */}
-                  <div className={styles.desktopTableView}>
-                    <div className={styles.tableWrapper}>
-                      <table className={styles.table}>
-                        <thead>
-                          <tr>
-                            <th>Datum i Vreme</th>
-                            <th>Mašina</th>
-                            <th>Radnik</th>
-                            <th>Početni rh</th>
-                            <th>Krajnji rh</th>
-                            <th>Napravljeno rh</th>
-                            <th>Stanje Goriva</th>
-                            <th>Status</th>
-                            <th>Beleške</th>
-                            <th style={{ textAlign: 'right' }}>Akcije</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {historyList.map((a: any) => {
-                            const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
-                            const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
-                            const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
-                            const hoursDiff =
-                              hasEndHours && hasStartHours
-                                ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
-                                : null;
-
-                            return (
-                              <tr key={a.id}>
-                                <td>
-                                  <strong>{dateStr}</strong>
-                                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                    {new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    })}
-                                  </div>
-                                </td>
-                                <td>
-                                  <strong>{a.machine?.name}</strong>
-                                </td>
-                                <td>{a.worker?.name}</td>
-                                <td>{hasStartHours ? `${a.startHours} rh` : '-'}</td>
-                                <td>{hasEndHours ? `${a.endHours} rh` : '-'}</td>
-                                <td>
-                                  {hoursDiff !== null ? (
-                                    <strong style={{ color: '#2563eb' }}>+{hoursDiff} rh</strong>
-                                  ) : a.status === 'ZADUZENA' ? (
-                                    <span style={{ color: '#d97706' }}>U toku</span>
-                                  ) : (
-                                    <span style={{ color: 'var(--text-muted)' }}>-</span>
-                                  )}
-                                </td>
-                                <td>
-                                  {a.startFuelLiters !== null && a.startFuelLiters !== undefined ? (
-                                    <span>
-                                      {a.startFuelLiters} L {a.endFuelLiters !== null && a.endFuelLiters !== undefined ? `→ ${a.endFuelLiters} L` : ''}
-                                      {a.endFuelLiters !== null && a.endFuelLiters !== undefined && Number(a.startFuelLiters) >= Number(a.endFuelLiters) ? (
-                                        <span style={{ fontSize: '0.75rem', color: '#16a34a', marginLeft: '5px', fontWeight: 600 }}>
-                                          (-{Math.round((Number(a.startFuelLiters) - Number(a.endFuelLiters)) * 10) / 10} L)
-                                        </span>
-                                      ) : null}
-                                    </span>
-                                  ) : a.endFuelLiters !== null && a.endFuelLiters !== undefined ? (
-                                    <span>
-                                      {a.endFuelLiters} L
-                                    </span>
-                                  ) : a.startFuelLevel !== null && a.startFuelLevel !== undefined ? (
-                                    <span>
-                                      {a.startFuelLevel}% {a.endFuelLevel !== null ? `→ ${a.endFuelLevel}%` : ''}
-                                    </span>
-                                  ) : (
-                                    '-'
-                                  )}
-                                </td>
-                                <td>
-                                  <span
-                                    className={`${styles.statusBadge} ${
-                                      a.status === 'ZADUZENA'
-                                        ? styles.statusBadgeActive
-                                        : a.status === 'RAZDUZENA'
-                                          ? styles.statusBadgeReturned
-                                          : styles.statusBadgeBroken
-                                    }`}
-                                  >
-                                    {a.status === 'ZADUZENA'
-                                      ? 'Zadužena'
-                                      : a.status === 'RAZDUZENA'
-                                        ? 'Razdužena'
-                                        : 'Pokvarena'}
-                                  </span>
-                                </td>
-                                <td style={{ maxWidth: 220, color: 'var(--text-secondary)' }}>
-                                  {a.returnNotes || a.assignNotes || '-'}<PhotoAttachment url={a.photoUrl} />
-                                </td>
-                                <td style={{ textAlign: 'right' }}>
-                                  <div className={styles.rowActions} style={{ justifyContent: 'flex-end' }}>
-                                    {isManager || (isOperator && isSameCalendarDay(a.assignedAt)) ? (
-                                      <button
-                                        className={styles.btnIcon}
-                                        title="Izmeni unos zaduženja"
-                                        onClick={() => handleOpenEdit(a)}
-                                      >
-                                        <Pencil size={14} />
-                                      </button>
-                                    ) : isOperator ? (
-                                      <span
-                                        style={{
-                                          fontSize: '0.72rem',
-                                          color: 'var(--text-muted)',
-                                          fontStyle: 'italic',
-                                        }}
-                                        title="Istekao rok za izmenu (dozvoljeno samo na dan zaduženja)"
-                                      >
-                                        Zaključano
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* Mobile View: Responsive Cards */}
-                  <div className={styles.mobileCardsView}>
-                    {historyList.map((a: any) => {
-                      const dateStr = new Date(a.assignedAt).toLocaleDateString('sr-RS');
-                      const timeStr = new Date(a.assignedAt).toLocaleTimeString('sr-RS', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      });
-                      const hasEndHours = a.endHours !== null && a.endHours !== undefined && a.endHours !== '';
-                      const hasStartHours = a.startHours !== null && a.startHours !== undefined && a.startHours !== '';
-                      const hoursDiff =
-                        hasEndHours && hasStartHours
-                          ? Math.round((Number(a.endHours) - Number(a.startHours)) * 10) / 10
-                          : null;
-
-                      const canEdit = isManager || (isOperator && isSameCalendarDay(a.assignedAt));
-
-                      return (
-                        <div key={a.id} className={styles.historyCard}>
-                          <div className={styles.historyCardHeader}>
-                            <div>
-                              <div className={styles.historyCardTitle}>
-                                <Tractor size={18} color="#d97706" />
-                                <span>{a.machine?.name}</span>
-                              </div>
-                              <div className={styles.historyCardSub}>
-                                <User size={12} /> {a.worker?.name} &bull; <Clock size={12} /> {dateStr} u {timeStr}
-                              </div>
-                            </div>
-                            <span
-                              className={`${styles.statusBadge} ${
-                                a.status === 'ZADUZENA'
-                                  ? styles.statusBadgeActive
-                                  : a.status === 'RAZDUZENA'
-                                    ? styles.statusBadgeReturned
-                                    : styles.statusBadgeBroken
-                              }`}
-                            >
-                              {a.status === 'ZADUZENA'
-                                ? 'Zadužena'
-                                : a.status === 'RAZDUZENA'
-                                  ? 'Razdužena'
-                                  : 'Pokvarena'}
-                            </span>
-                          </div>
-
-                          <div className={styles.historyCardStats}>
-                            <div className={styles.historyStatBox}>
-                              <span className={styles.historyStatLabel}>Radni sati</span>
-                              <div className={styles.historyStatValue}>
-                                {hasStartHours ? `${a.startHours} rh` : '-'}
-                                {hasEndHours ? ` → ${a.endHours} rh` : ''}
-                                {hoursDiff !== null && (
-                                  <span className={styles.hoursDiffBadge}>+{hoursDiff} rh</span>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className={styles.historyStatBox}>
-                              <span className={styles.historyStatLabel}>Gorivo</span>
-                              <div className={styles.historyStatValue}>
-                                {a.startFuelLiters !== null && a.startFuelLiters !== undefined ? (
-                                  <span>
-                                    {a.startFuelLiters} L {a.endFuelLiters !== null && a.endFuelLiters !== undefined ? `→ ${a.endFuelLiters} L` : ''}
-                                    {a.endFuelLiters !== null && a.endFuelLiters !== undefined && Number(a.startFuelLiters) >= Number(a.endFuelLiters) ? (
-                                      <span className={styles.fuelDiffBadge}>
-                                        (-{Math.round((Number(a.startFuelLiters) - Number(a.endFuelLiters)) * 10) / 10} L)
-                                      </span>
-                                    ) : null}
-                                  </span>
-                                ) : a.endFuelLiters !== null && a.endFuelLiters !== undefined ? (
-                                  <span>{a.endFuelLiters} L</span>
-                                ) : (
-                                  '-'
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <PhotoAttachment url={a.photoUrl} />
-                          {(a.returnNotes || a.assignNotes) && (
-                            <div className={styles.historyCardNotes}>
-                              <FileText size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
-                              <span>{a.returnNotes || a.assignNotes}</span>
-                            </div>
-                          )}
-
-                          {canEdit && (
-                            <div className={styles.historyCardFooter}>
-                              <button
-                                type="button"
-                                className={styles.btnEditMobile}
-                                onClick={() => handleOpenEdit(a)}
-                              >
-                                <Pencil size={14} />
-                                <span>Izmeni unos zaduženja</span>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Paginacija za Istorijat Zaduženja (25 po strani sa direktnim unosom) */}
-                  {historyTotal > 0 && (
-                    <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)' }}>
-                      <TablePagination
-                        currentPage={historyPage}
-                        totalPages={historyTotalPages}
-                        onPageChange={(p) => setHistoryPage(p)}
-                        totalItems={historyTotal}
-                        pageSize={25}
-                      />
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
+          <AssignmentHistorySection
+            loading={loadingHistory}
+            historyList={historyList}
+            historyTotal={historyTotal}
+            historyPage={historyPage}
+            historyTotalPages={historyTotalPages}
+            historyPeriod={historyPeriod}
+            historyDateFrom={historyDateFrom}
+            historyDateTo={historyDateTo}
+            historyMachineId={historyMachineId}
+            historyWorkerId={historyWorkerId}
+            historyStatus={historyStatus}
+            historySearch={historySearch}
+            isManager={isManager}
+            isOperator={isOperator}
+            machineOptions={historyMachineFilterOptions}
+            workerOptions={historyWorkerFilterOptions}
+            statusOptions={historyStatusFilterOptions}
+            onPeriodChange={setHistoryPeriod}
+            onDateFromChange={setHistoryDateFrom}
+            onDateToChange={setHistoryDateTo}
+            onMachineChange={setHistoryMachineId}
+            onWorkerChange={setHistoryWorkerId}
+            onStatusChange={setHistoryStatus}
+            onSearchChange={setHistorySearch}
+            onResetFilters={handleResetHistoryFilters}
+            onPageChange={setHistoryPage}
+            onOpenEdit={handleOpenEdit}
+            onShowPhoto={handleShowPhoto}
+          />
         )}
 
         {/* MODAL ZA RAZDUŽIVANJE MAŠINE (CHECKIN) */}
@@ -1985,229 +1459,26 @@ const MasineZaduzenje: React.FC = () => {
 
         {/* MODAL ZA IZMENU ZADUŽENJA */}
         {editModalOpen && editingAssignment && (
-          <div className={styles.modalOverlay} onClick={() => setEditModalOpen(false)}>
-            <div className={styles.modalBox} onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
-              <div className={styles.modalHeader}>
-                <h3 className={styles.modalTitle}>
-                  Izmena Zaduženja: {editingAssignment.machine?.name}
-                </h3>
-                <button className={styles.modalCloseBtn} onClick={() => setEditModalOpen(false)}>
-                  <X size={20} />
-                </button>
-              </div>
+          <EditAssignmentModal
+            key={editingAssignment.id}
+            assignment={editingAssignment}
+            isSaving={updateAssignmentMutation.isPending}
+            onClose={handleCloseEditModal}
+            onOpenMachineUsage={handleOpenUsageFromEdit}
+            onNotify={showToast}
+            onSubmit={handleUpdateAssignmentSubmit}
+          />
+        )}
 
-              <form onSubmit={handleSaveEdit}>
-                <div className={styles.modalBody}>
-                  {/* Info radnik i datum */}
-                  <div
-                    style={{
-                      backgroundColor: 'var(--bg-secondary)',
-                      padding: '0.85rem 1rem',
-                      borderRadius: 10,
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      fontSize: '0.85rem',
-                    }}
-                  >
-                    <span>
-                      Radnik: <strong>{editingAssignment.worker?.name}</strong>
-                    </span>
-                    <span>
-                      Datum: <strong>{new Date(editingAssignment.assignedAt).toLocaleDateString('sr-RS')}</strong>
-                    </span>
-                  </div>
-
-                  {/* Početni i Krajnji radni sati */}
-                  <div className={styles.twoColRow}>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Početni radni sati (rh)</label>
-                      <div className={styles.inputWrapper}>
-                        <input
-                          type="number"
-                          step="0.1"
-                          min="0"
-                          className={`${styles.inputField} ${styles.inputWithBadge}`}
-                          value={editForm.startHours}
-                          onChange={(e) => setEditForm({ ...editForm, startHours: e.target.value })}
-                          required
-                        />
-                        <span className={styles.inputBadge}>rh</span>
-                      </div>
-                    </div>
-
-                    {editingAssignment.status !== 'ZADUZENA' && (
-                      <div className={styles.formGroup}>
-                        <label className={styles.formLabel}>Krajnji radni sati (rh)</label>
-                        <div className={styles.inputWrapper}>
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            className={`${styles.inputField} ${styles.inputWithBadge}`}
-                            value={editForm.endHours}
-                            onChange={(e) => setEditForm({ ...editForm, endHours: e.target.value })}
-                          />
-                          <span className={styles.inputBadge}>rh</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Gorivo na polasku (litara) */}
-                  {(() => {
-                    const tankCap = editingAssignment.machine?.tankCapacityLiters || 200;
-                    return (
-                      <div className={styles.formGroup}>
-                        <div className={styles.labelRow}>
-                          <label className={styles.formLabel} style={{ margin: 0 }}>
-                            Gorivo na polasku (L)
-                          </label>
-                          <span className={styles.capacityHint}>
-                            Maks: {tankCap} L
-                          </span>
-                        </div>
-                        <div className={styles.inputWrapper}>
-                          <input
-                            type="number"
-                            step="1"
-                            min="0"
-                            max={tankCap}
-                            className={`${styles.inputField} ${styles.inputWithBadge}`}
-                            value={editForm.startFuelLiters}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              if (val !== '' && Number(val) > tankCap) {
-                                setEditForm({ ...editForm, startFuelLiters: tankCap });
-                                return;
-                              }
-                              setEditForm({ ...editForm, startFuelLiters: val });
-                            }}
-                            placeholder={`npr. ${tankCap}`}
-                          />
-                          <span className={styles.inputBadge}>
-                            Litara
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Gorivo na povratku (ako je razdužena) */}
-                  {editingAssignment.status !== 'ZADUZENA' && (() => {
-                    const tankCap = editingAssignment.machine?.tankCapacityLiters || 200;
-                    return (
-                      <div className={styles.formGroup}>
-                        <div className={styles.labelRow}>
-                          <label className={styles.formLabel} style={{ margin: 0 }}>
-                            Gorivo na povratku (L)
-                          </label>
-                          <span className={styles.capacityHint}>
-                            Maks: {tankCap} L
-                          </span>
-                        </div>
-                        <div className={styles.inputWrapper}>
-                          <input
-                            type="number"
-                            step="1"
-                            min="0"
-                            max={tankCap}
-                            className={`${styles.inputField} ${styles.inputWithBadge}`}
-                            value={editForm.endFuelLiters}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              if (val !== '' && Number(val) > tankCap) {
-                                setEditForm({ ...editForm, endFuelLiters: tankCap });
-                                return;
-                              }
-                              setEditForm({ ...editForm, endFuelLiters: val });
-                            }}
-                            placeholder={`npr. ${Math.round(tankCap * 0.75)}`}
-                          />
-                          <span className={styles.inputBadge}>
-                            Litara
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Ispravnost mašine (ako je razdužena) */}
-                  {editingAssignment.status !== 'ZADUZENA' && (
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Stanje ispravnosti mašine</label>
-                      <div className={styles.toggleBtnGroup}>
-                        <button
-                          type="button"
-                          className={`${styles.toggleBtn} ${editForm.isOperational ? styles.toggleBtnActiveSuccess : ''}`}
-                          onClick={() => setEditForm({ ...editForm, isOperational: true })}
-                        >
-                          <CheckCircle2 size={16} />
-                          Ispravna
-                        </button>
-                        <button
-                          type="button"
-                          className={`${styles.toggleBtn} ${!editForm.isOperational ? styles.toggleBtnActiveDanger : ''}`}
-                          onClick={() => setEditForm({ ...editForm, isOperational: false })}
-                        >
-                          <AlertCircle size={16} />
-                          Prijavljen kvar
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Napomena pri preuzimanju */}
-                  <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Napomena pri preuzimanju</label>
-                    <input
-                      type="text"
-                      className={styles.inputField}
-                      value={editForm.assignNotes}
-                      onChange={(e) => setEditForm({ ...editForm, assignNotes: e.target.value })}
-                      placeholder="Opciona napomena preuzimanja"
-                    />
-                  </div>
-
-                  {/* Napomena / opis kvara pri povratku */}
-                  {editingAssignment.status !== 'ZADUZENA' && (
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>
-                        {editForm.isOperational ? 'Napomena pri povratku' : 'Opis kvara / problema'}
-                      </label>
-                      <textarea
-                        rows={2}
-                        className={styles.inputField}
-                        value={editForm.returnNotes}
-                        onChange={(e) => setEditForm({ ...editForm, returnNotes: e.target.value })}
-                        placeholder={editForm.isOperational ? 'Opciona napomena' : 'Opišite kvar...'}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <div className={styles.modalFooter}>
-                  <button
-                    type="button"
-                    className={styles.fuelBtn}
-                    style={{ padding: '0.6rem 1rem' }}
-                    onClick={() => setEditModalOpen(false)}
-                  >
-                    Otkaži
-                  </button>
-                  <button
-                    type="submit"
-                    className={styles.btnCheckin}
-                    style={{ width: 'auto', padding: '0.65rem 1.5rem', backgroundColor: '#16a34a' }}
-                    disabled={updateAssignmentMutation.isPending}
-                  >
-                    {updateAssignmentMutation.isPending ? 'Čuvanje...' : 'Sačuvaj Izmene'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
+        {/* MODAL ZA PREGLED FOTOGRAFIJE I DETALJA UPISA */}
+        {photoModalAssignment && (
+          <AssignmentPhotoModal
+            assignment={photoModalAssignment}
+            onClose={handleClosePhotoModal}
+          />
         )}
       </div>
+      {usageId && <MachineUsageModal contextType="assignment" contextId={usageId} onClose={() => setUsageId(null)} />}
     </AppLayout>
   );
 };

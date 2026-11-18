@@ -7,7 +7,7 @@ const resources: Record<string, object> = {
   '/lookup': { chambers: [], allLots: [], activeLots: [], parcels: [], machines: [], workers: [], buyers: [], availablePackagings: [] },
   '/dashboard': { kpi: { totalChambersCount: 0, maxColdStorageBoxes: 0, maxColdStorageKg: 0, totalHarvestedKg: 0 }, chambersSummary: [] },
   '/lots': { lots: [] }, '/harvest': { arrivals: [] }, '/storage': { entries: [] },
-  '/sorting': { sortings: [] }, '/packaging': { packagings: [] },
+  '/processing-history': { rows: [] }, '/sorting': { sortings: [] }, '/packaging': { packagings: [] },
   '/shipment': { shipments: [] }, '/waste': { wastes: [] },
   '/traceability/LOT-1': { lot: { lotNumber: 'LOT-1' }, timeline: [], turas: [] },
 };

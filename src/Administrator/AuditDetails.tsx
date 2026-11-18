@@ -35,13 +35,16 @@ function Value({ value }: { value: unknown }) {
 export default function AuditDetails({ id, onClose }: { id: string; onClose: () => void }) {
   const closeButton = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
     closeButton.current?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') onCloseRef.current();
       if (event.key === 'Tab') {
         const controls = dialog.current?.querySelectorAll<HTMLElement>('button, [tabindex="0"]');
         if (!controls?.length) return;
@@ -52,11 +55,14 @@ export default function AuditDetails({ id, onClose }: { id: string; onClose: () 
     };
     document.addEventListener('keydown', keydown);
     return () => { document.removeEventListener('keydown', keydown); document.body.style.overflow = previousOverflow; previousFocus?.focus(); };
-  }, [id, onClose]);
+  }, [id]);
   const { data, isLoading, error } = useQuery({
     queryKey: ['audit-detail', id],
-    queryFn: async () => {
-      const res = await fetch(`http://localhost:5000/api/audit-logs/${encodeURIComponent(id)}`, { credentials: 'include' });
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`http://localhost:5000/api/audit-logs/${encodeURIComponent(id)}`, {
+        credentials: 'include',
+        signal,
+      });
       if (!res.ok) throw new Error('Detalji događaja nisu dostupni.');
       return res.json();
     },

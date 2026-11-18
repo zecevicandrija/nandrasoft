@@ -19,6 +19,7 @@ interface CustomSelectProps {
   searchable?: boolean;
   disabled?: boolean;
   id?: string;
+  labelledBy?: string;
   className?: string;
   triggerClassName?: string;
   icon?: React.ReactNode;
@@ -33,6 +34,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   searchable = true,
   disabled = false,
   id,
+  labelledBy,
   className,
   triggerClassName,
   icon,
@@ -129,6 +131,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
         className={`${styles.customSelectTrigger} ${
           isOpen ? styles.customSelectTriggerOpen : ''
         } ${triggerClassName || ''}`}
+        aria-labelledby={labelledBy}
         aria-haspopup="listbox"
         aria-expanded={isOpen}
       >

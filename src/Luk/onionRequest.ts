@@ -2,7 +2,7 @@ import { operationalRequest } from '../lib/operationalQueries.ts';
 
 const collections: Record<string, string> = {
   '/lots': 'lots', '/harvest': 'arrivals', '/storage': 'entries', '/sorting': 'sortings',
-  '/packaging': 'packagings', '/shipment': 'shipments', '/waste': 'wastes',
+  '/processing-history': 'rows', '/packaging': 'packagings', '/shipment': 'shipments', '/waste': 'wastes',
 };
 
 export async function onionRequest(path: string, signal: AbortSignal): Promise<any> {

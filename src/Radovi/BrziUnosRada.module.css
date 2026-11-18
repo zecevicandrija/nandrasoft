@@ -1,5 +1,11 @@
 /* ===== BRZI UNOS RADA SA NJIVE (TOUCH OPTIMIZED) ===== */
 
+.cancelRemainderOption { display: flex; align-items: flex-start; gap: .75rem; padding: 1rem; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-secondary); cursor: pointer; }
+.cancelRemainderOption input { width: 18px; height: 18px; margin: .15rem 0 0; accent-color: #10b981; flex-shrink: 0; }
+.cancelRemainderOption span { display: flex; flex-direction: column; gap: .25rem; }
+.cancelRemainderOption strong { color: var(--text-primary); font-size: .82rem; }
+.cancelRemainderOption small { color: var(--text-secondary); font-size: .75rem; line-height: 1.6; }
+
 .mobileContainer {
   max-width: 640px;
   margin: 0 auto;

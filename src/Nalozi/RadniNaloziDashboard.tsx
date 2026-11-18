@@ -1,33 +1,23 @@
+import OtherOrderCompletion from '../components/OtherOrderCompletion';
+import MachineUsageModal from '../components/MachineUsageModal';
+import MachineUsageAction from '../components/MachineUsageAction';
 import { PhotoUpload } from '../components/PhotoUpload';
 import WorkMaterialsEditor from '../components/WorkMaterialsEditor';
-import { materialPayload, materialLabels, materialUnits, type WorkMaterial, type MaterialOperation } from '../lib/workMaterials';
+import { materialPayload, type WorkMaterial, type MaterialOperation } from '../lib/workMaterials';
 import { ContractorSelect } from '../components/ContractorSelect';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { operationalQueryOptions, operationalKey } from '../lib/operationalQueries';
 import QueryErrorNotice from '../components/QueryErrorNotice';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import SubmissionRecovery from '../components/SubmissionRecovery';
-import React, { useState, useEffect, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ClipboardList,
   Plus,
-  Tractor,
-  Wrench,
-  User,
-  MapPin,
-  Clock,
   X,
+  Clock,
   Play,
-  KeyRound,
-  Fuel,
-  AlertCircle,
   Loader2,
-  Pencil,
-  Info,
-  RotateCcw,
-  AlertTriangle,
-  Trash2,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -36,14 +26,14 @@ import {
   CheckCircle2,
   Filter,
   Layers,
-  Handshake,
-  FlaskConical,
-  Sprout,
-  Camera,
+  Trash2,
 } from 'lucide-react';
 import AppLayout from '../components/Layout/AppLayout';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
 import OrderDetailsModal from './OrderDetailsModal';
+import OrderCard from './OrderCard';
+import OrderAcceptModal from './OrderAcceptModal';
+import OrderConfirmModals from './OrderConfirmModals';
 import CustomSelect, { type CustomSelectOption } from '../components/CustomSelect/CustomSelect';
 import { useSession } from '../lib/auth-client';
 import styles from './RadniNaloziDashboard.module.css';
@@ -63,6 +53,7 @@ interface Machine {
   id: string;
   name: string;
   type: string;
+  brandModel?: string | null;
   status: string;
   tankCapacityLiters?: number;
   currentFuelLiters?: number;
@@ -123,13 +114,23 @@ export interface WorkOrder {
     workHours?: number | null;
     status?: string | null;
   };
+  maintenanceId?: string | null;
+  maintenance?: {
+    id: string;
+    serviceType?: 'REDOVAN_SERVIS' | 'GENERALNI_REMONT' | 'KVAR_NJIVA' | string;
+    priority?: string;
+    status?: string;
+  } | null;
   issuedBy?: { id: string; name: string; role: string };
   createdAt?: string;
   updatedAt?: string;
   machineAssignments?: Array<{
     id: string;
     status: string;
-    startFuelLiters?: number;
+    startFuelLiters?: number | null;
+    endFuelLiters?: number | null;
+    voidedAt?: string | null;
+    machine?: { name: string };
     startHours?: number;
     assignedAt?: string;
   }>;
@@ -150,7 +151,53 @@ interface StatsData {
 }
 
 const API = '/api';
-const materialDoseFormatter = new Intl.NumberFormat('sr-Latn-RS', { maximumFractionDigits: 12 });
+
+export const SERVICE_TYPE_LABELS: Record<string, string> = {
+  REDOVAN_SERVIS: 'Redovan servis (zamena ulja/filtera)',
+  GENERALNI_REMONT: 'Generalni remont mehanizacije',
+  KVAR_NJIVA: 'Vanredni kvar sa terena/njive',
+};
+
+const SERVICE_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: 'REDOVAN_SERVIS', label: 'Redovan servis (zamena ulja/filtera)', badge: 'REDOVAN' },
+  { value: 'GENERALNI_REMONT', label: 'Generalni remont mehanizacije', badge: 'REMONT' },
+  { value: 'KVAR_NJIVA', label: 'Vanredni kvar sa terena/njive', badge: 'KVAR', badgeType: 'danger' },
+];
+
+const REMONT_PRIORITY_OPTIONS: CustomSelectOption[] = [
+  { value: 'KRITICNA', label: 'Kritičan prioritet', badge: 'KRITIČNO', badgeType: 'danger', isAlert: true },
+  { value: 'VISOKA', label: 'Visok prioritet', badge: 'VISOK', badgeType: 'warning' },
+  { value: 'SREDNJA', label: 'Srednji prioritet', badge: 'SREDNJI', badgeType: 'default' },
+  { value: 'NISKA', label: 'Nizak prioritet', badge: 'NIZAK', badgeType: 'default' },
+];
+
+const toRemontPriority = (priority?: string) => {
+  if (priority === 'KRITICNO' || priority === 'KRITICNA') return 'KRITICNA';
+  if (priority === 'HITNO' || priority === 'VISOKA') return 'VISOKA';
+  if (priority === 'SREDNJA') return 'SREDNJA';
+  if (priority === 'NISKA') return 'NISKA';
+  return 'VISOKA';
+};
+
+const toStandardPriority = (priority?: string) => {
+  if (priority === 'KRITICNA' || priority === 'KRITICNO') return 'KRITICNO';
+  if (priority === 'VISOKA' || priority === 'HITNO') return 'HITNO';
+  return 'NORMALNO';
+};
+
+const formatLocalYmd = (date: Date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getLocalTodayStr = () => formatLocalYmd(new Date());
+const getLocalTomorrowStr = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return formatLocalYmd(d);
+};
 
 const RadniNaloziDashboard: React.FC = () => {
   const { data: session } = useSession();
@@ -184,18 +231,13 @@ const RadniNaloziDashboard: React.FC = () => {
 
   // Modal za prihvatanje naloga i zaduživanje mašine stanje
   const [selectedOrderToAccept, setSelectedOrderToAccept] = useState<WorkOrder | null>(null);
-  const [acceptFuelLiters, setAcceptFuelLiters] = useState<string | number>('');
-  const [acceptHours, setAcceptHours] = useState<string | number>('');
-  const [acceptNotes, setAcceptNotes] = useState('');
-  const [acceptLoading, setAcceptLoading] = useState(false);
-  const [acceptError, setAcceptError] = useState('');
 
   // Form podaci za novi nalog
-  const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0];
-  const [formData, setFormData] = useState({
-    orderDate: tomorrowStr,
+  const [formData, setFormData] = useState(() => ({
+    orderDate: getLocalTomorrowStr(),
     orderType: 'RAD_NJIVA',
     priority: 'NORMALNO',
+    serviceType: 'REDOVAN_SERVIS',
     workerId: '',
     machineId: '',
     attachmentId: '',
@@ -207,10 +249,10 @@ const RadniNaloziDashboard: React.FC = () => {
     shift: 'PRVA',
     instructions: '',
     photoUrl: null as string | null,
-  });
+  }));
 
   const orderDraft = useDurableSubmission('create-work-order', currentUser?.id, formData,
-    (draft) => { setFormData({ ...draft, photoUrl: draft.photoUrl ?? null, materials: draft.materials ?? [] }); });
+    (draft) => { setFormData({ ...draft, serviceType: draft.serviceType ?? 'REDOVAN_SERVIS', photoUrl: draft.photoUrl ?? null, materials: draft.materials ?? [] }); });
 
   // Modal za izmenu radnog naloga
   const [editingOrder, setEditingOrder] = useState<WorkOrder | null>(null);
@@ -218,6 +260,7 @@ const RadniNaloziDashboard: React.FC = () => {
     orderDate: '',
     orderType: 'RAD_NJIVA',
     priority: 'NORMALNO',
+    serviceType: 'REDOVAN_SERVIS',
     workerId: '',
     machineId: '',
     attachmentId: '',
@@ -234,49 +277,72 @@ const RadniNaloziDashboard: React.FC = () => {
   const [editModalLoading, setEditModalLoading] = useState(false);
   const [editModalError, setEditModalError] = useState('');
 
-  // Modal za potvrdu otkazivanja radnog naloga
+  // Modali za potvrdu akcija nad nalogom
   const [orderToCancel, setOrderToCancel] = useState<WorkOrder | null>(null);
-  const [cancelLoading, setCancelLoading] = useState(false);
-  const [cancelError, setCancelError] = useState('');
-
-  // Modal za ponovno aktiviranje radnog naloga
   const [orderToReactivate, setOrderToReactivate] = useState<WorkOrder | null>(null);
-  const [reactivateLoading, setReactivateLoading] = useState(false);
-  const [reactivateError, setReactivateError] = useState('');
-
-  // Modal za trajno brisanje radnog naloga
   const [orderToDelete, setOrderToDelete] = useState<WorkOrder | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
-  const [deleteError, setDeleteError] = useState('');
 
   const userId = currentUser?.id as string | undefined;
   const queryClient = useQueryClient();
-  const workersQuery = useQuery(operationalQueryOptions<{ workers: Worker[] }>(userId, userRole, 'workers'));
-  const machinesQuery = useQuery(operationalQueryOptions<{ machines: Machine[] }>(userId, userRole, 'machines'));
-  const parcelsQuery = useQuery(operationalQueryOptions<{ parcels: Parcel[] }>(userId, userRole, 'parcels'));
-  const workTypesQuery = useQuery(operationalQueryOptions<{ workTypes: WorkType[] }>(userId, userRole, 'workTypes'));
-  const workers = workersQuery.data?.workers || [];
-  const machines = machinesQuery.data?.machines || [];
-  const parcels = parcelsQuery.data?.parcels || [];
-  const workTypes = workTypesQuery.data?.workTypes || [];
+  const [usageId, setUsageId] = useState<string | null>(null);
+  const [otherCompletionId, setOtherCompletionId] = useState<string | null>(null);
+
+  // Šifarnici su potrebni isključivo menadžerima u modalima za kreiranje/izmenu naloga
+  const needsMasterData = Boolean(userId) && isManager && (isModalOpen || Boolean(editingOrder));
+  const workersQuery = useQuery({
+    ...operationalQueryOptions<{ workers: Worker[] }>(userId, userRole, 'workers'),
+    enabled: needsMasterData,
+  });
+  const machinesQuery = useQuery({
+    ...operationalQueryOptions<{ machines: Machine[] }>(userId, userRole, 'machines'),
+    enabled: needsMasterData,
+  });
+  const parcelsQuery = useQuery({
+    ...operationalQueryOptions<{ parcels: Parcel[] }>(userId, userRole, 'parcels'),
+    enabled: needsMasterData,
+  });
+  const workTypesQuery = useQuery({
+    ...operationalQueryOptions<{ workTypes: WorkType[] }>(userId, userRole, 'workTypes'),
+    enabled: needsMasterData,
+  });
+  const prefetchMasterData = useCallback(() => {
+    if (!userId || !isManager) return;
+    for (const resource of ['workers', 'machines', 'parcels', 'workTypes'] as const) {
+      void queryClient.prefetchQuery(operationalQueryOptions(userId, userRole, resource));
+    }
+  }, [queryClient, userId, userRole, isManager]);
+
+  const workers = useMemo(() => workersQuery.data?.workers || [], [workersQuery.data?.workers]);
+  const machines = useMemo(() => machinesQuery.data?.machines || [], [machinesQuery.data?.machines]);
+  const parcels = useMemo(() => parcelsQuery.data?.parcels || [], [parcelsQuery.data?.parcels]);
+  const workTypes = useMemo(() => workTypesQuery.data?.workTypes || [], [workTypesQuery.data?.workTypes]);
   const masterQueries = [workersQuery, machinesQuery, parcelsQuery, workTypesQuery];
   const masterFeedback = <>{masterQueries.map((query, index) => query.isError ? <QueryErrorNotice key={index}
     title={['Radnici nisu učitani.', 'Mašine nisu učitane.', 'Parcele nisu učitane.', 'Radne operacije nisu učitane.'][index]}
     error={query.error} pending={query.isFetching} onRetry={() => { void query.refetch(); }} /> : null)}
     {masterQueries.some(query => query.isPending) && <p role="status">Učitavanje šifarnika...</p>}</>;
+
+  const filterDate = datePreset === 'DANAS'
+    ? getLocalTodayStr()
+    : datePreset === 'SUTRA'
+      ? getLocalTomorrowStr()
+      : datePreset === 'CUSTOM'
+        ? customDate
+        : undefined;
+
   const ordersQuery = useQuery(operationalQueryOptions<{ workOrders: WorkOrder[]; pagination: PaginationData; stats: StatsData }>(userId, userRole, 'orders', {
     page, limit: 25,
-    date: datePreset === 'DANAS' ? new Date().toISOString().split('T')[0] : datePreset === 'SUTRA' ? tomorrowStr : datePreset === 'CUSTOM' ? customDate : undefined,
+    date: filterDate,
     status: statusFilter || (!isManager ? 'AKTIVNI' : undefined), type: typeFilter,
   }));
   const orders = ordersQuery.data?.workOrders || [];
   const loading = ordersQuery.isPending;
   const pagination = ordersQuery.data?.pagination || { total: 0, page, limit: 25, totalPages: 1 };
   const stats = ordersQuery.data?.stats || { totalOrders: 0, pendingOrders: 0, inProgressOrders: 0, completedOrders: 0 };
-  const refreshOrders = (targetPage = page) => {
+  const refreshOrders = useCallback((targetPage = page) => {
     if (targetPage !== page) setPage(targetPage);
     void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'orders'), refetchType: targetPage === page ? 'active' : 'none' });
-  };
+  }, [page, queryClient, userId, userRole]);
   useEffect(() => {
     const handleSwMessage = (event: MessageEvent) => {
       if (event.data?.type === 'WORK_ORDER_PUSH_RECEIVED' || event.data?.type === 'WORK_ORDER_PUSH_CLICKED') {
@@ -293,9 +359,29 @@ const RadniNaloziDashboard: React.FC = () => {
     if (photoUploading) return;
     setModalError('');
 
-    if (!replay && !formData.workerId) {
-      setModalError('Molimo izaberite radnika kome se nalog izdaje.');
-      return;
+    if (!replay) {
+      if (!formData.workerId) {
+        setModalError(
+          formData.orderType === 'REMONT_SERVIS'
+            ? 'Molimo izaberite mehaničara / servisera kome se nalog izdaje.'
+            : 'Molimo izaberite radnika kome se nalog izdaje.'
+        );
+        return;
+      }
+      if (formData.orderType === 'REMONT_SERVIS') {
+        if (!formData.machineId) {
+          setModalError('Molimo izaberite mašinu ili priključak za remont.');
+          return;
+        }
+        if (!formData.serviceType) {
+          setModalError('Molimo izaberite tip servisa.');
+          return;
+        }
+        if (formData.instructions.trim().length < 3) {
+          setModalError('Uputstvo i specifikacija posla za mehaničara su obavezni (najmanje 3 karaktera).');
+          return;
+        }
+      }
     }
 
     setModalLoading(true);
@@ -303,13 +389,14 @@ const RadniNaloziDashboard: React.FC = () => {
     try {
       const payload: any = replay && orderDraft.pending ? orderDraft.pending.payload : {
         ...formData,
-        plannedAreaHa: formData.plannedAreaHa ? parseFloat(formData.plannedAreaHa) : null,
+        serviceType: formData.orderType === 'REMONT_SERVIS' ? formData.serviceType : undefined,
+        plannedAreaHa: formData.orderType === 'RAD_NJIVA' && formData.plannedAreaHa ? parseFloat(formData.plannedAreaHa) : null,
         machineId: formData.machineId || null,
-        attachmentId: formData.attachmentId || null,
+        attachmentId: formData.orderType === 'RAD_NJIVA' ? (formData.attachmentId || null) : null,
         materials: materialPayload(formData.orderType === 'RAD_NJIVA' ? formData.materials : []),
         contractorId: formData.orderType === 'RAD_NJIVA' ? formData.contractorId || null : null,
-        parcelId: formData.parcelId || null,
-        workTypeId: formData.workTypeId || null,
+        parcelId: formData.orderType === 'RAD_NJIVA' ? (formData.parcelId || null) : null,
+        workTypeId: formData.orderType === 'RAD_NJIVA' ? (formData.workTypeId || null) : null,
       };
 
       await orderDraft.request(`${API}/work-orders`, payload);
@@ -318,9 +405,10 @@ const RadniNaloziDashboard: React.FC = () => {
       setIsModalOpen(false);
       // Reset forme
       setFormData({
-        orderDate: tomorrowStr,
+        orderDate: getLocalTomorrowStr(),
         orderType: 'RAD_NJIVA',
         priority: 'NORMALNO',
+        serviceType: 'REDOVAN_SERVIS',
         workerId: '',
         machineId: '',
         attachmentId: '',
@@ -343,135 +431,13 @@ const RadniNaloziDashboard: React.FC = () => {
     }
   };
 
-  // Otvaranje modala za prihvatanje naloga
-  const handleOpenAcceptModal = (order: WorkOrder) => {
-    setSelectedOrderToAccept(order);
-    setAcceptError('');
-    setAcceptFuelLiters(order.machine?.currentFuelLiters ?? '');
-    setAcceptHours(order.machine?.currentHours || 0);
-    setAcceptNotes('');
-  };
-
-  // Potvrda prihvatanja naloga i zaduživanja mašine
-  const handleConfirmAcceptOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedOrderToAccept) return;
-    setAcceptError('');
-
-    const maxTank = selectedOrderToAccept.machine?.tankCapacityLiters;
-    const fuelNum = parseFloat(String(acceptFuelLiters));
-    if (maxTank && fuelNum > maxTank) {
-      setAcceptError(`Količina goriva (${fuelNum} L) ne može biti veća od kapaciteta rezervoara mašine (${maxTank} L).`);
-      return;
-    }
-
-    setAcceptLoading(true);
-
-    try {
-      const res = await fetch(`${API}/work-orders/${selectedOrderToAccept.id}/accept`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          startFuelLiters: parseFloat(String(acceptFuelLiters)) || 0,
-          expectedMachineUpdatedAt: selectedOrderToAccept.machine?.updatedAt,
-          startHours: acceptHours !== '' ? parseFloat(String(acceptHours)) : null,
-          notes: acceptNotes,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Greška pri prihvatanju radnog naloga.');
-      }
-
-      setSelectedOrderToAccept(null);
+  const handleConfirmMutated = useCallback((action: 'cancel' | 'reactivate' | 'delete') => {
+    if (action === 'delete' && orders.length === 1 && page > 1) {
+      refreshOrders(page - 1);
+    } else {
       refreshOrders(page);
-    } catch (err: any) {
-      setAcceptError(err.message);
-    } finally {
-      setAcceptLoading(false);
     }
-  };
-
-  // Potvrda otkazivanja radnog naloga iz modala
-  const handleConfirmCancel = async () => {
-    if (!orderToCancel) return;
-    setCancelLoading(true);
-    setCancelError('');
-    try {
-      const res = await fetch(`${API}/work-orders/${orderToCancel.id}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ status: 'OTKAZAN' }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Greška pri otkazivanju radnog naloga.');
-      }
-      setOrderToCancel(null);
-      refreshOrders(page);
-    } catch (err: any) {
-      setCancelError(err.message || 'Greška pri otkazivanju radnog naloga.');
-    } finally {
-      setCancelLoading(false);
-    }
-  };
-
-  // Potvrda ponovnog aktiviranja radnog naloga iz modala
-  const handleConfirmReactivate = async () => {
-    if (!orderToReactivate) return;
-    setReactivateLoading(true);
-    setReactivateError('');
-    try {
-      // Ako nalog ima definisanog radnika, prebacujemo ga u DODELJEN, inače PLANIRAN
-      const targetStatus = orderToReactivate.workerId ? 'DODELJEN' : 'PLANIRAN';
-      const res = await fetch(`${API}/work-orders/${orderToReactivate.id}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ status: targetStatus }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Greška pri ponovnom aktiviranju radnog naloga.');
-      }
-      setOrderToReactivate(null);
-      refreshOrders(page);
-    } catch (err: any) {
-      setReactivateError(err.message || 'Greška pri ponovnom aktiviranju radnog naloga.');
-    } finally {
-      setReactivateLoading(false);
-    }
-  };
-
-  // Potvrda trajnog brisanja radnog naloga iz modala
-  const handleConfirmDelete = async () => {
-    if (!orderToDelete) return;
-    setDeleteLoading(true);
-    setDeleteError('');
-    try {
-      const res = await fetch(`${API}/work-orders/${orderToDelete.id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Greška pri brisanju radnog naloga.');
-      }
-      setOrderToDelete(null);
-      if (orders.length === 1 && page > 1) {
-        refreshOrders(page - 1);
-      } else {
-        refreshOrders(page);
-      }
-    } catch (err: any) {
-      setDeleteError(err.message || 'Greška pri brisanju radnog naloga.');
-    } finally {
-      setDeleteLoading(false);
-    }
-  };
+  }, [orders.length, page, refreshOrders]);
 
   // Filtriranje radnika na osnovu tipa naloga:
   // - RAD_NJIVA: samo operateri / traktoristi (isključeni mehaničari i rukovodioci)
@@ -507,6 +473,10 @@ const RadniNaloziDashboard: React.FC = () => {
     setFormData((prev) => ({
       ...prev,
       orderType: newType as any,
+      priority: newType === 'REMONT_SERVIS'
+        ? (prev.orderType !== 'REMONT_SERVIS' && prev.priority === 'NORMALNO' ? 'VISOKA' : toRemontPriority(prev.priority))
+        : toStandardPriority(prev.priority),
+      serviceType: prev.serviceType || 'REDOVAN_SERVIS',
       materials: newType === 'RAD_NJIVA' ? prev.materials : [],
       workerId: isCurrentValid ? prev.workerId : '',
     }));
@@ -519,6 +489,10 @@ const RadniNaloziDashboard: React.FC = () => {
     setEditFormData((prev) => ({
       ...prev,
       orderType: newType as any,
+      priority: newType === 'REMONT_SERVIS'
+        ? (prev.orderType !== 'REMONT_SERVIS' && prev.priority === 'NORMALNO' ? 'VISOKA' : toRemontPriority(prev.priority))
+        : toStandardPriority(prev.priority),
+      serviceType: prev.serviceType || 'REDOVAN_SERVIS',
       materials: newType === 'RAD_NJIVA' ? prev.materials : [],
       workerId: isCurrentValid ? prev.workerId : '',
     }));
@@ -530,7 +504,6 @@ const RadniNaloziDashboard: React.FC = () => {
       { value: '', label: 'Svi tipovi posla' },
       { value: 'RAD_NJIVA', label: 'Rad na njivi' },
       { value: 'REMONT_SERVIS', label: 'Remont & Servis' },
-      { value: 'OSTALO', label: 'Ostalo / Magacin' },
     ],
     []
   );
@@ -560,7 +533,6 @@ const RadniNaloziDashboard: React.FC = () => {
     () => [
       { value: 'RAD_NJIVA', label: 'Rad na njivi', subLabel: 'Rad sa mehanizacijom i oruđima na parcelama' },
       { value: 'REMONT_SERVIS', label: 'Remont & Servis mašine', subLabel: 'Popravke i servis mehanizacije u radionici' },
-      { value: 'OSTALO', label: 'Ostalo', subLabel: 'Magacinski poslovi, transport i pomoćni zadaci' },
     ],
     []
   );
@@ -656,6 +628,24 @@ const RadniNaloziDashboard: React.FC = () => {
     ];
   }, [machines]);
 
+  // Opcije za mašine u režimu Remont & Servis (usklađeno sa /masine-kvarovi)
+  const remontMachineOptions: CustomSelectOption[] = useMemo(() => {
+    return machines.map((m) => {
+      let bType: 'default' | 'danger' | 'warning' | 'success' = 'default';
+      if (m.status === 'U_KVARU') bType = 'danger';
+      else if (m.status === 'SERVIS') bType = 'warning';
+      else if (m.status === 'SLOBODNA') bType = 'success';
+
+      return {
+        value: m.id,
+        label: m.name,
+        subLabel: `${m.brandModel || m.type} • Trenutno: ${m.status}`,
+        badge: m.status,
+        badgeType: bType,
+      };
+    });
+  }, [machines]);
+
   // Opcije za priključke kod kreiranja
   const attachmentOptions: CustomSelectOption[] = useMemo(() => {
     const attachments = machines.filter((m) => m.type === 'PRIKLJUCAK');
@@ -717,17 +707,27 @@ const RadniNaloziDashboard: React.FC = () => {
   }, [workTypes]);
 
   // Za direktore i rukovodioce uvek su otključani svi radni nalozi za izmenu (i završeni i prethodni datumi)
-  const canEditOrder = (_order?: WorkOrder) => {
+  const canEditOrder = useCallback(() => {
     return isManager;
-  };
+  }, [isManager]);
 
-  const handleOpenEditModal = (order: WorkOrder) => {
+  const handleCloseAcceptModal = useCallback(() => setSelectedOrderToAccept(null), []);
+  const handleOrderAccepted = useCallback(() => {
+    refreshOrders(page);
+    void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'machines') });
+  }, [page, queryClient, refreshOrders, userId, userRole]);
+  const handleCloseCancelModal = useCallback(() => setOrderToCancel(null), []);
+  const handleCloseReactivateModal = useCallback(() => setOrderToReactivate(null), []);
+  const handleCloseDeleteModal = useCallback(() => setOrderToDelete(null), []);
+
+  const handleOpenEditModal = useCallback((order: WorkOrder) => {
     setEditingOrder(order);
     setEditModalError('');
     setEditFormData({
       orderDate: order.orderDate ? new Date(order.orderDate).toISOString().split('T')[0] : '',
       orderType: order.orderType,
-      priority: order.priority || 'NORMALNO',
+      priority: order.orderType === 'REMONT_SERVIS' ? toRemontPriority(order.priority) : (order.priority || 'NORMALNO'),
+      serviceType: order.maintenance?.serviceType || 'REDOVAN_SERVIS',
       workerId: order.workerId,
       machineId: order.machineId || '',
       attachmentId: order.attachmentId || '',
@@ -741,7 +741,7 @@ const RadniNaloziDashboard: React.FC = () => {
       photoUrl: order.photoUrl || null,
       status: order.status,
     });
-  };
+  }, []);
 
   const handleUpdateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -749,8 +749,27 @@ const RadniNaloziDashboard: React.FC = () => {
     setEditModalError('');
 
     if (!editFormData.workerId) {
-      setEditModalError('Molimo izaberite radnika kome se nalog izdaje.');
+      setEditModalError(
+        editFormData.orderType === 'REMONT_SERVIS'
+          ? 'Molimo izaberite mehaničara / servisera kome se nalog izdaje.'
+          : 'Molimo izaberite radnika kome se nalog izdaje.'
+      );
       return;
+    }
+
+    if (editFormData.orderType === 'REMONT_SERVIS') {
+      if (!editFormData.machineId) {
+        setEditModalError('Molimo izaberite mašinu ili priključak za remont.');
+        return;
+      }
+      if (!editFormData.serviceType) {
+        setEditModalError('Molimo izaberite tip servisa.');
+        return;
+      }
+      if (editFormData.instructions.trim().length < 3) {
+        setEditModalError('Uputstvo i specifikacija posla za mehaničara su obavezni (najmanje 3 karaktera).');
+        return;
+      }
     }
 
     setEditModalLoading(true);
@@ -758,13 +777,14 @@ const RadniNaloziDashboard: React.FC = () => {
     try {
       const payload: any = {
         ...editFormData,
-        plannedAreaHa: editFormData.plannedAreaHa ? parseFloat(editFormData.plannedAreaHa) : null,
+        serviceType: editFormData.orderType === 'REMONT_SERVIS' ? editFormData.serviceType : undefined,
+        plannedAreaHa: editFormData.orderType === 'RAD_NJIVA' && editFormData.plannedAreaHa ? parseFloat(editFormData.plannedAreaHa) : null,
         machineId: editFormData.machineId || null,
-        attachmentId: editFormData.attachmentId || null,
+        attachmentId: editFormData.orderType === 'RAD_NJIVA' ? (editFormData.attachmentId || null) : null,
         materials: materialPayload(editFormData.orderType === 'RAD_NJIVA' ? editFormData.materials : []),
         contractorId: editFormData.orderType === 'RAD_NJIVA' ? editFormData.contractorId || null : null,
-        parcelId: editFormData.parcelId || null,
-        workTypeId: editFormData.workTypeId || null,
+        parcelId: editFormData.orderType === 'RAD_NJIVA' ? (editFormData.parcelId || null) : null,
+        workTypeId: editFormData.orderType === 'RAD_NJIVA' ? (editFormData.workTypeId || null) : null,
       };
 
       const res = await fetch(`${API}/work-orders/${editingOrder.id}`, {
@@ -922,14 +942,17 @@ const RadniNaloziDashboard: React.FC = () => {
           </div>
 
           {isManager && (
-            <button className={styles.newOrderBtn} onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}>
+            <button
+              className={styles.newOrderBtn}
+              onMouseEnter={prefetchMasterData}
+              onFocus={prefetchMasterData}
+              onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}
+            >
               <Plus size={18} />
               <span>Izdaj novi nalog</span>
             </button>
           )}
         </div>
-
-        {!isModalOpen && !editingOrder && masterFeedback}
 
         {/* KPI Grid */}
         {ordersQuery.isSuccess && <div className={styles.kpiGrid}>
@@ -1073,7 +1096,12 @@ const RadniNaloziDashboard: React.FC = () => {
               <strong>Nema izdatih radnih naloga</strong>
               <p>Za izabrani period i filtere trenutno nema evidentiranih radnih naloga.</p>
               {isManager && (
-                <button className={styles.newOrderBtn} onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}>
+                <button
+                  className={styles.newOrderBtn}
+                  onMouseEnter={prefetchMasterData}
+                  onFocus={prefetchMasterData}
+                  onClick={() => { orderDraft.resume(); setIsModalOpen(true); }}
+                >
                   <Plus size={18} /> Izdaj novi nalog
                 </button>
               )}
@@ -1081,304 +1109,23 @@ const RadniNaloziDashboard: React.FC = () => {
           ) : (
           <>
             <div className={styles.ordersGrid}>
-              {orders.map((order) => {
-                const isRemont = order.orderType === 'REMONT_SERVIS';
-
-                return (
-                  <div key={order.id} className={styles.orderCard}>
-                    {/* Card Header */}
-                    <div className={styles.cardHeader}>
-                      <div className={styles.headerLeft}>
-                        <button
-                          type="button"
-                          className={styles.orderNumberBadge}
-                          onClick={() => setDetailsOrder(order)}
-                          title="Kliknite za prikaz slika i detalja naloga"
-                        >
-                          #{order.orderNumber}
-                        </button>
-                        <div className={styles.orderDateRow}>
-                          <Calendar size={13} className={styles.dateIcon} />
-                          <span>
-                            {new Date(order.orderDate).toLocaleDateString('sr-RS', {
-                              weekday: 'short',
-                              day: 'numeric',
-                              month: 'numeric',
-                              year: 'numeric',
-                            })}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className={styles.headerBadges}>
-                        <div className={styles.statusAndPriority}>
-                          {order.priority === 'KRITICNO' && (
-                            <span className={styles.priorityBadgeKriticno}>⚡ Kritično</span>
-                          )}
-                          {order.priority === 'HITNO' && (
-                            <span className={styles.priorityBadgeHitno}>⚠️ Hitno</span>
-                          )}
-                          <span className={`${styles.statusBadge} ${styles[`status${order.status}`]}`}>
-                            <span className={styles.statusDot} />
-                            {order.status === 'DODELJEN'
-                              ? 'Dodeljen'
-                              : order.status === 'U_TOKU'
-                                ? 'U toku'
-                                : order.status === 'ZAVRSEN'
-                                  ? 'Završen'
-                                  : order.status === 'OTKAZAN'
-                                    ? 'Otkazan'
-                                    : 'Planiran'}
-                          </span>
-                        </div>
-                        <span className={isRemont ? styles.typeBadgeRemont : styles.typeBadgeNjiva}>
-                          {isRemont ? (
-                            <>
-                              <Wrench size={12} />
-                              <span>Remont / Servis</span>
-                            </>
-                          ) : (
-                            <>
-                              <Tractor size={12} />
-                              <span>Rad na njivi</span>
-                            </>
-                          )}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Card Body */}
-                    <div className={styles.orderBody}>
-                      <div className={styles.metaRowsList}>
-                        <div className={styles.orderRow}>
-                          <div className={styles.rowIconWrapper}>
-                            <User size={15} />
-                          </div>
-                          <div className={styles.rowContent}>
-                            <span className={styles.rowLabel}>Radnik:</span>
-                            <strong className={styles.rowValue}>{order.worker?.name}</strong>
-                          </div>
-                        </div>
-
-                        {order.machine && (
-                          <div className={styles.orderRow}>
-                            <div className={styles.rowIconWrapper}>
-                              <Tractor size={15} />
-                            </div>
-                            <div className={styles.rowContent}>
-                              <span className={styles.rowLabel}>Mašina:</span>
-                              <span className={styles.rowValue}>
-                                <strong>{order.machine?.name}</strong>
-                                {order.attachment && (
-                                  <span className={styles.attachmentText}> + {order.attachment.name}</span>
-                                )}
-                              </span>
-                            </div>
-                          </div>
-                        )}
-
-                        {order.contractor && (
-                          <div className={styles.orderRow}>
-                            <div className={styles.rowIconWrapper}><Handshake size={15} aria-hidden="true" /></div>
-                            <div className={styles.rowContent}>
-                              <span className={styles.rowLabel}>Kooperant:</span>
-                              <strong className={styles.rowValue}>{order.contractor.name}</strong>
-                            </div>
-                          </div>
-                        )}
-                        {order.parcel && (
-                          <div className={styles.orderRow}>
-                            <div className={styles.rowIconWrapper}>
-                              <MapPin size={15} />
-                            </div>
-                            <div className={styles.rowContent}>
-                              <span className={styles.rowLabel}>Parcela:</span>
-                              <strong className={styles.rowValue}>{order.parcel?.name}</strong>
-                            </div>
-                          </div>
-                        )}
-
-                        {order.workType && (
-                          <div className={`${styles.orderRow} ${styles.jobRow}`}>
-                            <div className={styles.rowIconWrapper}>
-                              <Wrench size={15} />
-                            </div>
-                            <div className={styles.jobDetails}>
-                              <div className={styles.jobHeader}>
-                                <div className={styles.jobTitle}>
-                                  <span className={styles.rowLabel}>Posao</span>
-                                  <strong>{order.workType.name}</strong>
-                                </div>
-                                {order.plannedAreaHa != null && order.plannedAreaHa > 0 && (
-                                  <span className={styles.planBadge} title="Planirana površina">{materialDoseFormatter.format(order.plannedAreaHa)} ha</span>
-                                )}
-                              </div>
-                              {!!order.materials?.length && <div className={styles.jobMaterials}>
-                                <span className={styles.materialsLabel}>{materialLabels[order.materials[0].kind]}</span>
-                                <ul className={styles.materialList}>
-                                  {order.materials.map(item => {
-                                    const MaterialIcon = item.kind === 'CHEMICAL' ? FlaskConical : Sprout;
-                                    return <li className={styles.materialItem} key={`${item.kind}:${item.productId}`}>
-                                      <MaterialIcon size={14} className={styles.materialIcon} aria-hidden="true" />
-                                      <div className={styles.materialDetails}>
-                                        <div className={styles.materialHeading}>
-                                          <span className={styles.materialName}>{item.name}</span>
-                                          {item.dosePerHa != null && <span className={styles.materialDose} aria-label={`Doza: ${materialDoseFormatter.format(item.dosePerHa)} ${materialUnits[item.unit] || item.unit} po hektaru`}>
-                                            {materialDoseFormatter.format(item.dosePerHa)} {materialUnits[item.unit] || item.unit}/ha
-                                          </span>}
-                                        </div>
-                                        {item.notes && <p className={styles.materialNote}>{item.notes}</p>}
-                                      </div>
-                                    </li>;
-                                  })}
-                                </ul>
-                              </div>}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {order.machineAssignments &&
-                        order.machineAssignments.length > 0 &&
-                        order.machineAssignments[0].startFuelLiters !== undefined &&
-                        order.machineAssignments[0].startFuelLiters !== null && (
-                          <div className={styles.fuelNotice}>
-                            <Fuel size={14} className={styles.fuelIcon} />
-                            <span>
-                              Zaduženo gorivo: <strong>{order.machineAssignments[0].startFuelLiters} L</strong>
-                            </span>
-                          </div>
-                        )}
-
-                      {(() => {
-                        const hasPhotos = Boolean(order.photoUrl || order.fieldWork?.photoUrl);
-                        const photoCount = (order.photoUrl ? 1 : 0) + (order.fieldWork?.photoUrl ? 1 : 0);
-                        if (!hasPhotos) return null;
-                        return (
-                          <button
-                            type="button"
-                            className={styles.viewPhotosBtn}
-                            onClick={() => setDetailsOrder(order)}
-                            title="Pregledajte fotografije i detalje ovog radnog naloga"
-                          >
-                            <Camera size={15} />
-                            <span>Pogledaj slike i detalje</span>
-                            <span className={styles.photoCountBadge}>
-                              {photoCount} {photoCount === 1 ? 'slika' : 'slike'}
-                            </span>
-                          </button>
-                        );
-                      })()}
-                      {order.instructions && (
-                        <div className={styles.instructionsBox}>
-                          <span className={styles.instructionsQuote}>“</span>
-                          <span>{order.instructions}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Card Footer / Akcije */}
-                    <div className={styles.orderCardFooter}>
-                      {/* Primarna radna akcija */}
-                      <div className={styles.primaryActionWrapper}>
-                        {!isRemont &&
-                          (order.status === 'PLANIRAN' || order.status === 'DODELJEN') && (
-                            <button
-                              type="button"
-                              className={styles.acceptOrderBtn}
-                              onClick={() => handleOpenAcceptModal(order)}
-                            >
-                              <KeyRound size={16} />
-                              <span>Prihvati nalog i zaduži</span>
-                            </button>
-                          )}
-
-                        {!isRemont && order.status === 'U_TOKU' && (
-                          <Link
-                            to={`/radovi/novi?orderId=${order.id}&parcelId=${order.parcelId || ''}&machineId=${order.machineId || ''
-                              }&attachmentId=${order.attachmentId || ''}&workTypeId=${order.workTypeId || ''
-                              }&workerId=${order.workerId}`}
-                            className={styles.startWorkBtn}
-                          >
-                            <Play size={16} />
-                            <span>Prijavi rad i razduži</span>
-                          </Link>
-                        )}
-
-                        {isRemont && order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
-                          <Link
-                            to={`/masine-kvarovi?orderId=${order.id}&machineId=${order.machineId || ''}`}
-                            className={styles.workshopBtn}
-                          >
-                            <Wrench size={16} />
-                            <span>Otvori u radionici</span>
-                          </Link>
-                        )}
-                      </div>
-
-                      {/* Menadžerske akcije */}
-                      {isManager && (
-                        <div className={styles.managerActionsWrapper}>
-                          {canEditOrder(order) && (
-                            <button
-                              type="button"
-                              className={styles.editBtn}
-                              onClick={() => handleOpenEditModal(order)}
-                              title="Izmeni radni nalog"
-                            >
-                              <Pencil size={14} />
-                              <span>Izmeni</span>
-                            </button>
-                          )}
-
-                          {order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
-                            <button
-                              type="button"
-                              className={styles.cancelBtn}
-                              onClick={() => {
-                                setCancelError('');
-                                setOrderToCancel(order);
-                              }}
-                              title="Otkaži nalog"
-                            >
-                              <X size={14} />
-                              <span>Otkaži</span>
-                            </button>
-                          )}
-
-                          {order.status === 'OTKAZAN' && (
-                            <button
-                              type="button"
-                              className={styles.reactivateBtn}
-                              onClick={() => {
-                                setReactivateError('');
-                                setOrderToReactivate(order);
-                              }}
-                              title="Ponovo aktiviraj nalog"
-                            >
-                              <RotateCcw size={14} />
-                              <span>Aktiviraj</span>
-                            </button>
-                          )}
-
-                          <button
-                            type="button"
-                            className={styles.deleteBtn}
-                            onClick={() => {
-                              setDeleteError('');
-                              setOrderToDelete(order);
-                            }}
-                            title="Trajno obriši nalog"
-                          >
-                            <Trash2 size={14} />
-                            <span>Obriši</span>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {orders.map((order) => (
+                <OrderCard
+                  key={order.id}
+                  order={order}
+                  isManager={isManager}
+                  canEdit={isManager}
+                  onDetails={setDetailsOrder}
+                  onAccept={setSelectedOrderToAccept}
+                  onOtherComplete={setOtherCompletionId}
+                  onUsage={setUsageId}
+                  onEdit={handleOpenEditModal}
+                  onEditPrefetch={prefetchMasterData}
+                  onCancel={setOrderToCancel}
+                  onReactivate={setOrderToReactivate}
+                  onDelete={setOrderToDelete}
+                />
+              ))}
             </div>
 
             {/* Pagination Controls */}
@@ -1408,227 +1155,322 @@ const RadniNaloziDashboard: React.FC = () => {
 
               <form onSubmit={handleCreateOrder} className={styles.modalForm}>
                 {masterFeedback}
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Tip naloga *</label>
-                    </div>
-                    <CustomSelect
-                      value={formData.orderType}
-                      onChange={handleCreateOrderTypeChange}
-                      options={orderTypeOptions}
-                      placeholder="— Izaberite tip naloga —"
-                      searchable={false}
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Prioritet *</label>
-                    </div>
-                    <CustomSelect
-                      value={formData.priority}
-                      onChange={(val) => setFormData((prev) => ({ ...prev, priority: val }))}
-                      options={priorityOptions}
-                      placeholder="— Izaberite prioritet —"
-                      searchable={false}
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Datum za kada se planira *</label>
-                    </div>
-                    <input
-                      type="date"
-                      className={styles.modalInput}
-                      value={formData.orderDate}
-                      onChange={(e) => setFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
-                      required
-                    />
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Radna smena</label>
-                    </div>
-                    <CustomSelect
-                      value={formData.shift}
-                      onChange={(val) => setFormData((prev) => ({ ...prev, shift: val as any }))}
-                      options={shiftOptions}
-                      placeholder="— Izaberite smenu —"
-                      searchable={false}
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroupFull}>
-                    <div className={styles.formLabelRow}>
-                      <label>
-                        {formData.orderType === 'REMONT_SERVIS'
-                          ? 'Dodeljeni mehaničar / serviser *'
-                          : formData.orderType === 'RAD_NJIVA'
-                            ? 'Dodeljeni operater / traktorista *'
-                            : 'Radnik kome se nalog izdaje *'}
-                      </label>
-                    </div>
-                    <CustomSelect
-                      value={formData.workerId}
-                      onChange={(val) => setFormData((prev) => ({ ...prev, workerId: val }))}
-                      options={createWorkerOptions}
-                      placeholder={
-                        formData.orderType === 'REMONT_SERVIS'
-                          ? '— Izaberi mehaničara iz baze —'
-                          : formData.orderType === 'RAD_NJIVA'
-                            ? '— Izaberi operatera iz baze —'
-                            : '— Izaberi radnika iz baze —'
-                      }
-                      searchable
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Glavna mašina / Traktor</label>
-                    </div>
-                    <CustomSelect
-                      value={formData.machineId}
-                      onChange={(val) => setFormData((prev) => ({ ...prev, machineId: val }))}
-                      options={machineOptions}
-                      placeholder="— Izaberi mašinu —"
-                      searchable
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-
-                  {formData.orderType === 'RAD_NJIVA' && (
-                    <div className={styles.formGroup}>
+                {formData.orderType === 'REMONT_SERVIS' ? (
+                  <>
+                    <div className={styles.formGroupFull}>
                       <div className={styles.formLabelRow}>
-                        <label>Priključak (opciono)</label>
+                        <label>Tip naloga *</label>
                       </div>
                       <CustomSelect
-                        value={formData.attachmentId}
-                        onChange={(val) => setFormData((prev) => ({ ...prev, attachmentId: val }))}
-                        options={attachmentOptions}
-                        placeholder="— Bez priključka / Samohodna —"
+                        value={formData.orderType}
+                        onChange={handleCreateOrderTypeChange}
+                        options={orderTypeOptions}
+                        placeholder="— Izaberite tip naloga —"
+                        searchable={false}
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
+                    </div>
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Mašina ili priključak za remont *</label>
+                      </div>
+                      <CustomSelect
+                        value={formData.machineId}
+                        onChange={(val) => setFormData((prev) => ({ ...prev, machineId: val }))}
+                        options={remontMachineOptions}
+                        placeholder="Izaberite mašinu za remont..."
                         searchable
                         hideTriggerSubLabel={true}
                         triggerClassName={styles.modalFormSelectTrigger}
                       />
                     </div>
-                  )}
-                </div>
 
-                {formData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
-                  <ContractorSelect value={formData.contractorId || ''} onChange={value => setFormData(prev => ({ ...prev, contractorId: value }))} canManage={isManager} />
-                </div>}
-
-                {formData.orderType === 'RAD_NJIVA' && (
-                  <div className={styles.formGrid}>
-                    <div className={styles.formGroup}>
+                    <div className={styles.formGroupFull}>
                       <div className={styles.formLabelRow}>
-                        <label>Parcela / Njiva</label>
-
+                        <label>Dodeljeni mehaničar / serviser *</label>
                       </div>
                       <CustomSelect
-                        value={formData.parcelId}
-                        onChange={(val) => setFormData((prev) => ({ ...prev, parcelId: val }))}
-                        options={parcelOptions}
-                        placeholder="— Izaberi parcelu —"
+                        value={formData.workerId}
+                        onChange={(val) => setFormData((prev) => ({ ...prev, workerId: val }))}
+                        options={createWorkerOptions}
+                        placeholder="Izaberite mehaničara..."
                         searchable
                         hideTriggerSubLabel={true}
                         triggerClassName={styles.modalFormSelectTrigger}
                       />
-                      {isManager && (
-                        <ParcelQuickActions
-                          selectedParcel={parcels.find((p) => p.id === formData.parcelId) || null}
-                          onAddClick={() => {
-                            setParcelQuickTarget('create-order');
-                            setParcelToEdit(null);
-                            setParcelQuickModalOpen(true);
-                          }}
-                          onEditClick={(parcel) => {
-                            setParcelQuickTarget('create-order');
-                            setParcelToEdit(parcel);
-                            setParcelQuickModalOpen(true);
-                          }}
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Tip servisa *</label>
+                        </div>
+                        <CustomSelect
+                          value={formData.serviceType}
+                          onChange={(val) => setFormData((prev) => ({ ...prev, serviceType: val }))}
+                          options={SERVICE_TYPE_OPTIONS}
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
                         />
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Prioritet *</label>
+                        </div>
+                        <CustomSelect
+                          value={formData.priority}
+                          onChange={(val) => setFormData((prev) => ({ ...prev, priority: val }))}
+                          options={REMONT_PRIORITY_OPTIONS}
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Datum planiranog početka *</label>
+                      </div>
+                      <input
+                        type="date"
+                        className={styles.modalInput}
+                        value={formData.orderDate}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
+                        required
+                      />
+                    </div>
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Uputstvo i specifikacija posla za mehaničara *</label>
+                      </div>
+                      <textarea
+                        className={styles.modalTextarea}
+                        placeholder="Npr. Generalni remont ulagača semena, zamena ulja u menjaču i provera zaptivača..."
+                        value={formData.instructions}
+                        onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
+                        required
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Tip naloga *</label>
+                        </div>
+                        <CustomSelect
+                          value={formData.orderType}
+                          onChange={handleCreateOrderTypeChange}
+                          options={orderTypeOptions}
+                          placeholder="— Izaberite tip naloga —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Prioritet *</label>
+                        </div>
+                        <CustomSelect
+                          value={formData.priority}
+                          onChange={(val) => setFormData((prev) => ({ ...prev, priority: val }))}
+                          options={priorityOptions}
+                          placeholder="— Izaberite prioritet —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Datum za kada se planira *</label>
+                        </div>
+                        <input
+                          type="date"
+                          className={styles.modalInput}
+                          value={formData.orderDate}
+                          onChange={(e) => setFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
+                          required
+                        />
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Radna smena</label>
+                        </div>
+                        <CustomSelect
+                          value={formData.shift}
+                          onChange={(val) => setFormData((prev) => ({ ...prev, shift: val as any }))}
+                          options={shiftOptions}
+                          placeholder="— Izaberite smenu —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroupFull}>
+                        <div className={styles.formLabelRow}>
+                          <label>
+                            {formData.orderType === 'RAD_NJIVA'
+                              ? 'Dodeljeni operater / traktorista *'
+                              : 'Radnik kome se nalog izdaje *'}
+                          </label>
+                        </div>
+                        <CustomSelect
+                          value={formData.workerId}
+                          onChange={(val) => setFormData((prev) => ({ ...prev, workerId: val }))}
+                          options={createWorkerOptions}
+                          placeholder={
+                            formData.orderType === 'RAD_NJIVA'
+                              ? '— Izaberi operatera iz baze —'
+                              : '— Izaberi radnika iz baze —'
+                          }
+                          searchable
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Glavna mašina / Traktor</label>
+                        </div>
+                        <CustomSelect
+                          value={formData.machineId}
+                          onChange={(val) => setFormData((prev) => ({ ...prev, machineId: val }))}
+                          options={machineOptions}
+                          placeholder="— Izaberi mašinu —"
+                          searchable
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+
+                      {formData.orderType === 'RAD_NJIVA' && (
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Priključak (opciono)</label>
+                          </div>
+                          <CustomSelect
+                            value={formData.attachmentId}
+                            onChange={(val) => setFormData((prev) => ({ ...prev, attachmentId: val }))}
+                            options={attachmentOptions}
+                            placeholder="— Bez priključka / Samohodna —"
+                            searchable
+                            hideTriggerSubLabel={true}
+                            triggerClassName={styles.modalFormSelectTrigger}
+                          />
+                        </div>
                       )}
                     </div>
 
-                    <div className={styles.formGroup}>
-                      <div className={styles.formLabelRow}>
-                        <label>Radna operacija / Posao</label>
+                    {formData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                      <ContractorSelect value={formData.contractorId || ''} onChange={value => setFormData(prev => ({ ...prev, contractorId: value }))} canManage={isManager} />
+                    </div>}
+
+                    {formData.orderType === 'RAD_NJIVA' && (
+                      <div className={styles.formGrid}>
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Parcela / Njiva</label>
+
+                          </div>
+                          <CustomSelect
+                            value={formData.parcelId}
+                            onChange={(val) => setFormData((prev) => ({ ...prev, parcelId: val }))}
+                            options={parcelOptions}
+                            placeholder="— Izaberi parcelu —"
+                            searchable
+                            hideTriggerSubLabel={true}
+                            triggerClassName={styles.modalFormSelectTrigger}
+                          />
+                          {isManager && (
+                            <ParcelQuickActions
+                              selectedParcel={parcels.find((p) => p.id === formData.parcelId) || null}
+                              onAddClick={() => {
+                                setParcelQuickTarget('create-order');
+                                setParcelToEdit(null);
+                                setParcelQuickModalOpen(true);
+                              }}
+                              onEditClick={(parcel) => {
+                                setParcelQuickTarget('create-order');
+                                setParcelToEdit(parcel);
+                                setParcelQuickModalOpen(true);
+                              }}
+                            />
+                          )}
+                        </div>
+
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Radna operacija / Posao</label>
+                          </div>
+                          <CustomSelect
+                            value={formData.workTypeId}
+                            onChange={(val) => setFormData((prev) => ({ ...prev, workTypeId: val, materials: val === prev.workTypeId ? prev.materials : [] }))}
+                            options={workTypeOptions}
+                            placeholder="— Izaberi posao —"
+                            searchable
+                            hideTriggerSubLabel={true}
+                            triggerClassName={styles.modalFormSelectTrigger}
+                          />
+                        </div>
                       </div>
-                      <CustomSelect
-                        value={formData.workTypeId}
-                        onChange={(val) => setFormData((prev) => ({ ...prev, workTypeId: val, materials: val === prev.workTypeId ? prev.materials : [] }))}
-                        options={workTypeOptions}
-                        placeholder="— Izaberi posao —"
-                        searchable
-                        hideTriggerSubLabel={true}
-                        triggerClassName={styles.modalFormSelectTrigger}
-                      />
-                    </div>
-                  </div>
-                )}
+                    )}
 
-                {formData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
-                  <WorkMaterialsEditor kind={workTypes.find(w => w.id === formData.workTypeId)?.materialKind} required={workTypes.find(w => w.id === formData.workTypeId)?.materialRequired}
-                    value={formData.materials} onChange={materials => setFormData(prev => ({ ...prev, materials }))} canManage={isManager} />
-                </div>}
+                    {formData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                      <WorkMaterialsEditor kind={workTypes.find(w => w.id === formData.workTypeId)?.materialKind} required={workTypes.find(w => w.id === formData.workTypeId)?.materialRequired}
+                        value={formData.materials} onChange={materials => setFormData(prev => ({ ...prev, materials }))} canManage={isManager} />
+                    </div>}
 
-                {formData.orderType === 'RAD_NJIVA' && (
-                  <div className={styles.formGrid}>
+                    {formData.orderType === 'RAD_NJIVA' && (
+                      <div className={styles.formGrid}>
+                        <div className={styles.formGroupFull}>
+                          <div className={styles.formLabelRow}>
+                            <label>Planirani obim rada (hektara)</label>
+                          </div>
+                          <input
+                            type="number"
+                            step="0.1"
+                            className={styles.modalInput}
+                            placeholder="npr. 12.5"
+                            value={formData.plannedAreaHa}
+                            onChange={(e) => setFormData({ ...formData, plannedAreaHa: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    )}
+
                     <div className={styles.formGroupFull}>
                       <div className={styles.formLabelRow}>
-                        <label>Planirani obim rada (hektara)</label>
+                        <label>Uputstvo / Napomena za radnika</label>
                       </div>
-                      <input
-                        type="number"
-                        step="0.1"
-                        className={styles.modalInput}
-                        placeholder="npr. 12.5"
-                        value={formData.plannedAreaHa}
-                        onChange={(e) => setFormData({ ...formData, plannedAreaHa: e.target.value })}
+                      <textarea
+                        className={styles.modalTextarea}
+                        placeholder="npr. Počni oranje od kanala, dubina 28-30 cm, obrati pažnju na vlagu zemljišta."
+                        value={formData.instructions}
+                        onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
                       />
                     </div>
-                  </div>
+                  </>
                 )}
-
-                <div className={styles.formGroupFull}>
-                  <div className={styles.formLabelRow}>
-                    <label>
-                      {formData.orderType === 'REMONT_SERVIS'
-                        ? 'Opis remonta i potrebnih delova/maziva'
-                        : 'Uputstvo / Napomena za radnika'}
-                    </label>
-                  </div>
-                  <textarea
-                    className={styles.modalTextarea}
-                    placeholder={
-                      formData.orderType === 'REMONT_SERVIS'
-                        ? 'npr. Zameniti ležaj na sečki, ispustiti staro ulje i sipati novo Total Dynatrans MPV ulje.'
-                        : 'npr. Počni oranje od kanala, dubina 28-30 cm, obrati pažnju na vlagu zemljišta.'
-                    }
-                    value={formData.instructions}
-                    onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
-                  />
-                </div>
 
                 <PhotoUpload photoUrl={formData.photoUrl} label="Fotografija za radnika (opciono)" onChange={(photoUrl) => setFormData((current) => ({ ...current, photoUrl }))} onUploadStateChange={setPhotoUploading} disabled={modalLoading} />
                 <div className={styles.modalFooter}>
@@ -1665,244 +1507,368 @@ const RadniNaloziDashboard: React.FC = () => {
                 </div>
               )}
 
+              {!['PLANIRAN', 'DODELJEN'].includes(editingOrder.status) && editingOrder.orderType !== 'REMONT_SERVIS' && <MachineUsageAction inset onClick={() => { setUsageId(editingOrder.id); setEditingOrder(null); }} />}
               <form onSubmit={handleUpdateOrder} className={styles.modalForm}>
                 {masterFeedback}
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Status naloga *</label>
-                    </div>
-                    <CustomSelect
-                      value={editFormData.status}
-                      onChange={(val) => setEditFormData((prev) => ({ ...prev, status: val as any }))}
-                      options={editStatusOptions}
-                      placeholder="— Izaberite status —"
-                      searchable={false}
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Prioritet *</label>
-                    </div>
-                    <CustomSelect
-                      value={editFormData.priority}
-                      onChange={(val) => setEditFormData((prev) => ({ ...prev, priority: val }))}
-                      options={priorityOptions}
-                      placeholder="— Izaberite prioritet —"
-                      searchable={false}
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Tip naloga *</label>
-                    </div>
-                    <CustomSelect
-                      value={editFormData.orderType}
-                      onChange={handleEditOrderTypeChange}
-                      options={orderTypeOptions}
-                      placeholder="— Izaberite tip naloga —"
-                      searchable={false}
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Datum za kada se planira *</label>
-                    </div>
-                    <input
-                      type="date"
-                      className={styles.modalInput}
-                      value={editFormData.orderDate}
-                      onChange={(e) => setEditFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroupFull}>
-                    <div className={styles.formLabelRow}>
-                      <label>
-                        {editFormData.orderType === 'REMONT_SERVIS'
-                          ? 'Dodeljeni mehaničar / serviser *'
-                          : editFormData.orderType === 'RAD_NJIVA'
-                            ? 'Dodeljeni operater / traktorista *'
-                            : 'Radnik kome se nalog izdaje *'}
-                      </label>
-                    </div>
-                    <CustomSelect
-                      value={editFormData.workerId}
-                      onChange={(val) => setEditFormData((prev) => ({ ...prev, workerId: val }))}
-                      options={editWorkerOptions}
-                      placeholder={
-                        editFormData.orderType === 'REMONT_SERVIS'
-                          ? '— Izaberi mehaničara iz baze —'
-                          : editFormData.orderType === 'RAD_NJIVA'
-                            ? '— Izaberi operatera iz baze —'
-                            : '— Izaberi radnika iz baze —'
-                      }
-                      searchable
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-                </div>
-
-                <div className={styles.formGrid}>
-                  <div className={styles.formGroup}>
-                    <div className={styles.formLabelRow}>
-                      <label>Glavna mašina / Traktor</label>
-                    </div>
-                    <CustomSelect
-                      value={editFormData.machineId}
-                      onChange={(val) => setEditFormData((prev) => ({ ...prev, machineId: val }))}
-                      options={machineOptions}
-                      placeholder="— Bez mašine —"
-                      searchable
-                      hideTriggerSubLabel={true}
-                      triggerClassName={styles.modalFormSelectTrigger}
-                    />
-                  </div>
-
-                  {editFormData.orderType === 'RAD_NJIVA' && (
-                    <div className={styles.formGroup}>
-                      <div className={styles.formLabelRow}>
-                        <label>Priključak (opciono)</label>
-                      </div>
-                      <CustomSelect
-                        value={editFormData.attachmentId}
-                        onChange={(val) => setEditFormData((prev) => ({ ...prev, attachmentId: val }))}
-                        options={editAttachmentOptions}
-                        placeholder="— Bez priključka / Samohodna —"
-                        searchable
-                        hideTriggerSubLabel={true}
-                        triggerClassName={styles.modalFormSelectTrigger}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {editFormData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
-                  <ContractorSelect value={editFormData.contractorId || ''} onChange={value => setEditFormData(prev => ({ ...prev, contractorId: value }))} canManage={isManager} />
-                </div>}
-
-                {editFormData.orderType === 'RAD_NJIVA' && (
-                  <div className={styles.formGrid}>
-                    <div className={styles.formGroup}>
-                      <div className={styles.formLabelRow}>
-                        <label>Parcela / Njiva</label>
-
-                      </div>
-                      <CustomSelect
-                        value={editFormData.parcelId}
-                        onChange={(val) => setEditFormData((prev) => ({ ...prev, parcelId: val }))}
-                        options={parcelOptions}
-                        placeholder="— Izaberi parcelu —"
-                        searchable
-                        hideTriggerSubLabel={true}
-                        triggerClassName={styles.modalFormSelectTrigger}
-                      />
-                      {isManager && (
-                        <ParcelQuickActions
-                          selectedParcel={parcels.find((p) => p.id === editFormData.parcelId) || null}
-                          onAddClick={() => {
-                            setParcelQuickTarget('edit-order');
-                            setParcelToEdit(null);
-                            setParcelQuickModalOpen(true);
-                          }}
-                          onEditClick={(parcel) => {
-                            setParcelQuickTarget('edit-order');
-                            setParcelToEdit(parcel);
-                            setParcelQuickModalOpen(true);
-                          }}
+                {editFormData.orderType === 'REMONT_SERVIS' ? (
+                  <>
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Status naloga *</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.status}
+                          onChange={(val) => setEditFormData((prev) => ({ ...prev, status: val as any }))}
+                          options={editStatusOptions}
+                          disabled
+                          placeholder="— Izaberite status —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
                         />
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Tip naloga *</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.orderType}
+                          disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                          onChange={handleEditOrderTypeChange}
+                          options={orderTypeOptions}
+                          placeholder="— Izaberite tip naloga —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Mašina ili priključak za remont *</label>
+                      </div>
+                      <CustomSelect
+                        value={editFormData.machineId}
+                        disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                        onChange={(val) => setEditFormData((prev) => ({ ...prev, machineId: val }))}
+                        options={remontMachineOptions}
+                        placeholder="Izaberite mašinu za remont..."
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
+                    </div>
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Dodeljeni mehaničar / serviser *</label>
+                      </div>
+                      <CustomSelect
+                        value={editFormData.workerId}
+                        disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                        onChange={(val) => setEditFormData((prev) => ({ ...prev, workerId: val }))}
+                        options={editWorkerOptions}
+                        placeholder="Izaberite mehaničara..."
+                        searchable
+                        hideTriggerSubLabel={true}
+                        triggerClassName={styles.modalFormSelectTrigger}
+                      />
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Tip servisa *</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.serviceType}
+                          onChange={(val) => setEditFormData((prev) => ({ ...prev, serviceType: val }))}
+                          options={SERVICE_TYPE_OPTIONS}
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Prioritet *</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.priority}
+                          onChange={(val) => setEditFormData((prev) => ({ ...prev, priority: val }))}
+                          options={REMONT_PRIORITY_OPTIONS}
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Datum planiranog početka *</label>
+                      </div>
+                      <input
+                        type="date"
+                        className={styles.modalInput}
+                        value={editFormData.orderDate}
+                        onChange={(e) => setEditFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
+                        required
+                      />
+                    </div>
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Uputstvo i specifikacija posla za mehaničara *</label>
+                      </div>
+                      <textarea
+                        className={styles.modalTextarea}
+                        placeholder="Npr. Generalni remont ulagača semena, zamena ulja u menjaču i provera zaptivača..."
+                        value={editFormData.instructions}
+                        onChange={(e) => setEditFormData({ ...editFormData, instructions: e.target.value })}
+                        required
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Status naloga *</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.status}
+                          onChange={(val) => setEditFormData((prev) => ({ ...prev, status: val as any }))}
+                          options={editStatusOptions}
+                          disabled
+                          placeholder="— Izaberite status —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Prioritet *</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.priority}
+                          onChange={(val) => setEditFormData((prev) => ({ ...prev, priority: val }))}
+                          options={priorityOptions}
+                          placeholder="— Izaberite prioritet —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Tip naloga *</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.orderType}
+                          disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                          onChange={handleEditOrderTypeChange}
+                          options={orderTypeOptions}
+                          placeholder="— Izaberite tip naloga —"
+                          searchable={false}
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Datum za kada se planira *</label>
+                        </div>
+                        <input
+                          type="date"
+                          className={styles.modalInput}
+                          value={editFormData.orderDate}
+                          onChange={(e) => setEditFormData((prev) => ({ ...prev, orderDate: e.target.value }))}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroupFull}>
+                        <div className={styles.formLabelRow}>
+                          <label>
+                            {editFormData.orderType === 'RAD_NJIVA'
+                              ? 'Dodeljeni operater / traktorista *'
+                              : 'Radnik kome se nalog izdaje *'}
+                          </label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.workerId}
+                          disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                          onChange={(val) => setEditFormData((prev) => ({ ...prev, workerId: val }))}
+                          options={editWorkerOptions}
+                          placeholder={
+                            editFormData.orderType === 'RAD_NJIVA'
+                              ? '— Izaberi operatera iz baze —'
+                              : '— Izaberi radnika iz baze —'
+                          }
+                          searchable
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+                    </div>
+
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}>
+                        <div className={styles.formLabelRow}>
+                          <label>Glavna mašina / Traktor</label>
+                        </div>
+                        <CustomSelect
+                          value={editFormData.machineId}
+                          disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                          onChange={(val) => setEditFormData((prev) => ({ ...prev, machineId: val }))}
+                          options={machineOptions}
+                          placeholder="— Bez mašine —"
+                          searchable
+                          hideTriggerSubLabel={true}
+                          triggerClassName={styles.modalFormSelectTrigger}
+                        />
+                      </div>
+
+                      {editFormData.orderType === 'RAD_NJIVA' && (
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Priključak (opciono)</label>
+                          </div>
+                          <CustomSelect
+                            value={editFormData.attachmentId}
+                            disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                            onChange={(val) => setEditFormData((prev) => ({ ...prev, attachmentId: val }))}
+                            options={editAttachmentOptions}
+                            placeholder="— Bez priključka / Samohodna —"
+                            searchable
+                            hideTriggerSubLabel={true}
+                            triggerClassName={styles.modalFormSelectTrigger}
+                          />
+                        </div>
                       )}
                     </div>
 
-                    <div className={styles.formGroup}>
-                      <div className={styles.formLabelRow}>
-                        <label>Radna operacija / Posao</label>
+                    {editFormData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                      <ContractorSelect value={editFormData.contractorId || ''} onChange={value => setEditFormData(prev => ({ ...prev, contractorId: value }))} canManage={isManager} />
+                    </div>}
+
+                    {editFormData.orderType === 'RAD_NJIVA' && (
+                      <div className={styles.formGrid}>
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Parcela / Njiva</label>
+
+                          </div>
+                          <CustomSelect
+                            value={editFormData.parcelId}
+                            disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                            onChange={(val) => setEditFormData((prev) => ({ ...prev, parcelId: val }))}
+                            options={parcelOptions}
+                            placeholder="— Izaberi parcelu —"
+                            searchable
+                            hideTriggerSubLabel={true}
+                            triggerClassName={styles.modalFormSelectTrigger}
+                          />
+                          {isManager && (
+                            <ParcelQuickActions
+                              selectedParcel={parcels.find((p) => p.id === editFormData.parcelId) || null}
+                              onAddClick={() => {
+                                setParcelQuickTarget('edit-order');
+                                setParcelToEdit(null);
+                                setParcelQuickModalOpen(true);
+                              }}
+                              onEditClick={(parcel) => {
+                                setParcelQuickTarget('edit-order');
+                                setParcelToEdit(parcel);
+                                setParcelQuickModalOpen(true);
+                              }}
+                            />
+                          )}
+                        </div>
+
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Radna operacija / Posao</label>
+                          </div>
+                          <CustomSelect
+                            value={editFormData.workTypeId}
+                            disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
+                            onChange={(val) => setEditFormData((prev) => ({ ...prev, workTypeId: val, materials: val === prev.workTypeId ? prev.materials : [] }))}
+                            options={workTypeOptions}
+                            placeholder="— Izaberi posao —"
+                            searchable
+                            hideTriggerSubLabel={true}
+                            triggerClassName={styles.modalFormSelectTrigger}
+                          />
+                        </div>
                       </div>
-                      <CustomSelect
-                        value={editFormData.workTypeId}
-                        onChange={(val) => setEditFormData((prev) => ({ ...prev, workTypeId: val, materials: val === prev.workTypeId ? prev.materials : [] }))}
-                        options={workTypeOptions}
-                        placeholder="— Izaberi posao —"
-                        searchable
-                        hideTriggerSubLabel={true}
-                        triggerClassName={styles.modalFormSelectTrigger}
+                    )}
+
+                    {editFormData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
+                      <WorkMaterialsEditor kind={workTypes.find(w => w.id === editFormData.workTypeId)?.materialKind} required={workTypes.find(w => w.id === editFormData.workTypeId)?.materialRequired}
+                        value={editFormData.materials} onChange={materials => setEditFormData(prev => ({ ...prev, materials }))} canManage={isManager} />
+                    </div>}
+
+                    {editFormData.orderType === 'RAD_NJIVA' && (
+                      <div className={styles.formGrid}>
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Planirani obim rada (hektara)</label>
+                          </div>
+                          <input
+                            type="number"
+                            step="0.1"
+                            className={styles.modalInput}
+                            placeholder="npr. 12.5"
+                            value={editFormData.plannedAreaHa}
+                            onChange={(e) => setEditFormData((prev) => ({ ...prev, plannedAreaHa: e.target.value }))}
+                          />
+                        </div>
+
+                        <div className={styles.formGroup}>
+                          <div className={styles.formLabelRow}>
+                            <label>Radna smena</label>
+                          </div>
+                          <CustomSelect
+                            value={editFormData.shift}
+                            onChange={(val) => setEditFormData((prev) => ({ ...prev, shift: val as any }))}
+                            options={shiftOptions}
+                            placeholder="— Izaberite smenu —"
+                            searchable={false}
+                            hideTriggerSubLabel={true}
+                            triggerClassName={styles.modalFormSelectTrigger}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className={styles.formGroupFull}>
+                      <div className={styles.formLabelRow}>
+                        <label>Uputstvo / Napomena za radnika</label>
+                      </div>
+                      <textarea
+                        className={styles.modalTextarea}
+                        placeholder="npr. Počni oranje od kanala, dubina 28-30 cm, obrati pažnju na vlagu zemljišta."
+                        value={editFormData.instructions}
+                        onChange={(e) => setEditFormData({ ...editFormData, instructions: e.target.value })}
                       />
                     </div>
-                  </div>
+                  </>
                 )}
-
-                {editFormData.orderType === 'RAD_NJIVA' && <div className={styles.formGroupFull}>
-                  <WorkMaterialsEditor kind={workTypes.find(w => w.id === editFormData.workTypeId)?.materialKind} required={workTypes.find(w => w.id === editFormData.workTypeId)?.materialRequired}
-                    value={editFormData.materials} onChange={materials => setEditFormData(prev => ({ ...prev, materials }))} canManage={isManager} />
-                </div>}
-
-                {editFormData.orderType === 'RAD_NJIVA' && (
-                  <div className={styles.formGrid}>
-                    <div className={styles.formGroup}>
-                      <div className={styles.formLabelRow}>
-                        <label>Planirani obim rada (hektara)</label>
-                      </div>
-                      <input
-                        type="number"
-                        step="0.1"
-                        className={styles.modalInput}
-                        placeholder="npr. 12.5"
-                        value={editFormData.plannedAreaHa}
-                        onChange={(e) => setEditFormData((prev) => ({ ...prev, plannedAreaHa: e.target.value }))}
-                      />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <div className={styles.formLabelRow}>
-                        <label>Radna smena</label>
-                      </div>
-                      <CustomSelect
-                        value={editFormData.shift}
-                        onChange={(val) => setEditFormData((prev) => ({ ...prev, shift: val as any }))}
-                        options={shiftOptions}
-                        placeholder="— Izaberite smenu —"
-                        searchable={false}
-                        hideTriggerSubLabel={true}
-                        triggerClassName={styles.modalFormSelectTrigger}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div className={styles.formGroupFull}>
-                  <div className={styles.formLabelRow}>
-                    <label>
-                      {editFormData.orderType === 'REMONT_SERVIS'
-                        ? 'Opis remonta i potrebnih delova/maziva'
-                        : 'Uputstvo / Napomena za radnika'}
-                    </label>
-                  </div>
-                  <textarea
-                    className={styles.modalTextarea}
-                    placeholder={
-                      editFormData.orderType === 'REMONT_SERVIS'
-                        ? 'npr. Zameniti ležaj na sečki, ispustiti staro ulje i sipati novo Total Dynatrans MPV ulje.'
-                        : 'npr. Počni oranje od kanala, dubina 28-30 cm, obrati pažnju na vlagu zemljišta.'
-                    }
-                    value={editFormData.instructions}
-                    onChange={(e) => setEditFormData({ ...editFormData, instructions: e.target.value })}
-                  />
-                </div>
 
                 <PhotoUpload photoUrl={editFormData.photoUrl} label="Fotografija za radnika (opciono)" onChange={(photoUrl) => setEditFormData((current) => ({ ...current, photoUrl }))} onUploadStateChange={setEditPhotoUploading} disabled={editModalLoading} />
                 <div className={styles.modalFooter} style={{ justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1912,7 +1878,6 @@ const RadniNaloziDashboard: React.FC = () => {
                     onClick={() => {
                       const toDelete = editingOrder;
                       setEditingOrder(null);
-                      setDeleteError('');
                       setOrderToDelete(toDelete);
                     }}
                     title="Obriši ovaj radni nalog"
@@ -1940,553 +1905,22 @@ const RadniNaloziDashboard: React.FC = () => {
 
         {/* Modal za prihvatanje naloga i zaduživanje mašine */}
         {selectedOrderToAccept && (
-          <div className={styles.modalBackdrop} onClick={() => setSelectedOrderToAccept(null)}>
-            <div className={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-              <div className={styles.modalHeader}>
-                <h3>
-                  <KeyRound size={22} color="#0284c7" />
-                  Prihvati Nalog & Zaduži Mašinu
-                </h3>
-                <button
-                  className={styles.modalCloseBtn}
-                  onClick={() => setSelectedOrderToAccept(null)}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              {acceptError && (
-                <div
-                  style={{
-                    padding: '0.75rem 1.25rem',
-                    background: '#fee2e2',
-                    color: '#b91c1c',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                  }}
-                >
-                  <AlertCircle size={18} />
-                  <span>{acceptError}</span>
-                </div>
-              )}
-
-              <form onSubmit={handleConfirmAcceptOrder} className={styles.modalForm}>
-                {masterFeedback}
-                {selectedOrderToAccept.machine && (
-                  <div className={styles.machineSummaryCard}>
-                    <div className={styles.machineSummaryTitle}>
-                      <Tractor size={18} color="#16a34a" />
-                      <span>{selectedOrderToAccept.machine.name}</span>
-                    </div>
-                    <div className={styles.machineSpecsRow}>
-                      <span className={styles.machineSpecItem}>
-                        Rezervoar:{' '}
-                        <strong>
-                          {selectedOrderToAccept.machine.tankCapacityLiters && selectedOrderToAccept.machine.tankCapacityLiters > 0
-                            ? `${selectedOrderToAccept.machine.tankCapacityLiters} L`
-                            : 'Bez rezervoara (Priključak)'}
-                        </strong>
-                      </span>
-                      <span className={styles.machineSpecItem}>
-                        Radni sati na satu:{' '}
-                        <strong>{selectedOrderToAccept.machine.currentHours || 0} rh</strong>
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {Boolean(selectedOrderToAccept.machine?.tankCapacityLiters && selectedOrderToAccept.machine.tankCapacityLiters > 0) ? (
-                  <div className={styles.formGroup}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-                      <label style={{ margin: 0 }}>Početno stanje goriva u rezervoaru (litara) *</label>
-                      <span style={{ color: '#0284c7', fontWeight: 700, fontSize: '0.85rem' }}>
-                        Kapacitet: {selectedOrderToAccept.machine?.tankCapacityLiters} L
-                      </span>
-                    </div>
-                    <div className={styles.fuelInputWrap}>
-                      <input
-                        type="number"
-                        step="1"
-                        min="0"
-                        max={selectedOrderToAccept.machine?.tankCapacityLiters || 1000}
-                        className={styles.modalInput}
-                        placeholder={`npr. ${Math.min(180, selectedOrderToAccept.machine?.tankCapacityLiters || 200)}`}
-                        value={acceptFuelLiters}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          const maxCap = selectedOrderToAccept.machine?.tankCapacityLiters;
-                          if (maxCap && val !== '' && Number(val) > maxCap) {
-                            setAcceptFuelLiters(maxCap);
-                            return;
-                          }
-                          setAcceptFuelLiters(val);
-                        }}
-                        style={
-                          selectedOrderToAccept.machine?.tankCapacityLiters &&
-                            Number(acceptFuelLiters) > selectedOrderToAccept.machine.tankCapacityLiters
-                            ? { borderColor: '#ef4444' }
-                            : undefined
-                        }
-                        required
-                      />
-                      <span className={styles.fuelUnitBadge}>Litara</span>
-                    </div>
-                    {selectedOrderToAccept.machine?.tankCapacityLiters &&
-                      Number(acceptFuelLiters) > selectedOrderToAccept.machine.tankCapacityLiters && (
-                        <div style={{ color: '#ef4444', fontSize: '0.82rem', marginTop: '0.3rem', fontWeight: 600 }}>
-                          Količina goriva ne može biti veća od kapaciteta rezervoara ({selectedOrderToAccept.machine.tankCapacityLiters} L)!
-                        </div>
-                      )}
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      background: 'rgba(2, 132, 199, 0.08)',
-                      border: '1.5px dashed #38bdf8',
-                      borderRadius: 10,
-                      padding: '0.85rem 1rem',
-                      fontSize: '0.86rem',
-                      color: 'var(--text-secondary)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.55rem',
-                      margin: '0.25rem 0',
-                    }}
-                  >
-                    <Info size={18} color="#0284c7" style={{ flexShrink: 0 }} />
-                    <span>
-                      Ova mašina nema sopstveni rezervoar goriva (priključno oruđe). Gorivo se ne zadužuje.
-                    </span>
-                  </div>
-                )}
-
-                <div className={styles.formGroup}>
-                  <label>Početni radni sati mašine (rh)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    className={styles.modalInput}
-                    value={acceptHours}
-                    onChange={(e) => setAcceptHours(e.target.value)}
-                  />
-                </div>
-
-                <div className={styles.formGroup}>
-                  <label>Napomena pri preuzimanju mašine (opciono)</label>
-                  <textarea
-                    className={styles.modalTextarea}
-                    placeholder="npr. Provereni nivoi ulja i antifriza, traktor spreman za oranje."
-                    value={acceptNotes}
-                    onChange={(e) => setAcceptNotes(e.target.value)}
-                  />
-                </div>
-
-                <div className={styles.modalFooter}>
-                  <button
-                    type="button"
-                    className={styles.cancelModalBtn}
-                    onClick={() => setSelectedOrderToAccept(null)}
-                  >
-                    Odustani
-                  </button>
-                  <button
-                    type="submit"
-                    className={styles.saveBtn}
-                    style={{ backgroundColor: '#0284c7' }}
-                    disabled={acceptLoading}
-                  >
-                    {acceptLoading ? (
-                      <>
-                        <Loader2 size={16} />
-                        <span>Zaduživanje...</span>
-                      </>
-                    ) : (
-                      <>
-                        <KeyRound size={16} />
-                        <span>Zaduži mašinu i prihvati nalog</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
+          <OrderAcceptModal
+            order={selectedOrderToAccept}
+            onClose={handleCloseAcceptModal}
+            onAccepted={handleOrderAccepted}
+          />
         )}
 
-        {/* Modal za potvrdu otkazivanja naloga */}
-        {orderToCancel && (
-          <div className={styles.modalBackdrop} onClick={() => !cancelLoading && setOrderToCancel(null)}>
-            <div
-              className={styles.modalContent}
-              style={{ maxWidth: '480px' }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className={styles.modalHeader}>
-                <h3 style={{ color: '#b91c1c' }}>
-                  <AlertTriangle size={22} color="#dc2626" />
-                  <span>Otkazivanje Radnog Naloga</span>
-                </h3>
-                <button
-                  type="button"
-                  className={styles.modalCloseBtn}
-                  onClick={() => !cancelLoading && setOrderToCancel(null)}
-                  disabled={cancelLoading}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div className={styles.confirmDialogBody}>
-                <div className={styles.confirmWarningBox}>
-                  <AlertCircle size={22} style={{ flexShrink: 0, marginTop: '2px' }} />
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
-                      Da li stvarno želite da otkažete ovaj radni nalog?
-                    </div>
-                    <div style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>
-                      Radni nalog će biti prebačen u status <strong>Otkazan</strong>.
-                      Ukoliko se predomislite, nalog možete u svakom trenutku ponovo aktivirati.
-                    </div>
-                  </div>
-                </div>
-
-                {orderToCancel.status === 'U_TOKU' && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '0.75rem',
-                      background: '#fffbeb',
-                      border: '1px solid #fef3c7',
-                      borderLeft: '4px solid #f59e0b',
-                      padding: '0.85rem 1rem',
-                      borderRadius: '8px',
-                      color: '#92400e',
-                      fontSize: '0.84rem',
-                      lineHeight: 1.45,
-                    }}
-                  >
-                    <Info size={20} color="#d97706" style={{ flexShrink: 0, marginTop: '2px' }} />
-                    <div>
-                      <strong style={{ display: 'block', marginBottom: '0.2rem', color: '#b45309' }}>
-                        Napomena: Radnik je već prihvatio ovaj nalog
-                      </strong>
-                      Otkazivanjem se mašina automatski oslobađa, a radni sati ostaju nepromenjeni. Ako je radnik već radio na parceli, preporučuje se da radnik sam prijavi prekid rada kako bi se evidentirali urađeni sati i gorivo.
-                    </div>
-                  </div>
-                )}
-
-                {cancelError && (
-                  <div style={{ padding: '0.75rem 1rem', background: '#fee2e2', color: '#b91c1c', borderRadius: '6px', fontSize: '0.85rem' }}>
-                    {cancelError}
-                  </div>
-                )}
-
-                <div className={styles.orderPreviewBox}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color, #e2e8f0)', paddingBottom: '0.4rem', fontWeight: 700 }}>
-                    <span>Broj naloga:</span>
-                    <span style={{ color: '#16a34a' }}>{orderToCancel.orderNumber}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Trenutni status:</span>
-                    <span style={{ fontWeight: 600 }}>
-                      {orderToCancel.status === 'U_TOKU'
-                        ? 'U toku (Mašina zadužena)'
-                        : orderToCancel.status === 'DODELJEN'
-                          ? 'Dodeljen'
-                          : orderToCancel.status}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Radnik:</span>
-                    <span style={{ fontWeight: 600 }}>{orderToCancel.worker?.name || 'Nije dodeljen'}</span>
-                  </div>
-                  {orderToCancel.parcel && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Parcela:</span>
-                      <span>{orderToCancel.parcel.name}</span>
-                    </div>
-                  )}
-                  {orderToCancel.workType && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Operacija:</span>
-                      <span>{orderToCancel.workType.name}</span>
-                    </div>
-                  )}
-                  {orderToCancel.machine && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Mašina:</span>
-                      <span>{orderToCancel.machine.name}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className={styles.modalFooter}>
-                <button
-                  type="button"
-                  className={styles.cancelModalBtn}
-                  onClick={() => setOrderToCancel(null)}
-                  disabled={cancelLoading}
-                >
-                  Odustani
-                </button>
-                <button
-                  type="button"
-                  className={styles.confirmCancelBtn}
-                  onClick={handleConfirmCancel}
-                  disabled={cancelLoading}
-                >
-                  {cancelLoading ? (
-                    <>
-                      <Loader2 size={16} className={styles.spinnerIcon} />
-                      <span>Otkazivanje...</span>
-                    </>
-                  ) : (
-                    <span>Da, otkaži nalog</span>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Modal za potvrdu ponovnog aktiviranja naloga */}
-        {orderToReactivate && (
-          <div className={styles.modalBackdrop} onClick={() => !reactivateLoading && setOrderToReactivate(null)}>
-            <div
-              className={styles.modalContent}
-              style={{ maxWidth: '480px' }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className={styles.modalHeader}>
-                <h3 style={{ color: '#15803d' }}>
-                  <RotateCcw size={20} color="#16a34a" />
-                  <span>Ponovno Aktiviranje Naloga</span>
-                </h3>
-                <button
-                  type="button"
-                  className={styles.modalCloseBtn}
-                  onClick={() => !reactivateLoading && setOrderToReactivate(null)}
-                  disabled={reactivateLoading}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div className={styles.confirmDialogBody}>
-                <div className={styles.confirmInfoBox}>
-                  <RotateCcw size={22} style={{ flexShrink: 0, marginTop: '2px' }} />
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
-                      Da li želite ponovo da aktivirate ovaj radni nalog?
-                    </div>
-                    <div style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>
-                      Radni nalog <strong>{orderToReactivate.orderNumber}</strong> će biti vraćen u status <strong>Dodeljen</strong> i ponovo će se pojaviti radniku na listi zadataka za izvršenje.
-                    </div>
-                  </div>
-                </div>
-
-                {reactivateError && (
-                  <div style={{ padding: '0.75rem 1rem', background: '#fee2e2', color: '#b91c1c', borderRadius: '6px', fontSize: '0.85rem' }}>
-                    {reactivateError}
-                  </div>
-                )}
-
-                <div className={styles.orderPreviewBox}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color, #e2e8f0)', paddingBottom: '0.4rem', fontWeight: 700 }}>
-                    <span>Broj naloga:</span>
-                    <span style={{ color: '#16a34a' }}>{orderToReactivate.orderNumber}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Radnik:</span>
-                    <span style={{ fontWeight: 600 }}>{orderToReactivate.worker?.name || 'Nije dodeljen'}</span>
-                  </div>
-                  {orderToReactivate.parcel && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Parcela:</span>
-                      <span>{orderToReactivate.parcel.name}</span>
-                    </div>
-                  )}
-                  {orderToReactivate.workType && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Operacija:</span>
-                      <span>{orderToReactivate.workType.name}</span>
-                    </div>
-                  )}
-                  {orderToReactivate.machine && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Mašina:</span>
-                      <span>{orderToReactivate.machine.name}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className={styles.modalFooter}>
-                <button
-                  type="button"
-                  className={styles.cancelModalBtn}
-                  onClick={() => setOrderToReactivate(null)}
-                  disabled={reactivateLoading}
-                >
-                  Odustani
-                </button>
-                <button
-                  type="button"
-                  className={styles.confirmReactivateBtn}
-                  onClick={handleConfirmReactivate}
-                  disabled={reactivateLoading}
-                >
-                  {reactivateLoading ? (
-                    <>
-                      <Loader2 size={16} className={styles.spinnerIcon} />
-                      <span>Aktiviranje...</span>
-                    </>
-                  ) : (
-                    <span>Ponovo aktiviraj nalog</span>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Modal za potvrdu trajnog brisanja naloga */}
-        {orderToDelete && (
-          <div className={styles.modalBackdrop} onClick={() => !deleteLoading && setOrderToDelete(null)}>
-            <div
-              className={styles.modalContent}
-              style={{ maxWidth: '480px' }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className={styles.modalHeader}>
-                <h3 style={{ color: '#b91c1c' }}>
-                  <AlertTriangle size={22} color="#dc2626" />
-                  <span>Trajno Brisanje Radnog Naloga</span>
-                </h3>
-                <button
-                  type="button"
-                  className={styles.modalCloseBtn}
-                  onClick={() => !deleteLoading && setOrderToDelete(null)}
-                  disabled={deleteLoading}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div className={styles.confirmDialogBody}>
-                <div className={styles.confirmWarningBox}>
-                  <AlertCircle size={22} style={{ flexShrink: 0, marginTop: '2px' }} />
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>
-                      Da li ste sigurni da želite trajno da obrišete ovaj radni nalog?
-                    </div>
-                    <div style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>
-                      Ova akcija je <strong>nepovratna</strong>. Radni nalog <strong>{orderToDelete.orderNumber}</strong> će biti trajno obrisan iz sistema.
-                    </div>
-                  </div>
-                </div>
-
-                {orderToDelete.status === 'ZAVRSEN' && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '0.75rem',
-                      background: 'rgba(2, 132, 199, 0.08)',
-                      border: '1px solid #bae6fd',
-                      borderLeft: '4px solid #0284c7',
-                      padding: '0.85rem 1rem',
-                      borderRadius: '8px',
-                      color: '#0369a1',
-                      fontSize: '0.84rem',
-                      lineHeight: 1.45,
-                    }}
-                  >
-                    <Info size={20} color="#0284c7" style={{ flexShrink: 0, marginTop: '2px' }} />
-                    <div>
-                      <strong style={{ display: 'block', marginBottom: '0.2rem' }}>
-                        Završen radni nalog
-                      </strong>
-                      Uklanjanjem radnog naloga sama evidencija o izvršenom radu na njivi ostaje sačuvana u istorijatu i izveštajima.
-                    </div>
-                  </div>
-                )}
-
-                {deleteError && (
-                  <div style={{ padding: '0.75rem 1rem', background: '#fee2e2', color: '#b91c1c', borderRadius: '6px', fontSize: '0.85rem' }}>
-                    {deleteError}
-                  </div>
-                )}
-
-                <div className={styles.orderPreviewBox}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color, #e2e8f0)', paddingBottom: '0.4rem', fontWeight: 700 }}>
-                    <span>Broj naloga:</span>
-                    <span style={{ color: '#16a34a' }}>{orderToDelete.orderNumber}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Status:</span>
-                    <span style={{ fontWeight: 600 }}>{orderToDelete.status}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Radnik:</span>
-                    <span style={{ fontWeight: 600 }}>{orderToDelete.worker?.name || 'Nije dodeljen'}</span>
-                  </div>
-                  {orderToDelete.orderDate && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Datum naloga:</span>
-                      <span>{new Date(orderToDelete.orderDate).toLocaleDateString('sr-RS')}</span>
-                    </div>
-                  )}
-                  {orderToDelete.parcel && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Parcela:</span>
-                      <span>{orderToDelete.parcel.name}</span>
-                    </div>
-                  )}
-                  {orderToDelete.machine && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Mašina:</span>
-                      <span>{orderToDelete.machine.name}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className={styles.modalFooter}>
-                <button
-                  type="button"
-                  className={styles.cancelModalBtn}
-                  onClick={() => setOrderToDelete(null)}
-                  disabled={deleteLoading}
-                >
-                  Odustani
-                </button>
-                <button
-                  type="button"
-                  className={styles.confirmCancelBtn}
-                  onClick={handleConfirmDelete}
-                  disabled={deleteLoading}
-                >
-                  {deleteLoading ? (
-                    <>
-                      <Loader2 size={16} className={styles.spinnerIcon} />
-                      <span>Brisanje...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Trash2 size={16} />
-                      <span>Da, trajno obriši</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <OrderConfirmModals
+          orderToCancel={orderToCancel}
+          orderToReactivate={orderToReactivate}
+          orderToDelete={orderToDelete}
+          onCloseCancel={handleCloseCancelModal}
+          onCloseReactivate={handleCloseReactivateModal}
+          onCloseDelete={handleCloseDeleteModal}
+          onMutated={handleConfirmMutated}
+        />
 
         {/* Modal za slike i detalje radnog naloga */}
         {detailsOrder && (
@@ -2494,34 +1928,42 @@ const RadniNaloziDashboard: React.FC = () => {
             order={detailsOrder}
             onClose={() => setDetailsOrder(null)}
             onEdit={handleOpenEditModal}
-            canEdit={canEditOrder(detailsOrder)}
+            canEdit={canEditOrder()}
           />
         )}
 
         {/* Brzi modal za dodavanje / izmenu parcele */}
-        <ParcelQuickModal
-          isOpen={parcelQuickModalOpen}
-          onClose={() => setParcelQuickModalOpen(false)}
-          parcelToEdit={parcelToEdit}
-          onSaved={(savedParcel, mode) => {
-            queryClient.setQueryData(operationalQueryOptions(userId, userRole, 'parcels').queryKey, (previous: { parcels: Parcel[] } | undefined) => {
-              const prev = previous?.parcels || [];
-              return {
-                parcels: mode === 'edit' ? prev.map(p => p.id === savedParcel.id ? savedParcel : p)
-                  : [...prev, savedParcel].sort((a, b) => a.code.localeCompare(b.code))
-              };
-            });
-            if (parcelQuickTarget === 'create-order') {
-              setFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
-            } else {
-              setEditFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
-            }
-            if (mode === 'edit') {
-              refreshOrders(page);
-            }
-          }}
-        />
+        {parcelQuickModalOpen && (
+          <ParcelQuickModal
+            isOpen={parcelQuickModalOpen}
+            onClose={() => setParcelQuickModalOpen(false)}
+            parcelToEdit={parcelToEdit}
+            onSaved={(savedParcel, mode) => {
+              queryClient.setQueryData(operationalQueryOptions(userId, userRole, 'parcels').queryKey, (previous: { parcels: Parcel[] } | undefined) => {
+                const prev = previous?.parcels || [];
+                return {
+                  parcels: mode === 'edit' ? prev.map(p => p.id === savedParcel.id ? savedParcel : p)
+                    : [...prev, savedParcel].sort((a, b) => a.code.localeCompare(b.code))
+                };
+              });
+              if (parcelQuickTarget === 'create-order') {
+                setFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
+              } else {
+                setEditFormData((prev) => ({ ...prev, parcelId: savedParcel.id }));
+              }
+              if (mode === 'edit') {
+                refreshOrders(page);
+              }
+            }}
+          />
+        )}
       </div>
+      {usageId && <MachineUsageModal contextType="order" contextId={usageId} onClose={() => setUsageId(null)}
+        onSaved={() => {
+          void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'orders') });
+          void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'machines') });
+        }} />}
+      {otherCompletionId && <OtherOrderCompletion id={otherCompletionId} onClose={() => setOtherCompletionId(null)} />}
     </AppLayout>
   );
 };

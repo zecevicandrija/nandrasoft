@@ -1,5 +1,5 @@
 import { useDurableSubmission } from '../lib/useDurableSubmission';
-import { remainingLotStock } from './onionStock';
+import { remainingLotStock, suggestPacking, suggestPallets } from './onionStock';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import QueryErrorNotice from '../components/QueryErrorNotice';
 import { onionRequest } from './onionRequest';
@@ -49,9 +49,9 @@ import { onionQueryEnabled, invalidateOnionMutation, refreshOnionTab, type TabKe
 const API = '/api/onion';
 
 const PACKAGE_LABELS: Record<string, string> = {
-  DZAK_10KG: 'Mrežasti džak 10 kg (100 kom / paleta)',
-  DZAK_5KG: 'Mrežasti džak 5 kg (200 kom / paleta)',
-  DZAK_25KG: 'Mrežasti džak 25 kg (40 kom / paleta)',
+  DZAK_10KG: 'Mrežasti džak 10 kg',
+  DZAK_5KG: 'Mrežasti džak 5 kg',
+  DZAK_25KG: 'Mrežasti džak 25 kg',
   DZAMBO_VRECA: 'Džambo vreća (1.000 kg)',
   BOKS_PALETA: 'Drvena boks paleta 160x120x120 (1.100 kg)',
   RINFUZ: 'Rinfuz',
@@ -68,15 +68,6 @@ const PACKAGE_WEIGHTS: Record<string, number> = {
   DRUGO: 10,
 };
 
-// Koliko džakova staje na 1 paletu spakovanog luka (1.000 kg po paleti)
-const BAGS_PER_PALLET: Record<string, number> = {
-  DZAK_10KG: 100, // Na paleti staje 100 džakova po 10kg
-  DZAK_5KG: 200,  // Na paleti staje 200 džakova po 5kg
-  DZAK_25KG: 40,  // 40 džakova po 25kg
-  DZAMBO_VRECA: 1,
-  BOKS_PALETA: 1,
-};
-
 const WASTE_REASON_LABELS: Record<string, string> = {
   TRULEZ: 'Trulež i bakterijsko propadanje',
   MEHANICKO_OSTECENJE: 'Mehaničko oštećenje (vađenje/transport)',
@@ -84,6 +75,7 @@ const WASTE_REASON_LABELS: Record<string, string> = {
   PROKLIJAO: 'Proklijali luk',
   PRLJAVSTINA_ZEMLJA: 'Zemlja, kamen i nečistoće',
   OSTALO: 'Ostali razlozi otpisa',
+  PLEVA: 'Pleva',
   SORTIRANJE_SKART: 'Škart izdvojen na liniji sortiranja',
 };
 
@@ -138,6 +130,24 @@ function formatTimeOnly(timeTarget: string | undefined | null, fallbackDate?: st
   });
 }
 
+const entryModeOptions = [
+  { value: 'both', label: 'Sortiranje i pakovanje' },
+  { value: 'sorting', label: 'Samo sortiranje' },
+  { value: 'packaging', label: 'Pakovanje ranije sortirane I klase' },
+];
+
+const emptySorting = { inputQuantityKg: '', qualityQuantityKg: '', smallQuantityKg: '', wasteQuantityKg: '', plevaKg: '' };
+const sortingFields = [
+  ['inputQuantityKg', 'Ulazna masa'], ['qualityQuantityKg', 'I klasa'],
+  ['smallQuantityKg', 'II klasa'], ['wasteQuantityKg', 'Otpad'],
+  ['plevaKg', 'Pleva'],
+] as const;
+
+/** Sprečava slučajnu promenu vrednosti u number poljima prilikom skrolovanja točkićem miša. */
+function preventWheelNumberChange(e: React.WheelEvent<HTMLInputElement>) {
+  e.currentTarget.blur();
+}
+
 const OnionDashboard: React.FC = () => {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
@@ -179,7 +189,6 @@ const OnionDashboard: React.FC = () => {
   const [harvestPage, setHarvestPage] = useState(1);
   const [lotsPage, setLotsPage] = useState(1);
   const [storagePage, setStoragePage] = useState(1);
-  const [sortingPage, setSortingPage] = useState(1);
   const [packagingPage, setPackagingPage] = useState(1);
   const [shipmentPage, setShipmentPage] = useState(1);
   const [wastePage, setWastePage] = useState(1);
@@ -194,7 +203,7 @@ const OnionDashboard: React.FC = () => {
   // Modali
   const [isHarvestModalOpen, setIsHarvestModalOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
-  const [isSortingModalOpen, setIsSortingModalOpen] = useState(false);
+  const [entryMode, setEntryMode] = useState<'both' | 'sorting' | 'packaging'>('both');
   const [isPackagingModalOpen, setIsPackagingModalOpen] = useState(false);
   const [isShipmentModalOpen, setIsShipmentModalOpen] = useState(false);
   const [isWasteModalOpen, setIsWasteModalOpen] = useState(false);
@@ -255,17 +264,7 @@ const OnionDashboard: React.FC = () => {
     notes: '',
   });
 
-  const [sortingForm, setSortingForm] = useState({
-    date: todayStr,
-    lotId: '',
-    storageEntryId: '',
-    inputQuantityKg: '',
-    qualityQuantityKg: '',
-    smallQuantityKg: '0',
-    wasteQuantityKg: '0',
-    notes: '',
-  });
-
+  const [sortingForm, setSortingForm] = useState(emptySorting);
   const [packagingForm, setPackagingForm] = useState({
     date: todayStr,
     lotId: '',
@@ -274,7 +273,7 @@ const OnionDashboard: React.FC = () => {
     palletsCount: '',
     packageCount: '',
     palletNumber: '',
-    packerCount: '4',
+    packerCount: '',
     packerNotes: '',
     responsiblePerson: 'Bojan Ćorović',
     notes: '',
@@ -361,14 +360,6 @@ const OnionDashboard: React.FC = () => {
   });
   const { data: storageData } = storageQuery;
 
-  const sortingQuery = useQuery({
-    queryKey: ['onion-sorting', sortingPage],
-    staleTime: 30_000,
-    enabled: onionQueryEnabled('onion-sorting', activeTab),
-    queryFn: ({ signal }) => onionRequest(`/sorting?page=${sortingPage}&limit=${PAGE_SIZE}`, signal),
-  });
-  const { data: sortingData } = sortingQuery;
-
   const packagingQuery = useQuery({
     queryKey: ['onion-packaging', packagingTypeFilter, packagingParcelFilter, packagingPage],
     staleTime: 30_000,
@@ -379,7 +370,7 @@ const OnionDashboard: React.FC = () => {
       if (packagingParcelFilter !== 'ALL') params.set('parcelId', packagingParcelFilter);
       params.set('page', String(packagingPage));
       params.set('limit', String(PAGE_SIZE));
-      return onionRequest(`/packaging?${params.toString()}`, signal);
+      return onionRequest(`/processing-history?${params.toString()}`, signal);
     },
   });
   const { data: packagingData } = packagingQuery;
@@ -562,7 +553,7 @@ const OnionDashboard: React.FC = () => {
 
   const filteredUnpackedLots = useMemo(() => {
     let list = lookupData?.activeLots || lots || [];
-    list = list.filter((l: any) => (l.sortedQualityKg || 0) > 0);
+    list = list.filter((l: any) => (l.sortedQualityKg || 0) > 0 || l.rawStockKg > 0);
 
     // Filter po parceli
     if (readyParcelFilter && readyParcelFilter !== 'ALL') {
@@ -725,22 +716,16 @@ const OnionDashboard: React.FC = () => {
       {
         value: 'DZAK_10KG',
         label: 'Mrežasti džak 10 kg',
-        subLabel: '100 džakova na paleti = 1.000 kg',
-        badge: '100 kom/pal',
         badgeType: 'success' as 'success',
       },
       {
         value: 'DZAK_5KG',
         label: 'Mrežasti džak 5 kg',
-        subLabel: '200 džakova na paleti = 1.000 kg',
-        badge: '200 kom/pal',
         badgeType: 'warning' as 'warning',
       },
       {
         value: 'DZAK_25KG',
         label: 'Mrežasti džak 25 kg',
-        subLabel: '40 džakova na paleti = 1.000 kg',
-        badge: '40 kom/pal',
       },
       {
         value: 'DZAMBO_VRECA',
@@ -815,7 +800,7 @@ const OnionDashboard: React.FC = () => {
 
   const wasteReasonOptions: CustomSelectOption[] = useMemo(
     () =>
-      Object.entries(WASTE_REASON_LABELS).map(([key, label]) => ({
+      Object.entries(WASTE_REASON_LABELS).filter(([key]) => !['PLEVA', 'SORTIRANJE_SKART'].includes(key)).map(([key, label]) => ({
         value: key,
         label,
       })),
@@ -1022,70 +1007,60 @@ const OnionDashboard: React.FC = () => {
     }
   };
 
-  const handleCreateSorting = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!sortingForm.lotId) {
-      showToast('Molimo izaberite LOT koji se sortira.', 'error');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const res = await fetch(`${API}/sorting`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          ...sortingForm,
-          storageEntryId: sortingForm.storageEntryId || null,
-          inputQuantityKg: Number(sortingForm.inputQuantityKg),
-          qualityQuantityKg: Number(sortingForm.qualityQuantityKg),
-          smallQuantityKg: Number(sortingForm.smallQuantityKg || 0),
-          wasteQuantityKg: Number(sortingForm.wasteQuantityKg || 0),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri čuvanju sortiranja.');
-      showToast(data.message || 'Sortiranje uspešno sačuvano.');
-      setIsSortingModalOpen(false);
-      setSortingForm((prev) => ({
-        ...prev,
-        inputQuantityKg: '',
-        qualityQuantityKg: '',
-        smallQuantityKg: '0',
-        wasteQuantityKg: '0',
-        notes: '',
-      }));
-      void invalidateOnionMutation(queryClient, 'sorting');
-    } catch (err: any) {
-      showToast(err.message, 'error');
-    } finally {
-      setSubmitting(false);
-    }
+  const freeQualityForLot = (lotId: string) =>
+    allSelectableLots.find((lot: any) => lot.id === lotId)?.unpackedQualityKg ?? 0;
+
+  const openEntry = (mode: typeof entryMode, lotId = '') => {
+    setEntryMode(mode);
+    setSortingForm(emptySorting);
+    const qualityKg = mode === 'packaging' ? freeQualityForLot(lotId) : 0;
+    setPackagingForm(prev => ({
+      ...prev, lotId, date: todayStr, packerCount: '', palletNumber: '', packerNotes: '',
+      ...suggestPacking(qualityKg, Number(prev.unitWeightKg), prev.packageType),
+    }));
+    setIsPackagingModalOpen(true);
   };
+
+  const sortingDifference = Number(sortingForm.inputQuantityKg) - Number(sortingForm.qualityQuantityKg)
+    - Number(sortingForm.smallQuantityKg) - Number(sortingForm.wasteQuantityKg) - Number(sortingForm.plevaKg);
+  const remainingQuality = (selectedPackagingLotObj?.unpackedQualityKg || 0)
+    + (entryMode === 'packaging' ? 0 : Number(sortingForm.qualityQuantityKg))
+    - (entryMode === 'sorting' ? 0 : Number(packagingForm.packageCount) * Number(packagingForm.unitWeightKg));
 
   const handleCreatePackaging = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!packagingForm.lotId) {
-      showToast('Molimo izaberite LOT sa sortiranim lukom I klase.', 'error');
+      showToast('Izaberite LOT.', 'error');
+      return;
+    }
+    if (entryMode !== 'packaging' && Math.abs(sortingDifference) > 0.5) {
+      showToast('Zbir I klase, sitnog luka, škarta i pleve mora odgovarati ulaznoj masi (±0,5 kg).', 'error');
+      return;
+    }
+    if (remainingQuality < -0.000001) {
+      showToast('Masa džakova je veća od raspoložive I klase za taj LOT.', 'error');
       return;
     }
     setSubmitting(true);
     try {
-      const res = await fetch(`${API}/packaging`, {
+      const res = await fetch(`${API}/${entryMode === 'sorting' ? 'sorting' : 'packaging'}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({
+        body: JSON.stringify(entryMode === 'sorting' ? {
+          ...sortingForm, lotId: packagingForm.lotId, date: packagingForm.date,
+        } : {
           ...packagingForm,
+          sorting: entryMode === 'both' ? sortingForm : undefined,
           unitWeightKg: Number(packagingForm.unitWeightKg),
           packageCount: Number(packagingForm.packageCount),
           palletsCount: packagingForm.palletsCount ? Number(packagingForm.palletsCount) : undefined,
-          packerCount: Number(packagingForm.packerCount || 4),
+          packerCount: packagingForm.packerCount ? Number(packagingForm.packerCount) : null,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Greška pri pakovanju.');
-      showToast(data.message || 'Pakovanje uspešno evidentirano.');
+      showToast(entryMode === 'both' ? 'Sortiranje i pakovanje su sačuvani.' : data.message || 'Unos je sačuvan.');
       setIsPackagingModalOpen(false);
       setPackagingForm((prev) => ({
         ...prev,
@@ -1095,7 +1070,7 @@ const OnionDashboard: React.FC = () => {
         packerNotes: '',
         notes: '',
       }));
-      void invalidateOnionMutation(queryClient, 'packaging');
+      void invalidateOnionMutation(queryClient, entryMode === 'packaging' ? 'packaging' : 'sorting');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -1118,9 +1093,9 @@ const OnionDashboard: React.FC = () => {
           packageCount: Number(editingPackaging.packageCount),
           palletsCount: editingPackaging.palletsCount
             ? Number(editingPackaging.palletsCount)
-            : undefined,
+            : null,
           palletNumber: editingPackaging.palletNumber,
-          packerCount: Number(editingPackaging.packerCount || 4),
+          packerCount: editingPackaging.packerCount ? Number(editingPackaging.packerCount) : null,
           packerNotes: editingPackaging.packerNotes,
           responsiblePerson: editingPackaging.responsiblePerson,
           notes: editingPackaging.notes,
@@ -1362,7 +1337,6 @@ const OnionDashboard: React.FC = () => {
   const tabQueryStates = {
     dovoz: [{ title: 'LOT zapisi', query: lotsQuery }, { title: 'Dovoz', query: harvestQuery }],
     skladiste: [{ title: 'Skladištenje', query: storageQuery }],
-    sortiranje: [{ title: 'Sortiranje', query: sortingQuery }],
     pakovanje: [{ title: 'Pakovanje', query: packagingQuery }],
     isporuka: [{ title: 'Isporuke', query: shipmentQuery }],
     otpis: [{ title: 'Otpis', query: wasteQuery }],
@@ -1418,30 +1392,13 @@ const OnionDashboard: React.FC = () => {
 
             <button
               type="button"
-              className={styles.btnBlue}
-              onClick={() => {
-                if (!sortingForm.lotId && allSelectableLots[0]?.id) {
-                  setSortingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
-                }
-                setIsSortingModalOpen(true);
-              }}
-            >
-              <Scale size={16} />
-              <span>Sortiranje</span>
-            </button>
-
-            <button
-              type="button"
               className={styles.btnAmber}
               onClick={() => {
-                if (!packagingForm.lotId && allSelectableLots[0]?.id) {
-                  setPackagingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
-                }
-                setIsPackagingModalOpen(true);
+                openEntry('both');
               }}
             >
               <Package size={16} />
-              <span>Pakerica (10kg / 5kg)</span>
+              <span>Pakovanje</span>
             </button>
 
             <button
@@ -1510,13 +1467,12 @@ const OnionDashboard: React.FC = () => {
               <span className={styles.kpiLabel}>4. Spakovano (10kg i 5kg)</span>
               <span className={styles.kpiValue}>{formatKgAndTons(kpi.packagedStockKg)}</span>
               <span className={styles.kpiSub}>
-                {kpi.packagedPackagesCount.toLocaleString('sr-RS')} džakova ({kpi.packagedPalletsCount}{' '}
-                paleta)
+                {kpi.packagedPackagesCount.toLocaleString('sr-RS')} džakova{kpi.packagedPalletsCount != null && ` (broj paleta: ${kpi.packagedPalletsCount})`}
               </span>
             </div>
           </div>
 
-          <div className={styles.kpiCard} onClick={() => setActiveTab('sortiranje')}>
+          <div className={styles.kpiCard} onClick={() => setActiveTab('pakovanje')}>
             <div className={`${styles.kpiIcon} ${styles.iconPurple}`}>
               <Layers size={22} />
             </div>
@@ -1581,15 +1537,6 @@ const OnionDashboard: React.FC = () => {
 
           <button
             type="button"
-            className={`${styles.tabBtn} ${activeTab === 'sortiranje' ? styles.tabBtnActive : ''}`}
-            onClick={() => setActiveTab('sortiranje')}
-          >
-            <Scale size={17} />
-            <span>Sortiranje</span>
-          </button>
-
-          <button
-            type="button"
             className={`${styles.tabBtn} ${activeTab === 'pakovanje' ? styles.tabBtnActive : ''}`}
             onClick={() => setActiveTab('pakovanje')}
           >
@@ -1608,20 +1555,20 @@ const OnionDashboard: React.FC = () => {
 
           <button
             type="button"
-            className={`${styles.tabBtn} ${activeTab === 'otpis' ? styles.tabBtnActive : ''}`}
-            onClick={() => setActiveTab('otpis')}
-          >
-            <AlertTriangle size={17} />
-            <span>Otpis</span>
-          </button>
-
-          <button
-            type="button"
             className={`${styles.tabBtn} ${activeTab === 'sledljivost' ? styles.tabBtnActive : ''}`}
             onClick={() => setActiveTab('sledljivost')}
           >
             <QrCode size={17} />
             <span>LOT Sledljivost</span>
+          </button>
+
+          <button
+            type="button"
+            className={`${styles.tabBtn} ${activeTab === 'otpis' ? styles.tabBtnActive : ''}`}
+            onClick={() => setActiveTab('otpis')}
+          >
+            <AlertTriangle size={17} />
+            <span>Otpis</span>
           </button>
         </div>
 
@@ -1969,8 +1916,7 @@ const OnionDashboard: React.FC = () => {
                     </span>
                   </h3>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                    Na paleti staje <strong>100 džakova po 10 kg (1.000 kg)</strong> ili{' '}
-                    <strong>200 džakova po 5 kg (1.000 kg)</strong>
+                    Broj džakova i paleta predlaže se iz količine I klase. Oba broja možete promeniti.
                   </div>
                 </div>
 
@@ -1978,14 +1924,11 @@ const OnionDashboard: React.FC = () => {
                   type="button"
                   className={styles.btnAmber}
                   onClick={() => {
-                    if (!packagingForm.lotId && allSelectableLots[0]?.id) {
-                      setPackagingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
-                    }
-                    setIsPackagingModalOpen(true);
+                    openEntry('both');
                   }}
                 >
                   <Plus size={16} />
-                  <span>Novo pakovanje na pakerici</span>
+                  <span>Novi unos</span>
                 </button>
               </div>
 
@@ -2005,8 +1948,7 @@ const OnionDashboard: React.FC = () => {
                         </div>
                       </div>
                       <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#d97706' }}>
-                        {item.availableCount.toLocaleString('sr-RS')} džakova (
-                        {item.availablePallets || (item.availableWeightKg / 1000).toFixed(1)} paleta)
+                        {item.availableCount.toLocaleString('sr-RS')} džakova{item.availablePallets != null && ` (broj paleta: ${item.availablePallets})`}
                       </div>
                       <div style={{ fontSize: '0.86rem', color: 'var(--text-secondary)' }}>
                         Raspoloživa masa: <strong>{formatKgAndTons(item.availableWeightKg)}</strong>
@@ -2027,10 +1969,10 @@ const OnionDashboard: React.FC = () => {
                 <div>
                   <h3 className={styles.sectionTitle}>
                     <Scale size={20} color="#16a34a" />
-                    <span>Raspoloživ sortirani luk I klase za pakovanje (po parcelama & LOT-ovima)</span>
+                    <span>Raspoloživo po LOT-u</span>
                   </h3>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                    Sirova I klasa luka na stanju spremna za pakovanje u džakove • Ukupno raspoloživo:{' '}
+                    Ukupno slobodne I klase za pakovanje:{' '}
                     <strong style={{ color: '#16a34a' }}>
                       {formatKgAndTons(kpi.unpackedQualityKg)}
                     </strong>
@@ -2085,6 +2027,7 @@ const OnionDashboard: React.FC = () => {
                       <th>LOT Broj</th>
                       <th>Parcela porekla</th>
                       <th>Sorta luka</th>
+                      <th>Sirovo stanje</th>
                       <th>Sortirano I klasa</th>
                       <th>Već spakovano</th>
                       <th>Slobodno za pakovanje</th>
@@ -2096,7 +2039,7 @@ const OnionDashboard: React.FC = () => {
                   <tbody>
                     {filteredUnpackedLots.length === 0 ? (
                       <tr>
-                        <td colSpan={9}>
+                        <td colSpan={10}>
                           <div className={styles.emptyState}>
                             <CheckCircle2 size={28} color="#16a34a" />
                             <span>Nema pronađenih partija za izabrane filtere.</span>
@@ -2107,8 +2050,6 @@ const OnionDashboard: React.FC = () => {
                       paginatedReadyLots.map((lot: any) => {
                         const availKg = Math.max(0, lot.unpackedQualityKg || 0);
                         const packedKg = Math.max(0, (lot.sortedQualityKg || 0) - availKg);
-                        const pal10 = Math.floor(availKg / 1000);
-                        const pal5 = Math.floor(availKg / 1000);
 
                         return (
                           <tr key={lot.id}>
@@ -2136,6 +2077,7 @@ const OnionDashboard: React.FC = () => {
                             <td style={{ fontWeight: 600 }}>
                               {lot.cropVariety || lot.parcel?.currentCrop || 'Žuti luk'}
                             </td>
+                            <td>{formatKgAndTons(lot.rawStockKg)}</td>
                             <td style={{ fontWeight: 700 }}>{formatKgAndTons(lot.sortedQualityKg)}</td>
                             <td style={{ color: 'var(--text-secondary)' }}>
                               {formatKgAndTons(packedKg)}
@@ -2153,10 +2095,10 @@ const OnionDashboard: React.FC = () => {
                               {availKg > 0 ? (
                                 <div style={{ fontSize: '0.78rem', lineHeight: 1.35 }}>
                                   <div>
-                                    <strong style={{ color: '#d97706' }}>~{pal10} paleta</strong> od 10 kg ({pal10 * 100} kom)
+                                    <strong style={{ color: '#d97706' }}>{Math.floor(availKg / 10)} džakova</strong> po 10 kg
                                   </div>
                                   <div style={{ color: 'var(--text-muted)' }}>
-                                    ili ~{pal5} paleta od 5 kg ({pal5 * 200} kom)
+                                    ili {Math.floor(availKg / 5)} džakova po 5 kg
                                   </div>
                                 </div>
                               ) : (
@@ -2182,26 +2124,22 @@ const OnionDashboard: React.FC = () => {
                                     color: '#64748b',
                                   }}
                                 >
-                                  100% Spakovano
+                                  {lot.rawStockKg > 0 ? 'Za sortiranje' : 'Spakovano'}
                                 </span>
                               )}
                             </td>
                             <td>
-                              {availKg > 0 ? (
+                              {availKg > 0 || lot.rawStockKg > 0 ? (
                                 <button
                                   type="button"
                                   className={styles.btnAmberSmall}
                                   onClick={() => {
-                                    setPackagingForm((prev) => ({
-                                      ...prev,
-                                      lotId: lot.id,
-                                    }));
-                                    setIsPackagingModalOpen(true);
+                                    openEntry(availKg > 0 ? 'packaging' : 'both', lot.id);
                                   }}
                                   title={`Pokreni pakovanje za LOT ${lot.lotNumber}`}
                                 >
                                   <Plus size={13} strokeWidth={2.5} />
-                                  <span>Spakuj</span>
+                                  <span>{availKg > 0 ? 'Pakuj' : 'Preradi'}</span>
                                 </button>
                               ) : (
                                 <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>-</span>
@@ -2229,7 +2167,7 @@ const OnionDashboard: React.FC = () => {
               <div className={styles.sectionHeader}>
                 <h3 className={styles.sectionTitle}>
                   <Package size={20} color="#16a34a" />
-                  <span>Evidencija rada pakerice i spakovanih paleta (sa opcijom izmene)</span>
+                  <span>Evidencija sortiranja i pakovanja</span>
                 </h3>
 
                 <div className={styles.filterRow}>
@@ -2266,7 +2204,9 @@ const OnionDashboard: React.FC = () => {
                       <th>Datum</th>
                       <th>LOT Broj</th>
                       <th>Parcela & Sorta</th>
-                      <th>Tip pakovanja (10kg / 5kg)</th>
+                      {sortingFields.map(([key, label]) => <th key={key}>{label} (kg)</th>)}
+                      <th>Škart (%)</th>
+                      <th>Tip pakovanja</th>
                       <th>Broj paleta & džakova</th>
                       <th>Preostalo na stanju</th>
                       <th>Broj pakera</th>
@@ -2275,18 +2215,17 @@ const OnionDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {(packagingData?.packagings || []).length === 0 ? (
+                    {(packagingData?.rows || []).length === 0 ? (
                       <tr>
-                        <td colSpan={9}>
+                        <td colSpan={15}>
                           <div className={styles.emptyState}>
-                            <span>Nema zapisa o pakovanju.</span>
+                            <span>Nema unosa za izabrane filtere.</span>
                           </div>
                         </td>
                       </tr>
                     ) : (
-                      (packagingData?.packagings || []).map((pk: any) => {
-                        const pallets =
-                          pk.palletsCount || Number((pk.totalWeightKg / 1000).toFixed(1));
+                      (packagingData?.rows || []).map((pk: any) => {
+                        const pallets = pk.palletsCount;
                         return (
                           <tr key={pk.id}>
                             <td>{formatDateTime(pk.date)}</td>
@@ -2309,6 +2248,9 @@ const OnionDashboard: React.FC = () => {
                                 Sorta: {pk.lot?.cropVariety || pk.lot?.parcel?.currentCrop || 'Žuti luk'}
                               </div>
                             </td>
+                            {sortingFields.map(([key]) => <td key={key}>{pk.sorting ? pk.sorting[key].toLocaleString('sr-RS') : '—'}</td>)}
+                            <td>{pk.sorting ? pk.sorting.wastePercentage + '%' : '—'}</td>
+                            {pk.packageType ? <>
                             <td style={{ fontWeight: 700 }}>
                               {PACKAGE_LABELS[pk.packageType] || pk.packageType}
                               {pk.palletNumber && (
@@ -2318,7 +2260,7 @@ const OnionDashboard: React.FC = () => {
                               )}
                             </td>
                             <td>
-                              <strong>{pallets} paleta</strong> ({pk.packageCount.toLocaleString('sr-RS')}{' '}
+                              <strong>{pallets != null ? `Broj paleta: ${pallets}` : pk.legacyPalletEstimate != null ? `Ranija procena: ${pk.legacyPalletEstimate.toLocaleString('sr-RS')} paleta` : 'Broj paleta nije upisan'}</strong> ({pk.packageCount.toLocaleString('sr-RS')}{' '}
                               kom x {pk.unitWeightKg} kg = {formatKgAndTons(pk.totalWeightKg)})
                             </td>
                             <td
@@ -2339,7 +2281,7 @@ const OnionDashboard: React.FC = () => {
                                 }}
                               >
                                 <Users size={13} />
-                                <span>{pk.packerCount || 4}</span>
+                                <span>{pk.packerCount ?? '—'}</span>
                               </span>
                               {pk.packerNotes &&
                                 !/^pakerica:\s*\d+\s*(pakera|žene|zene|radnika)\s*(u\s*smeni)?$/i.test(pk.packerNotes.trim()) && (
@@ -2383,9 +2325,9 @@ const OnionDashboard: React.FC = () => {
                                     setEditingPackaging({
                                       ...pk,
                                       shippedCountAlready: Math.max(0, pk.packageCount - pk.availableCount),
-                                      packerCount: pk.packerCount || 4,
+                                      packerCount: pk.packerCount ?? '',
                                       responsiblePerson: pk.responsiblePerson || 'Bojan Ćorović',
-                                      palletsCount: pallets,
+                                      palletsCount: pallets ?? '',
                                     })
                                   }
                                 >
@@ -2405,6 +2347,7 @@ const OnionDashboard: React.FC = () => {
                                 )}
                               </div>
                             </td>
+                            </> : <td colSpan={6}>Samo sortiranje • {pk.supervisor?.name}</td>}
                           </tr>
                         );
                       })
@@ -2419,7 +2362,7 @@ const OnionDashboard: React.FC = () => {
                 totalItems={packagingData?.total || 0}
                 pageSize={PAGE_SIZE}
                 onPageChange={setPackagingPage}
-                itemName="spakovanih partija"
+                itemName="unosa"
               />
             </div>
           </>
@@ -2687,115 +2630,6 @@ const OnionDashboard: React.FC = () => {
         )}
 
         {/* ============================================================ */}
-        {/* TAB 3: SORTIRANJE & KALIBRACIJA */}
-        {/* ============================================================ */}
-        {!tabUnavailable && activeTab === 'sortiranje' && (
-          <div className={styles.sectionCard}>
-            <div className={styles.sectionHeader}>
-              <h3 className={styles.sectionTitle}>
-                <Scale size={20} color="#0284c7" />
-                <span>Dnevnik sortiranja i kalibracije (I klasa za pakericu, Sitan luk, Kalo)</span>
-              </h3>
-
-              <button
-                type="button"
-                className={styles.btnBlue}
-                onClick={() => {
-                  if (!sortingForm.lotId && allSelectableLots[0]?.id) {
-                    setSortingForm((prev) => ({ ...prev, lotId: allSelectableLots[0].id }));
-                  }
-                  setIsSortingModalOpen(true);
-                }}
-              >
-                <Plus size={16} />
-                <span>Novo sortiranje</span>
-              </button>
-            </div>
-
-            <div className={styles.tableWrapper}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>Datum</th>
-                    <th>LOT Broj</th>
-                    <th>Parcela</th>
-                    <th>Ubačeno na liniju</th>
-                    <th>I Klasa (Za pakericu)</th>
-                    <th>Sitan luk (II klasa)</th>
-                    <th>Otpad / Škart</th>
-                    <th>% Kala</th>
-                    <th>Odgovorno lice</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(sortingData?.sortings || []).length === 0 ? (
-                    <tr>
-                      <td colSpan={9}>
-                        <div className={styles.emptyState}>
-                          <Scale size={28} />
-                          <span>Nema evidentiranih procesa sortiranja.</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : (
-                    (sortingData?.sortings || []).map((sr: any) => (
-                      <tr key={sr.id}>
-                        <td>{formatDateTime(sr.date)}</td>
-                        <td>
-                          <button
-                            type="button"
-                            className={styles.lotBadge}
-                            onClick={() => handleOpenTraceability(sr.lot?.lotNumber)}
-                          >
-                            <QrCode size={13} />
-                            <span>{sr.lot?.lotNumber}</span>
-                          </button>
-                        </td>
-                        <td>{sr.lot?.parcel?.name || '-'}</td>
-                        <td style={{ fontWeight: 700 }}>{formatKgAndTons(sr.inputQuantityKg)}</td>
-                        <td style={{ fontWeight: 800, color: '#16a34a' }}>
-                          {formatKgAndTons(sr.qualityQuantityKg)}
-                        </td>
-                        <td style={{ fontWeight: 600, color: '#9333ea' }}>
-                          {formatKgAndTons(sr.smallQuantityKg)}
-                        </td>
-                        <td style={{ fontWeight: 600, color: '#dc2626' }}>
-                          {formatKgAndTons(sr.wasteQuantityKg)}
-                        </td>
-                        <td>
-                          <span
-                            className={styles.badgeStatus}
-                            style={{
-                              backgroundColor:
-                                sr.wastePercentage > 10
-                                  ? 'rgba(220, 38, 38, 0.14)'
-                                  : 'rgba(22, 163, 74, 0.14)',
-                              color: sr.wastePercentage > 10 ? '#dc2626' : '#16a34a',
-                            }}
-                          >
-                            {sr.wastePercentage}%
-                          </span>
-                        </td>
-                        <td>{sr.supervisor?.name || 'Bojan Ćorović'}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <TablePagination
-              currentPage={sortingPage}
-              totalPages={sortingData?.totalPages || 1}
-              totalItems={sortingData?.total || 0}
-              pageSize={PAGE_SIZE}
-              onPageChange={setSortingPage}
-              itemName="procesa sortiranja"
-            />
-          </div>
-        )}
-
-        {/* ============================================================ */}
         {/* TAB 5: ISPORUKA KUPCU & OTPREMNICE */}
         {/* ============================================================ */}
         {!tabUnavailable && activeTab === 'isporuka' && (
@@ -2944,8 +2778,7 @@ const OnionDashboard: React.FC = () => {
                           </button>
                         </td>
                         <td style={{ fontWeight: 700 }}>
-                          {sh.totalPackagesCount.toLocaleString('sr-RS')} džakova (
-                          {(sh.totalWeightKg / 1000).toFixed(1)} paleta)
+                          {sh.totalPackagesCount.toLocaleString('sr-RS')} džakova
                         </td>
                         <td style={{ fontWeight: 800, color: '#16a34a' }}>
                           {formatKgAndTons(sh.totalWeightKg)}
@@ -3717,6 +3550,7 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         placeholder="npr. 20 boksova (= 22.000 kg)"
                         value={harvestForm.boxCount}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) => {
                           const b = e.target.value;
                           const kgCalc = Number(b || 0) * 1100;
@@ -3738,6 +3572,7 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         placeholder="npr. 22000"
                         value={harvestForm.quantityKg}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) => {
                           const kg = e.target.value;
                           const bCalc = Math.round(Number(kg || 0) / 1100);
@@ -3907,6 +3742,7 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         placeholder="npr. 50 boksova"
                         value={storageForm.boxCount}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) => {
                           const b = e.target.value;
                           const kgCalc = Number(b || 0) * 1100;
@@ -3928,6 +3764,7 @@ const OnionDashboard: React.FC = () => {
                       min="1"
                       className={styles.input}
                       value={storageForm.quantityKg}
+                      onWheel={preventWheelNumberChange}
                       onChange={(e) =>
                         setStorageForm({ ...storageForm, quantityKg: e.target.value })
                       }
@@ -4018,6 +3855,7 @@ const OnionDashboard: React.FC = () => {
                         min="0"
                         className={styles.input}
                         value={editingStorage.boxCount || ''}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) => {
                           setEditingStorage({
                             ...editingStorage,
@@ -4038,6 +3876,7 @@ const OnionDashboard: React.FC = () => {
                         min="0"
                         className={styles.input}
                         value={editingStorage.currentQuantityKg}
+                        onWheel={preventWheelNumberChange}
                         required
                         onChange={(e) =>
                           setEditingStorage({
@@ -4088,157 +3927,15 @@ const OnionDashboard: React.FC = () => {
         )}
 
         {/* ============================================================ */}
-        {/* MODAL 3: SORTIRANJE & KALIBRACIJA */}
-        {/* ============================================================ */}
-        {isSortingModalOpen && (
-          <div className={styles.modalOverlay} onClick={() => setIsSortingModalOpen(false)}>
-            <div className={styles.modalCard} onClick={(e) => e.stopPropagation()}>
-              <div className={styles.modalHeader}>
-                <h3>
-                  <Scale size={20} color="#0284c7" />
-                  <span>Evidencija sortiranja i kalibracije luka</span>
-                </h3>
-                <button
-                  type="button"
-                  className={styles.btnIconSmall}
-                  onClick={() => setIsSortingModalOpen(false)}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <form onSubmit={handleCreateSorting}>
-                <div className={styles.modalBody}>
-                  <div className={styles.formGroup}>
-                    <label>LOT koji se sortira *</label>
-                    <CustomSelect
-                      value={sortingForm.lotId}
-                      onChange={(val) => setSortingForm({ ...sortingForm, lotId: val })}
-                      options={sortingLotOptions}
-                      placeholder="— Izaberi LOT sa sirovim lukom —"
-                    />
-                  </div>
-
-                  <div className={styles.formGrid2}>
-                    <div className={styles.formGroup}>
-                      <label>Datum sortiranja *</label>
-                      <input
-                        type="date"
-                        className={styles.input}
-                        value={sortingForm.date}
-                        onChange={(e) => setSortingForm({ ...sortingForm, date: e.target.value })}
-                        required
-                      />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>Ulazna masa ubačena na liniju (kg) *</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="1"
-                        className={styles.input}
-                        placeholder="npr. 10000"
-                        value={sortingForm.inputQuantityKg}
-                        onChange={(e) => {
-                          const inputVal = e.target.value;
-                          const numIn = Number(inputVal || 0);
-                          const small = Number(sortingForm.smallQuantityKg || 0);
-                          const waste = Number(sortingForm.wasteQuantityKg || 0);
-                          const autoQuality = Math.max(0, numIn - small - waste);
-                          setSortingForm({
-                            ...sortingForm,
-                            inputQuantityKg: inputVal,
-                            qualityQuantityKg: numIn > 0 ? String(autoQuality) : '',
-                          });
-                        }}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formGrid3}>
-                    <div className={styles.formGroup}>
-                      <label>I Klasa — Kvalitetan (kg) *</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="0"
-                        className={styles.input}
-                        value={sortingForm.qualityQuantityKg}
-                        onChange={(e) =>
-                          setSortingForm({ ...sortingForm, qualityQuantityKg: e.target.value })
-                        }
-                        required
-                      />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>II Klasa — Sitan luk (kg)</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="0"
-                        className={styles.input}
-                        value={sortingForm.smallQuantityKg}
-                        onChange={(e) => {
-                          const smallVal = e.target.value;
-                          const numIn = Number(sortingForm.inputQuantityKg || 0);
-                          const quality = Number(sortingForm.qualityQuantityKg || 0);
-                          const autoWaste = Math.max(0, numIn - quality - Number(smallVal || 0));
-                          setSortingForm({
-                            ...sortingForm,
-                            smallQuantityKg: smallVal,
-                            wasteQuantityKg: String(autoWaste),
-                          });
-                        }}
-                      />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>Otpad / Škart / Zemlja (kg)</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="0"
-                        className={styles.input}
-                        value={sortingForm.wasteQuantityKg}
-                        onChange={(e) =>
-                          setSortingForm({ ...sortingForm, wasteQuantityKg: e.target.value })
-                        }
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className={styles.modalFooter}>
-                  <button
-                    type="button"
-                    className={styles.btnSecondary}
-                    onClick={() => setIsSortingModalOpen(false)}
-                  >
-                    Odustani
-                  </button>
-                  <button type="submit" className={styles.btnBlue} disabled={submitting}>
-                    <CheckCircle2 size={16} />
-                    <span>{submitting ? 'Čuvanje...' : 'Potvrdi sortiranje'}</span>
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* ============================================================ */}
         {/* MODAL 4: PAKOVANJE NA PAKERICI (10KG / 5KG, BROJ PAKERA, BOJAN ĆOROVIĆ) */}
         {/* ============================================================ */}
         {isPackagingModalOpen && (
           <div className={styles.modalOverlay} onClick={() => setIsPackagingModalOpen(false)}>
-            <div className={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div className={`${styles.modalCard} ${styles.entryModal}`} onClick={(e) => e.stopPropagation()}>
               <div className={styles.modalHeader}>
                 <h3>
                   <Package size={20} color="#d97706" />
-                  <span>Pakovanje na pakerici (10 kg i 5 kg džakovi • 100 kom / paleti)</span>
+                  <span>Evidencija sortiranja i pakovanja</span>
                 </h3>
                 <button
                   type="button"
@@ -4252,199 +3949,215 @@ const OnionDashboard: React.FC = () => {
               <form onSubmit={handleCreatePackaging}>
                 <div className={styles.modalBody}>
                   <div className={styles.formGroup}>
-                    <label>Izaberi LOT sa sortiranim lukom I klase *</label>
+                    <label id="onion-entry-mode-label">Vrsta unosa</label>
                     <CustomSelect
-                      value={packagingForm.lotId}
-                      onChange={(val) =>
-                        setPackagingForm({ ...packagingForm, lotId: val })
-                      }
-                      options={packagingLotOptions}
-                      placeholder="— Izaberi LOT sa I klasom —"
+                      labelledBy="onion-entry-mode-label"
+                      value={entryMode}
+                      options={entryModeOptions}
+                      searchable={false}
+                      onChange={value => {
+                        setEntryMode(value as typeof entryMode);
+                        setPackagingForm(prev => ({
+                          ...prev, lotId: '',
+                          ...suggestPacking(value === 'both' ? Number(sortingForm.qualityQuantityKg) : 0,
+                            Number(prev.unitWeightKg), prev.packageType),
+                        }));
+                      }}
                     />
+                  </div>
+                  <div className={styles.formGrid2}>
+                    <div className={styles.formGroup}>
+                      <label id="onion-entry-lot-label">LOT *</label>
+                      <CustomSelect
+                        labelledBy="onion-entry-lot-label"
+                        value={packagingForm.lotId}
+                        onChange={lotId => setPackagingForm(prev => ({
+                          ...prev, lotId,
+                          ...(entryMode === 'packaging' && suggestPacking(freeQualityForLot(lotId), Number(prev.unitWeightKg), prev.packageType)),
+                        }))}
+                        options={entryMode === 'packaging' ? packagingLotOptions : sortingLotOptions}
+                        placeholder="Izaberi LOT"
+                        hideTriggerSubLabel
+                      />
+                    </div>
+                    <div className={styles.formGroup}>
+                      <label htmlFor="onion-entry-date">Datum *</label>
+                      <input id="onion-entry-date" type="date" required className={styles.input}
+                        value={packagingForm.date}
+                        onChange={e => setPackagingForm({ ...packagingForm, date: e.target.value })} />
+                    </div>
                   </div>
 
                   {selectedPackagingLotObj && (
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        padding: '0.55rem 0.85rem',
-                        borderRadius: '8px',
-                        backgroundColor: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-color)',
-                        fontSize: '0.82rem',
-                        marginTop: '-0.35rem',
-                        marginBottom: '0.5rem',
-                      }}
-                    >
-                      <span>
-                        Parcela:{' '}
-                        <strong>
-                          {selectedPackagingLotObj.parcel?.code} — {selectedPackagingLotObj.parcel?.name}
-                        </strong>{' '}
-                        ({selectedPackagingLotObj.cropVariety || 'Žuti luk'})
-                      </span>
-                      <span style={{ color: '#16a34a', fontWeight: 700 }}>
-                        Raspoloživo I klasa: {formatKgAndTons(selectedPackagingLotObj.unpackedQualityKg)}
-                      </span>
+                    <div className={styles.entryBalance}>
+                      <strong>{selectedPackagingLotObj.parcel?.code} — {selectedPackagingLotObj.parcel?.name} ({selectedPackagingLotObj.cropVariety || 'Žuti luk'})</strong>
+                      <span>Sirovo: <strong>{formatKgAndTons(selectedPackagingLotObj.rawStockKg)}</strong></span>
+                      <span>Slobodna I klasa: <strong>{formatKgAndTons(selectedPackagingLotObj.unpackedQualityKg)}</strong></span>
                     </div>
                   )}
 
-                  <div className={styles.formGrid2}>
-                    <div className={styles.formGroup}>
-                      <label>Tip džaka / pakovanja *</label>
-                      <CustomSelect
-                        value={packagingForm.packageType}
-                        onChange={(t) => {
-                          const unitW = PACKAGE_WEIGHTS[t] || 10;
-                          const bagsPerPal = BAGS_PER_PALLET[t] || 100;
-                          const curPallets = Number(packagingForm.palletsCount || 0);
-                          setPackagingForm({
-                            ...packagingForm,
-                            packageType: t,
-                            unitWeightKg: String(unitW),
-                            packageCount:
-                              curPallets > 0
-                                ? String(Math.round(curPallets * bagsPerPal))
-                                : packagingForm.packageCount,
-                          });
-                        }}
-                        options={packageTypeOptions}
-                        searchable={false}
-                      />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>Broj paleta (1 paleta = 100x10kg ili 200x5kg)</label>
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.5"
-                        className={styles.input}
-                        placeholder="npr. 5 paleta (= 500 džakova od 10kg)"
-                        value={packagingForm.palletsCount}
-                        onChange={(e) => {
-                          const pal = e.target.value;
-                          const bagsPerPal =
-                            BAGS_PER_PALLET[packagingForm.packageType] || 100;
-                          const calcBags = Math.round(Number(pal || 0) * bagsPerPal);
-                          setPackagingForm({
-                            ...packagingForm,
-                            palletsCount: pal,
-                            packageCount: calcBags > 0 ? String(calcBags) : '',
-                          });
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formGrid2}>
-                    <div className={styles.formGroup}>
-                      <label>Ukupan broj džakova (kom) *</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="1"
-                        className={styles.input}
-                        placeholder="npr. 500"
-                        value={packagingForm.packageCount}
-                        onChange={(e) => {
-                          const bags = e.target.value;
-                          const bagsPerPal =
-                            BAGS_PER_PALLET[packagingForm.packageType] || 100;
-                          const calcPal = Number((Number(bags || 0) / bagsPerPal).toFixed(2));
-                          setPackagingForm({
-                            ...packagingForm,
-                            packageCount: bags,
-                            palletsCount: calcPal > 0 ? String(calcPal) : '',
-                          });
-                        }}
-                        required
-                      />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>Oznaka palete / lokacije</label>
-                      <input
-                        type="text"
-                        className={styles.input}
-                        placeholder="npr. PALETA-01..05"
-                        value={packagingForm.palletNumber}
-                        onChange={(e) =>
-                          setPackagingForm({ ...packagingForm, palletNumber: e.target.value })
-                        }
-                      />
-                    </div>
-                  </div>
-
-                  {/* Pakerica (broj pakera - izmenljivo) i Bojan Ćorović */}
-                  <div className={styles.formGrid2}>
-                    <div className={styles.formGroup}>
-                      <label>Broj pakera na pakerici (izmenljivo) *</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="1"
-                        max="30"
-                        className={styles.input}
-                        value={packagingForm.packerCount}
-                        onChange={(e) =>
-                          setPackagingForm({ ...packagingForm, packerCount: e.target.value })
-                        }
-                        required
-                      />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>Zadužen za ulaz, izlaz i pakovanje *</label>
-                      <input
-                        type="text"
-                        className={styles.input}
-                        value={packagingForm.responsiblePerson}
-                        onChange={(e) =>
-                          setPackagingForm({ ...packagingForm, responsiblePerson: e.target.value })
-                        }
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formGroup}>
-                    <label>Napomena za pakericu (opciono)</label>
-                    <input
-                      type="text"
-                      className={styles.input}
-                      placeholder="npr. Druga smena, priprema za Maxi..."
-                      value={packagingForm.packerNotes}
-                      onChange={(e) =>
-                        setPackagingForm({ ...packagingForm, packerNotes: e.target.value })
-                      }
-                    />
-                  </div>
-
-                  {Number(packagingForm.packageCount) > 0 && (
-                    <div
-                      style={{
-                        padding: '0.75rem 1rem',
-                        borderRadius: '9px',
-                        backgroundColor: 'rgba(217, 119, 6, 0.1)',
-                        color: '#d97706',
-                        fontWeight: 700,
-                        fontSize: '0.88rem',
-                      }}
-                    >
-                      Bilans pakovanja: {packagingForm.packageCount} džakova po{' '}
-                      {packagingForm.unitWeightKg} kg ={' '}
-                      <strong>
-                        {formatKgAndTons(
-                          Number(packagingForm.packageCount) * Number(packagingForm.unitWeightKg)
-                        )}
-                      </strong>{' '}
-                      ({packagingForm.palletsCount || (Number(packagingForm.packageCount) * Number(packagingForm.unitWeightKg)) / 1000}{' '}
-                      paleta) • Pakerica: {packagingForm.packerCount} pakera
-                    </div>
+                  {entryMode !== 'packaging' && (
+                    <section className={styles.entrySection}>
+                      <h3 className={styles.sectionTitle}><Scale size={18} color="#0284c7" />Sortiranje</h3>
+                      <div className={styles.sortingInputs}>
+                        {sortingFields.map(([key, label]) => {
+                          const required = key === 'inputQuantityKg' || key === 'qualityQuantityKg';
+                          return (
+                            <div key={key} className={styles.formGroup}>
+                              <label htmlFor={`onion-${key}`}>{label} (kg){required && ' *'}</label>
+                              <input id={`onion-${key}`} type="number" className={styles.input} step="any"
+                                min={key === 'inputQuantityKg' ? 0.01 : 0} required={required}
+                                value={sortingForm[key]} placeholder="0"
+                                onWheel={preventWheelNumberChange}
+                                onChange={e => {
+                                  const value = e.target.value;
+                                  setSortingForm({ ...sortingForm, [key]: value });
+                                  if (entryMode === 'both' && key === 'qualityQuantityKg') {
+                                    setPackagingForm(prev => ({
+                                      ...prev, ...suggestPacking(Number(value), Number(prev.unitWeightKg), prev.packageType),
+                                    }));
+                                  }
+                                }} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className={styles.entryBalance}>
+                        <span>Razlika između ulaza i izlaza</span>
+                        <strong>{sortingDifference.toLocaleString('sr-RS')} kg</strong>
+                      </div>
+                    </section>
                   )}
+                  {entryMode !== 'sorting' && (
+                    <section className={styles.entrySection}>
+                      <h3 className={styles.sectionTitle}><Package size={18} color="#d97706" />Pakovanje</h3>
+                      <div className={styles.formGrid2}>
+                        <div className={styles.formGroup}>
+                          <label>Tip džaka / pakovanja *</label>
+                          <CustomSelect
+                            value={packagingForm.packageType}
+                            onChange={(t) => {
+                              const unitW = PACKAGE_WEIGHTS[t] || 10;
+                              setPackagingForm({
+                                ...packagingForm,
+                                packageType: t,
+                                unitWeightKg: String(unitW),
+                                ...suggestPacking(entryMode === 'packaging' ? freeQualityForLot(packagingForm.lotId)
+                                  : Number(sortingForm.qualityQuantityKg), unitW, t),
+                              });
+                            }}
+                            options={packageTypeOptions}
+                            searchable={false}
+                          />
+                        </div>
+
+                        <div className={styles.formGroup}>
+                          <label>Broj paleta</label>
+                          <input
+                            type="number"
+                            step="1"
+                            min="1"
+                            className={styles.input}
+                            placeholder="npr. 2"
+                            value={packagingForm.palletsCount}
+                            onWheel={preventWheelNumberChange}
+                            onChange={e => setPackagingForm({ ...packagingForm, palletsCount: e.target.value })}
+                          />
+                        </div>
+                      </div>
+
+                      <div className={styles.formGrid2}>
+                        <div className={styles.formGroup}>
+                          <label>Ukupan broj džakova (kom) *</label>
+                          <input
+                            type="number"
+                            step="1"
+                            min="1"
+                            className={styles.input}
+                            placeholder="npr. 500"
+                            value={packagingForm.packageCount}
+                            onWheel={preventWheelNumberChange}
+                            onChange={e => setPackagingForm({
+                              ...packagingForm, packageCount: e.target.value,
+                              palletsCount: suggestPallets(Number(e.target.value), Number(packagingForm.unitWeightKg), packagingForm.packageType),
+                            })}
+                            required
+                          />
+                        </div>
+
+                        <div className={styles.formGroup}>
+                          <label>Oznaka palete / lokacije</label>
+                          <input
+                            type="text"
+                            className={styles.input}
+                            placeholder="npr. PALETA-01..05"
+                            value={packagingForm.palletNumber}
+                            onChange={(e) =>
+                              setPackagingForm({ ...packagingForm, palletNumber: e.target.value })
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      {/* Pakerica (broj pakera - izmenljivo) i Bojan Ćorović */}
+                      <div className={styles.formGrid2}>
+                        <div className={styles.formGroup}>
+                          <label>Broj pakera (opciono)</label>
+                          <input
+                            type="number"
+                            step="1"
+                            min="1"
+                            max="30"
+                            className={styles.input}
+                            value={packagingForm.packerCount}
+                            onWheel={preventWheelNumberChange}
+                            onChange={(e) =>
+                              setPackagingForm({ ...packagingForm, packerCount: e.target.value })
+                            }
+                          />
+                        </div>
+
+                        <div className={styles.formGroup}>
+                          <label>Zadužen za ulaz, izlaz i pakovanje *</label>
+                          <input
+                            type="text"
+                            className={styles.input}
+                            value={packagingForm.responsiblePerson}
+                            onChange={(e) =>
+                              setPackagingForm({ ...packagingForm, responsiblePerson: e.target.value })
+                            }
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      <div className={styles.formGroup}>
+                        <label>Napomena za pakericu (opciono)</label>
+                        <input
+                          type="text"
+                          className={styles.input}
+                          placeholder="npr. Druga smena, priprema za Maxi..."
+                          value={packagingForm.packerNotes}
+                          onChange={(e) =>
+                            setPackagingForm({ ...packagingForm, packerNotes: e.target.value })
+                          }
+                        />
+                      </div>
+
+                      {Number(packagingForm.packageCount) > 0 && (
+                        <div className={styles.entryBalance}>
+                          <span>Bilans pakovanja</span>
+                          <strong>{packagingForm.packageCount} × {packagingForm.unitWeightKg} kg = {formatKgAndTons(
+                            Number(packagingForm.packageCount) * Number(packagingForm.unitWeightKg)
+                          )}</strong>
+                        </div>
+                      )}
+                    </section>
+                  )}
+                  <div className={styles.entryBalance}>
+                    <span>Preostala slobodna I klasa</span>
+                    <strong>{remainingQuality.toLocaleString('sr-RS')} kg</strong>
+                  </div>
                 </div>
 
                 <div className={styles.modalFooter}>
@@ -4457,7 +4170,7 @@ const OnionDashboard: React.FC = () => {
                   </button>
                   <button type="submit" className={styles.btnAmber} disabled={submitting}>
                     <CheckCircle2 size={16} />
-                    <span>{submitting ? 'Čuvanje...' : 'Sačuvaj pakovanje na pakerici'}</span>
+                    <span>{submitting ? 'Čuvanje...' : 'Sačuvaj unos'}</span>
                   </button>
                 </div>
               </form>
@@ -4498,7 +4211,6 @@ const OnionDashboard: React.FC = () => {
                             ...editingPackaging,
                             packageType: t,
                             unitWeightKg: PACKAGE_WEIGHTS[t] || 10,
-                            palletsCount: Number(editingPackaging.packageCount) * (PACKAGE_WEIGHTS[t] || 10) / 1000,
                           });
                         }}
                         options={packageTypeOptions}
@@ -4514,11 +4226,11 @@ const OnionDashboard: React.FC = () => {
                         min={Math.max(1, editingPackaging.shippedCountAlready)}
                         className={styles.input}
                         value={editingPackaging.packageCount}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) =>
                           setEditingPackaging({
                             ...editingPackaging,
                             packageCount: e.target.value,
-                            palletsCount: Number(e.target.value) * Number(editingPackaging.unitWeightKg) / 1000,
                           })
                         }
                         required
@@ -4526,12 +4238,14 @@ const OnionDashboard: React.FC = () => {
                     </div>
                   </div>
 
-                  <p>
-                    Broj paleta (1.000 kg/paleta): {editingPackaging.palletsCount}.
-                    Pri promeni količine proverite i oznake paleta.
-                    {editingPackaging.shippedCountAlready > 0 &&
-                      ' Tip i težina pakovanja zaključani su jer već postoji otprema.'}
-                  </p>
+                  <div className={styles.formGroup}>
+                    <label htmlFor="edit-pallet-count">Broj paleta</label>
+                    <input id="edit-pallet-count" type="number" min="1" step="1" className={styles.input}
+                      value={editingPackaging.palletsCount}
+                      onWheel={preventWheelNumberChange}
+                      onChange={e => setEditingPackaging({ ...editingPackaging, palletsCount: e.target.value })} />
+                  </div>
+                  {editingPackaging.shippedCountAlready > 0 && <p>Tip i težina pakovanja zaključani su jer već postoji otprema.</p>}
                   <p aria-live="polite">
                     {Number(editingPackaging.packageCount) * Number(editingPackaging.unitWeightKg) > Number(editingPackaging.totalWeightKg)
                       ? `Povećanje zahteva dodatnih ${(Number(editingPackaging.packageCount) * Number(editingPackaging.unitWeightKg) - Number(editingPackaging.totalWeightKg)).toLocaleString('sr-RS', { maximumFractionDigits: 2 })} kg slobodnog sortiranog luka I klase istog LOT-a. Ako ga nema dovoljno, prvo evidentirajte stvarno sortiranje ili ispravite pogrešnu raniju evidenciju sortiranja.`
@@ -4542,7 +4256,7 @@ const OnionDashboard: React.FC = () => {
 
                   <div className={styles.formGrid2}>
                     <div className={styles.formGroup}>
-                      <label>Broj pakera na pakerici *</label>
+                      <label>Broj pakera (opciono)</label>
                       <input
                         type="number"
                         step="1"
@@ -4550,13 +4264,13 @@ const OnionDashboard: React.FC = () => {
                         max="30"
                         className={styles.input}
                         value={editingPackaging.packerCount}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) =>
                           setEditingPackaging({
                             ...editingPackaging,
                             packerCount: e.target.value,
                           })
                         }
-                        required
                       />
                     </div>
 
@@ -4746,6 +4460,7 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         placeholder="npr. 300 (3 palete po 100 džakova)"
                         value={shipmentForm.packageCount}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) =>
                           setShipmentForm({ ...shipmentForm, packageCount: e.target.value })
                         }
@@ -4762,6 +4477,7 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         placeholder="npr. 48"
                         value={shipmentForm.pricePerKg}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) =>
                           setShipmentForm({ ...shipmentForm, pricePerKg: e.target.value })
                         }
@@ -4860,6 +4576,7 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         placeholder="npr. 250"
                         value={wasteForm.quantityKg}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) =>
                           setWasteForm({ ...wasteForm, quantityKg: e.target.value })
                         }
@@ -5013,6 +4730,7 @@ const OnionDashboard: React.FC = () => {
                         className={styles.input}
                         placeholder="npr. 720 (ili 500, 1000...)"
                         value={chamberModalForm.maxBoxes}
+                        onWheel={preventWheelNumberChange}
                         onChange={(e) =>
                           setChamberModalForm({ ...chamberModalForm, maxBoxes: e.target.value })
                         }
@@ -5237,7 +4955,7 @@ const OnionDashboard: React.FC = () => {
                     <span>Količina u pakovanju:</span>
                     <strong>
                       {packagingToDelete.packageCount?.toLocaleString('sr-RS')} džakova (
-                      {packagingToDelete.palletsCount || (packagingToDelete.totalWeightKg / 1000).toFixed(1)} paleta •{' '}
+                      {packagingToDelete.palletsCount != null && `broj paleta: ${packagingToDelete.palletsCount} • `}
                       {formatKgAndTons(packagingToDelete.totalWeightKg)})
                     </strong>
                   </div>
@@ -5303,9 +5021,7 @@ const OnionDashboard: React.FC = () => {
                     </li>
                     <li>
                       <strong>Smanjenje zaliha:</strong> Sa stanja gotovih proizvoda briše se{' '}
-                      <strong>{packagingToDelete.packageCount} džakova</strong> (
-                      {packagingToDelete.palletsCount || (packagingToDelete.totalWeightKg / 1000).toFixed(1)}{' '}
-                      paleta).
+                      <strong>{packagingToDelete.packageCount} džakova</strong>.
                     </li>
                     <li>
                       <strong>Evidencija:</strong> Ovaj zapis rada pakerice se trajno uklanja iz

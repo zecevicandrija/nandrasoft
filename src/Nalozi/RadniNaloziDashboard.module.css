@@ -892,6 +892,19 @@
   color: #0284c7;
 }
 
+.fuelReadings {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.fuelMachineName { font-size: .78rem; overflow-wrap: anywhere; }
+
+:global([data-theme="dark"]) .fuelNotice { color: #7dd3fc; }
+:global([data-theme="dark"]) .fuelIcon { color: #38bdf8; }
+
 .instructionsBox {
   background: var(--bg-hover, #f8fafc);
   border-left: 3px solid #10b981;

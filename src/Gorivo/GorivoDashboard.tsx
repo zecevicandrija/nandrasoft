@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useQuery, useMutation, useQueryClient, keepPreviousData, type UseQueryResult } from '@tanstack/react-query';
 import { fuelQueryOptions, fuelRequest } from './fuelQueries';
 import QueryErrorNotice from '../components/QueryErrorNotice';
 import {
@@ -27,7 +27,7 @@ import { NovoTocenjeModal } from './NovoTocenjeModal';
 import { PrijemCisterneModal } from './PrijemCisterneModal';
 import { IzmeniTocenjeModal } from './IzmeniTocenjeModal';
 import { PregledRacunaModal } from './PregledRacunaModal';
-import { StanjeMasinaTab } from './StanjeMasinaTab';
+import { StanjeMasinaTab, type MachineStatesSummary } from './StanjeMasinaTab';
 import styles from './GorivoDashboard.module.css';
 
 interface FuelStats {
@@ -132,6 +132,21 @@ interface PaginationMeta {
   totalPages: number;
 }
 
+const srDateFormatter = new Intl.DateTimeFormat('sr-RS');
+const srTimeFormatter = new Intl.DateTimeFormat('sr-RS', { hour: '2-digit', minute: '2-digit' });
+
+function formatEntryDateTime(iso: string) {
+  const d = new Date(iso);
+  return `${srDateFormatter.format(d)} ${srTimeFormatter.format(d)}`;
+}
+
+const SOURCE_FILTER_OPTIONS = [
+  { value: '', label: 'Svi izvori' },
+  { value: 'CISTERNA', label: 'Cisterna firme' },
+  { value: 'PUMPA', label: 'Javna pumpa (Petrol / Europetrol)' },
+  { value: 'KANISTER', label: 'Kanister na njivi' },
+];
+
 function queryFeedback(query: UseQueryResult<unknown, Error>, title: string) {
   if (query.isError) return <QueryErrorNotice error={query.error} title={title}
     pending={query.isFetching} onRetry={() => { void query.refetch(); }} />;
@@ -170,6 +185,7 @@ const GorivoDashboard: React.FC = () => {
 
   type PeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve' | 'custom';
   const PAGE_SIZE = 25;
+  const MACHINE_STATES_PAGE_SIZE = 10;
 
   // Brzi period filter (Danas, Ova Nedelja, Ovaj Mesec, Svi Unosi, Prilagođen Raspon)
   const [period, setPeriod] = useState<PeriodType>('sve');
@@ -177,6 +193,20 @@ const GorivoDashboard: React.FC = () => {
 
   // Stanje za Rukovodioce (Menadžere)
   const [managerPage, setManagerPage] = useState(1);
+
+  // Paginacija i filteri za Stanje mašina (10 po stranici)
+  const [machineStatesPage, setMachineStatesPage] = useState(1);
+  const [machineSearch, setMachineSearch] = useState('');
+  const [debouncedMachineSearch, setDebouncedMachineSearch] = useState('');
+  const [machineTypeFilter, setMachineTypeFilter] = useState('');
+  const [machineFuelLevelFilter, setMachineFuelLevelFilter] = useState('');
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedMachineSearch(machineSearch.trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [machineSearch]);
 
   // Filteri za menadžere
   const [searchFilter, setSearchFilter] = useState('');
@@ -240,9 +270,18 @@ const GorivoDashboard: React.FC = () => {
   const userId = currentUser?.id as string | undefined;
   const enabled = Boolean(userId);
   const dateFilters = { dateFrom, dateTo };
-  const machinesQuery = useQuery(fuelQueryOptions<{ machines: any[] }>(userId, 'machines'));
-  const workersQuery = useQuery(fuelQueryOptions<{ workers: any[] }>(userId, 'workers'));
-  const partnersQuery = useQuery(fuelQueryOptions<{ partners: any[] }>(userId, 'partners'));
+  const machinesQuery = useQuery({
+    ...fuelQueryOptions<{ machines: any[] }>(userId, 'machines'),
+    enabled: enabled && (!isManager || activeTab === 'TOCENJA' || isTocenjeModalOpen || isIzmeniModalOpen),
+  });
+  const workersQuery = useQuery({
+    ...fuelQueryOptions<{ workers: any[] }>(userId, 'workers'),
+    enabled: enabled && isManager && (activeTab === 'TOCENJA' || isTocenjeModalOpen),
+  });
+  const partnersQuery = useQuery({
+    ...fuelQueryOptions<{ partners: any[] }>(userId, 'partners'),
+    enabled: enabled && isManager && isSupplyModalOpen,
+  });
   const statsQuery = useQuery({ ...fuelQueryOptions<FuelStats>(userId, 'stats'), enabled: enabled && isManager });
   const managerEntriesQuery = useQuery({
     ...fuelQueryOptions<{ entries: FuelEntry[]; pagination: PaginationMeta }>(userId, 'entries', {
@@ -250,14 +289,26 @@ const GorivoDashboard: React.FC = () => {
       workerId: workerFilter, fuelSource: sourceFilter,
     }),
     enabled: enabled && isManager && activeTab === 'TOCENJA',
+    placeholderData: keepPreviousData,
   });
   const suppliesQuery = useQuery({
     ...fuelQueryOptions<{ supplies: FuelSupply[] }>(userId, 'supplies', dateFilters),
     enabled: enabled && isManager && activeTab === 'CISTERNA'
   });
   const machineStatesQuery = useQuery({
-    ...fuelQueryOptions<{ machines: any[] }>(userId, 'machineStates'),
-    enabled: enabled && isManager,
+    ...fuelQueryOptions<{
+      machines: any[];
+      pagination?: PaginationMeta;
+      summary?: MachineStatesSummary;
+    }>(userId, 'machineStates', {
+      page: machineStatesPage,
+      limit: MACHINE_STATES_PAGE_SIZE,
+      search: debouncedMachineSearch,
+      type: machineTypeFilter,
+      fuelLevel: machineFuelLevelFilter,
+    }),
+    enabled: enabled && isManager && activeTab === 'STANJE_MASINA',
+    placeholderData: keepPreviousData,
   });
   const todayQuery = useQuery({
     ...fuelQueryOptions<{ entries: FuelEntry[] }>(userId, 'entries', { scope: 'today', limit: 50 }),
@@ -266,6 +317,7 @@ const GorivoDashboard: React.FC = () => {
   const historyQuery = useQuery({
     ...fuelQueryOptions<{ entries: FuelEntry[]; pagination: PaginationMeta }>(userId, 'entries', { scope: 'history', page: historyPage, limit: PAGE_SIZE }),
     enabled: enabled && !isManager && showHistory,
+    placeholderData: keepPreviousData,
   });
 
   const stats = statsQuery.data;
@@ -273,6 +325,14 @@ const GorivoDashboard: React.FC = () => {
   const managerPagination = managerEntriesQuery.data?.pagination;
   const supplies = suppliesQuery.data?.supplies || [];
   const machineStates = machineStatesQuery.data?.machines || [];
+  const machineStatesPagination = machineStatesQuery.data?.pagination;
+  const machineStatesSummary = machineStatesQuery.data?.summary;
+
+  useEffect(() => {
+    if (machineStatesPagination && machineStatesPage > machineStatesPagination.totalPages) {
+      setMachineStatesPage(Math.max(1, machineStatesPagination.totalPages));
+    }
+  }, [machineStatesPagination, machineStatesPage]);
   const todayEntries = todayQuery.data?.entries || [];
   const historyEntries = historyQuery.data?.entries || [];
   const historyPagination = historyQuery.data?.pagination;
@@ -286,14 +346,24 @@ const GorivoDashboard: React.FC = () => {
         ? suppliesQuery
         : machineStatesQuery;
   const loading = activeManagerQuery.isFetching;
-  const todayLoading = todayQuery.isFetching;
-  const historyLoading = historyQuery.isFetching;
+  const todayLoading = todayQuery.isPending;
+  const historyLoading = historyQuery.isPending;
+  const invalidateFuelResources = (resources: Array<'stats' | 'entries' | 'supplies' | 'machineStates'>) =>
+    Promise.all(
+      resources.map((resource) =>
+        queryClient.invalidateQueries({ queryKey: ['fuel', userId, resource] })
+      )
+    );
   const refreshFuel = () => queryClient.invalidateQueries({ queryKey: ['fuel', userId] });
+  const refreshEntriesAndTank = () => invalidateFuelResources(['entries', 'stats', 'machineStates']);
+  const refreshSuppliesAndTank = () => invalidateFuelResources(['supplies', 'stats']);
+  const refreshEntryPrice = () => invalidateFuelResources(['entries', 'stats']);
 
   const deleteMutation = useMutation({
     mutationFn: ({ kind, id }: { kind: 'entries' | 'supplies'; id: string }) =>
       fuelRequest(`/fuel/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-    onSuccess: refreshFuel,
+    onSuccess: (_data, variables) =>
+      variables.kind === 'supplies' ? refreshSuppliesAndTank() : refreshEntriesAndTank(),
   });
   const handleDeleteEntry = (id: string, machineName: string, liters: number) => {
     if (window.confirm(`Da li sigurno želite da stornirate točenje ${liters} L u mašinu "${machineName}"?`)) {
@@ -318,18 +388,47 @@ const GorivoDashboard: React.FC = () => {
     setIsReceiptModalOpen(true);
   };
 
+  // Memoizovane opcije za filtere i filtrirana tabela točenja
+  const machineFilterOptions = useMemo(
+    () => [
+      { value: '', label: 'Sve mašine' },
+      ...machines.map((m) => ({
+        value: m.id,
+        label: m.name,
+        subLabel: m.brandModel || m.type,
+      })),
+    ],
+    [machines]
+  );
+
+  const workerFilterOptions = useMemo(
+    () => [
+      { value: '', label: 'Svi radnici' },
+      ...workers.map((w) => ({
+        value: w.id,
+        label: w.name,
+      })),
+    ],
+    [workers]
+  );
+
+  const pagedSupplies = useMemo(
+    () => supplies.slice((suppliesPage - 1) * PAGE_SIZE, suppliesPage * PAGE_SIZE),
+    [supplies, suppliesPage]
+  );
+
   // Menadžersko pretraživanje
-  const filteredManagerEntries = managerEntries.filter((e) => {
-    if (!searchFilter) return true;
+  const filteredManagerEntries = useMemo(() => {
+    if (!searchFilter) return managerEntries;
     const q = searchFilter.toLowerCase();
-    return (
+    return managerEntries.filter((e) => (
       e.machine?.name.toLowerCase().includes(q) ||
       e.worker?.name.toLowerCase().includes(q) ||
       e.notes?.toLowerCase().includes(q) ||
       e.receiptNumber?.toLowerCase().includes(q) ||
       (e.fieldWork?.parcel?.name && e.fieldWork.parcel.name.toLowerCase().includes(q))
-    );
-  });
+    ));
+  }, [managerEntries, searchFilter]);
 
   return (
     <AppLayout pageTitle={isManager ? "Evidencija Goriva & Cisterna" : "Dnevnik točenja goriva"}>
@@ -598,14 +697,7 @@ const GorivoDashboard: React.FC = () => {
                     <CustomSelect
                       value={machineFilter}
                       onChange={(val) => { setMachineFilter(val); setManagerPage(1); }}
-                      options={[
-                        { value: '', label: 'Sve mašine' },
-                        ...machines.map((m) => ({
-                          value: m.id,
-                          label: m.name,
-                          subLabel: m.brandModel || m.type,
-                        })),
-                      ]}
+                      options={machineFilterOptions}
                       placeholder="Sve mašine"
                       searchable
                     />
@@ -615,13 +707,7 @@ const GorivoDashboard: React.FC = () => {
                     <CustomSelect
                       value={workerFilter}
                       onChange={(val) => { setWorkerFilter(val); setManagerPage(1); }}
-                      options={[
-                        { value: '', label: 'Svi radnici' },
-                        ...workers.map((w) => ({
-                          value: w.id,
-                          label: w.name,
-                        })),
-                      ]}
+                      options={workerFilterOptions}
                       placeholder="Svi radnici"
                       searchable
                     />
@@ -631,12 +717,7 @@ const GorivoDashboard: React.FC = () => {
                     <CustomSelect
                       value={sourceFilter}
                       onChange={(val) => { setSourceFilter(val); setManagerPage(1); }}
-                      options={[
-                        { value: '', label: 'Svi izvori' },
-                        { value: 'CISTERNA', label: 'Cisterna firme' },
-                        { value: 'PUMPA', label: 'Javna pumpa (Petrol / Europetrol)' },
-                        { value: 'KANISTER', label: 'Kanister na njivi' },
-                      ]}
+                      options={SOURCE_FILTER_OPTIONS}
                       placeholder="Svi izvori"
                       searchable={false}
                     />
@@ -678,11 +759,7 @@ const GorivoDashboard: React.FC = () => {
                         </thead>
                         <tbody>
                           {filteredManagerEntries.map((entry) => {
-                            const d = new Date(entry.date);
-                            const formattedDate = `${d.toLocaleDateString('sr-RS')} ${d.toLocaleTimeString('sr-RS', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}`;
+                            const formattedDate = formatEntryDateTime(entry.date);
 
                             return (
                               <tr key={entry.id}>
@@ -825,11 +902,9 @@ const GorivoDashboard: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {supplies
-                          .slice((suppliesPage - 1) * PAGE_SIZE, suppliesPage * PAGE_SIZE)
-                          .map((s) => (
+                        {pagedSupplies.map((s) => (
                             <tr key={s.id}>
-                              <td>{new Date(s.date).toLocaleDateString('sr-RS')}</td>
+                              <td>{srDateFormatter.format(new Date(s.date))}</td>
                               <td>
                                 <strong>{s.supplierName || s.supplier?.name || 'Dobavljač'}</strong>
                               </td>
@@ -875,11 +950,27 @@ const GorivoDashboard: React.FC = () => {
             {activeTab === 'STANJE_MASINA' && (
               <StanjeMasinaTab
                 machines={machineStates}
-                isLoading={machineStatesQuery.isLoading}
-                onRefresh={() => {
-                  void machineStatesQuery.refetch();
-                  void machinesQuery.refetch();
+                pagination={machineStatesPagination}
+                summary={machineStatesSummary}
+                page={machineStatesPage}
+                pageSize={MACHINE_STATES_PAGE_SIZE}
+                onPageChange={setMachineStatesPage}
+                search={machineSearch}
+                onSearchChange={(val) => {
+                  setMachineSearch(val);
+                  setMachineStatesPage(1);
                 }}
+                filterType={machineTypeFilter}
+                onFilterTypeChange={(val) => {
+                  setMachineTypeFilter(val);
+                  setMachineStatesPage(1);
+                }}
+                filterFuelLevel={machineFuelLevelFilter}
+                onFilterFuelLevelChange={(val) => {
+                  setMachineFuelLevelFilter(val);
+                  setMachineStatesPage(1);
+                }}
+                isLoading={machineStatesQuery.isLoading}
                 userId={userId}
               />
             )}
@@ -925,11 +1016,7 @@ const GorivoDashboard: React.FC = () => {
                   </thead>
                   <tbody>
                     {todayEntries.map((entry) => {
-                      const d = new Date(entry.date);
-                      const formattedTime = `${d.toLocaleTimeString('sr-RS', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}`;
+                      const formattedTime = srTimeFormatter.format(new Date(entry.date));
 
                       return (
                         <tr key={entry.id}>
@@ -1059,11 +1146,7 @@ const GorivoDashboard: React.FC = () => {
                           </thead>
                           <tbody>
                             {historyEntries.map((entry) => {
-                              const d = new Date(entry.date);
-                              const formattedDate = `${d.toLocaleDateString('sr-RS')} ${d.toLocaleTimeString('sr-RS', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}`;
+                              const formattedDate = formatEntryDateTime(entry.date);
 
                               return (
                                 <tr key={entry.id}>
@@ -1115,7 +1198,6 @@ const GorivoDashboard: React.FC = () => {
                           pageSize={PAGE_SIZE}
                           onPageChange={(page) => {
                             setHistoryPage(page);
-                            setHistoryPage(page);
                           }}
                           itemName="prethodnih točenja"
                         />
@@ -1136,7 +1218,7 @@ const GorivoDashboard: React.FC = () => {
           isOpen={isTocenjeModalOpen}
           onClose={() => setIsTocenjeModalOpen(false)}
           onSuccess={() => {
-            void refreshFuel();
+            void refreshEntriesAndTank();
           }}
           machines={machines}
           workers={workers}
@@ -1149,7 +1231,7 @@ const GorivoDashboard: React.FC = () => {
           <PrijemCisterneModal
             isOpen={isSupplyModalOpen}
             onClose={() => setIsSupplyModalOpen(false)}
-            onSuccess={refreshFuel}
+            onSuccess={refreshSuppliesAndTank}
             partners={partners}
             currentTankLiters={stats ? stats.tank.currentLiters : 0}
             tankCapacity={stats ? stats.tank.capacity : 10000}
@@ -1164,7 +1246,7 @@ const GorivoDashboard: React.FC = () => {
             setSelectedEntryForEdit(null);
           }}
           onSuccess={() => {
-            void refreshFuel();
+            void refreshEntriesAndTank();
           }}
           entry={selectedEntryForEdit}
           machines={machines}
@@ -1181,7 +1263,7 @@ const GorivoDashboard: React.FC = () => {
           entry={selectedEntryForReceipt}
           isManager={isManager}
           onPriceSaved={() => {
-            void refreshFuel();
+            void refreshEntryPrice();
           }}
         />
       </div>

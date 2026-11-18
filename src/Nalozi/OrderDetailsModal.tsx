@@ -22,7 +22,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { materialLabels, materialUnits } from '../lib/workMaterials';
-import type { WorkOrder } from './RadniNaloziDashboard';
+import { SERVICE_TYPE_LABELS, type WorkOrder } from './RadniNaloziDashboard';
 import styles from './OrderDetailsModal.module.css';
 
 interface OrderDetailsModalProps {
@@ -148,11 +148,13 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               </span>
 
               {/* Priority */}
-              {order.priority === 'KRITICNO' && (
+              {(order.priority === 'KRITICNO' || order.priority === 'KRITICNA') && (
                 <span className={styles.priorityBadgeKriticno}>⚡ Kritično</span>
               )}
-              {order.priority === 'HITNO' && (
-                <span className={styles.priorityBadgeHitno}>⚠️ Hitno</span>
+              {(order.priority === 'HITNO' || order.priority === 'VISOKA') && (
+                <span className={styles.priorityBadgeHitno}>
+                  {order.priority === 'VISOKA' ? '⚠️ Visok' : '⚠️ Hitno'}
+                </span>
               )}
 
               {/* Type */}
@@ -357,6 +359,21 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         {order.attachment && (
                           <span className={styles.infoValueSub}>+ {order.attachment.name}</span>
                         )}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tip servisa */}
+                {isRemont && order.maintenance?.serviceType && (
+                  <div className={styles.infoCard}>
+                    <div className={styles.infoIconWrapper}>
+                      <Wrench size={18} />
+                    </div>
+                    <div className={styles.infoContent}>
+                      <span className={styles.infoLabel}>Tip servisa</span>
+                      <span className={styles.infoValue}>
+                        {SERVICE_TYPE_LABELS[order.maintenance.serviceType] || order.maintenance.serviceType}
                       </span>
                     </div>
                   </div>

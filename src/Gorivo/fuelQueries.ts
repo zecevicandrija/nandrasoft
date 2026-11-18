@@ -30,9 +30,11 @@ export function fuelQueryOptions<T>(userId: string | undefined, resource: keyof 
   search.sort();
   const query = search.toString();
   const master = ['machines', 'workers', 'partners'].includes(resource);
+  const staticMaster = ['workers', 'partners'].includes(resource);
   return queryOptions({
     queryKey: [master ? 'fuel-master' : 'fuel', userId, resource, query],
     queryFn: ({ signal }) => fuelRequest<T>(`${endpoints[resource]}${query ? `?${query}` : ''}`, { signal }),
     enabled: Boolean(userId),
+    ...(staticMaster && { staleTime: 1000 * 60 * 10 }),
   });
 }

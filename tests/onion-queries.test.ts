@@ -31,7 +31,7 @@ test('initial dashboard loads four queries; tabs and traceability load only when
     await settle();
     assert.deepEqual(app.calls.sort(), [...shared, 'onion-lots', 'onion-harvest'].sort());
     app.calls.length = 0;
-    for (const [tab, family] of [['skladiste', 'onion-storage'], ['sortiranje', 'onion-sorting'],
+    for (const [tab, family] of [['skladiste', 'onion-storage'],
       ['pakovanje', 'onion-packaging'], ['isporuka', 'onion-shipment'], ['otpis', 'onion-waste'],
       ['sledljivost', 'onion-traceability']] as const) {
       app.tab(tab);
@@ -96,7 +96,7 @@ test('harvest with auto-storage and sorting invalidate storage; creating a buyer
     reset();
     await invalidateOnionMutation(client, 'sorting');
     assert.equal(client.getQueryState(['onion-storage'])?.isInvalidated, true);
-    assert.equal(client.getQueryState(['onion-waste'])?.isInvalidated, false);
+    assert.equal(client.getQueryState(['onion-waste'])?.isInvalidated, true);
     reset();
     await invalidateOnionMutation(client, 'buyerCreate');
     assert.equal(client.getQueryState(['onion-lookup'])?.isInvalidated, true);

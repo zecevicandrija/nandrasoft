@@ -74,6 +74,8 @@ export const MasinaModal: React.FC<MasinaModalProps> = ({
       if (!res.ok) return { products: [] };
       return res.json();
     },
+    enabled: isOpen,
+    staleTime: 1000 * 60 * 10,
   });
 
   const fuelTypeOptions = useMemo<CustomSelectOption[]>(() => {
