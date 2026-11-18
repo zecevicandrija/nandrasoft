@@ -16,11 +16,33 @@ router.use((req, res, next) => {
   next();
 });
 
+const STORAGE_CACHE_TTL_MS = 60_000;
+let storageCache = null;
+let storageInFlight = null;
+
+async function getCachedStorageUsage() {
+  const now = Date.now();
+  if (storageCache && now < storageCache.expiresAt) {
+    return storageCache.value;
+  }
+  if (!storageInFlight) {
+    storageInFlight = readStorageUsage(prisma)
+      .then((value) => {
+        storageCache = { value, expiresAt: Date.now() + STORAGE_CACHE_TTL_MS };
+        return value;
+      })
+      .finally(() => {
+        storageInFlight = null;
+      });
+  }
+  return storageInFlight;
+}
+
 // ==========================================
 // LISTA AUDIT LOGOVA (REVIZORSKI TRAG)
 // ==========================================
 router.get("/storage", async (req, res) => {
-  try { res.json(await readStorageUsage(prisma)); }
+  try { res.json(await getCachedStorageUsage()); }
   catch { res.status(503).json({ error: "Provera zauzeća baze trenutno nije dostupna." }); }
 });
 
@@ -60,16 +82,17 @@ router.get("/", async (req, res) => {
       }
     }
 
-    if (search) {
-      const s = String(search).trim();
+    const trimmedSearch = search != null ? String(search).trim() : "";
+    if (trimmedSearch) {
       where.OR = [
-        { userName: { contains: s, mode: "insensitive" } },
-        { description: { contains: s, mode: "insensitive" } },
+        { userName: { contains: trimmedSearch, mode: "insensitive" } },
+        { description: { contains: trimmedSearch, mode: "insensitive" } },
       ];
     }
 
-    const take = Math.min(Number(limit) || 50, 100);
-    const skip = ((Number(page) || 1) - 1) * take;
+    const pageNum = Math.max(1, Math.trunc(Number(page)) || 1);
+    const take = Math.min(100, Math.max(1, Math.trunc(Number(limit)) || 50));
+    const skip = (pageNum - 1) * take;
 
     const [total, logs] = await Promise.all([
       prisma.auditLog.count({ where }),
@@ -93,7 +116,7 @@ router.get("/", async (req, res) => {
 
     res.json({
       total,
-      page: Number(page) || 1,
+      page: pageNum,
       totalPages: Math.ceil(total / take),
       logs: logs.map((log) => ({ ...log, user: userMap.get(log.userId) || null })),
     });

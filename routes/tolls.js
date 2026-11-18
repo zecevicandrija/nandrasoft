@@ -1,4 +1,4 @@
-import { addMoney } from "../lib/money.js";
+import { addMoney, subtractMoney } from "../lib/money.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { requireWorkerIdentity, getRequestWorker } from "../lib/workerIdentity.js";
 import { Router } from "express";
@@ -87,9 +87,15 @@ router.get("/", async (req, res) => {
       entriesPage,
       topUpsPage,
       limit = 25,
+      includeEntries,
+      includeTopUps,
+      includeVehicles,
     } = req.query;
 
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
+    const shouldIncludeEntries = includeEntries !== "false";
+    const shouldIncludeTopUps = isManager && includeTopUps !== "false";
+    const shouldIncludeVehicles = includeVehicles !== "false";
 
     const takeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
     const entriesPageNum = Math.max(1, Number(entriesPage || page) || 1);
@@ -104,9 +110,8 @@ router.get("/", async (req, res) => {
     if (paymentMethod) where.paymentMethod = String(paymentMethod);
 
     // Izolacija podataka: Radnik vidi isključivo sopstvene unose putarina (ne vidi tuđe)
-    let linkedWorker = null;
+    const linkedWorker = await getRequestWorker(req, prisma);
     if (!isManager) {
-      linkedWorker = await getRequestWorker(req, prisma);
       if (linkedWorker) {
         where.AND = [
           ...(where.AND || []),
@@ -117,8 +122,6 @@ router.get("/", async (req, res) => {
       } else {
         where.createdById = req.user.id;
       }
-    } else {
-      linkedWorker = await getRequestWorker(req, prisma);
     }
 
     const dateFilter = {};
@@ -144,54 +147,42 @@ router.get("/", async (req, res) => {
 
     const [
       rawEntries,
-      totalEntriesCount,
       entriesByMethod,
       topUps,
-      totalTopUpsCount,
       topUpsAgg,
       vehicles,
     ] = await Promise.all([
-      prisma.tollEntry.findMany({
-        where,
-        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        skip: entriesSkip,
-        take: takeLimit,
-        include: {
-          machine: {
-            select: {
-              id: true,
-              name: true,
-              type: true,
-              regNumber: true,
-              brandModel: true,
-              enpTagNumber: true,
-              enpTagBalance: true,
+      shouldIncludeEntries
+        ? prisma.tollEntry.findMany({
+            where,
+            orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+            skip: entriesSkip,
+            take: takeLimit,
+            include: {
+              machine: {
+                select: {
+                  id: true,
+                  name: true,
+                  regNumber: true,
+                  enpTagNumber: true,
+                },
+              },
+              worker: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
             },
-          },
-          worker: {
-            select: {
-              id: true,
-              name: true,
-              userId: true,
-            },
-          },
-          createdBy: {
-            select: {
-              id: true,
-              name: true,
-              role: true,
-            },
-          },
-        },
-      }),
-      prisma.tollEntry.count({ where }),
+          })
+        : Promise.resolve([]),
       prisma.tollEntry.groupBy({
         by: ["paymentMethod"],
         where,
         _sum: { amount: true },
         _count: { id: true },
       }),
-      isManager
+      shouldIncludeTopUps
         ? prisma.tollTopUp.findMany({
             where: topUpWhere,
             orderBy: [{ date: "desc" }, { createdAt: "desc" }],
@@ -207,35 +198,31 @@ router.get("/", async (req, res) => {
                   enpTagNumber: true,
                 },
               },
-              createdBy: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
             },
           })
         : Promise.resolve([]),
-      isManager ? prisma.tollTopUp.count({ where: topUpWhere }) : Promise.resolve(0),
       isManager
         ? prisma.tollTopUp.aggregate({
             where: topUpWhere,
             _sum: { amount: true },
+            _count: { id: true },
           })
-        : Promise.resolve({ _sum: { amount: 0 } }),
-      prisma.machine.findMany({
-        where: { isActive: true },
-        orderBy: [{ type: "asc" }, { name: "asc" }],
-        select: {
-          id: true,
-          name: true,
-          type: true,
-          regNumber: true,
-          brandModel: true,
-          enpTagNumber: true,
-          enpTagBalance: true,
-        },
-      }),
+        : Promise.resolve({ _sum: { amount: 0 }, _count: { id: 0 } }),
+      shouldIncludeVehicles
+        ? prisma.machine.findMany({
+            where: { isActive: true },
+            orderBy: [{ type: "asc" }, { name: "asc" }],
+            select: {
+              id: true,
+              name: true,
+              type: true,
+              regNumber: true,
+              brandModel: true,
+              enpTagNumber: true,
+              enpTagBalance: true,
+            },
+          })
+        : Promise.resolve([]),
     ]);
 
     // Dodaj zastavice isToday i canEdit za svaki zapis
@@ -253,12 +240,14 @@ router.get("/", async (req, res) => {
     });
 
     // Statistika iz baze za ceo filtrirani opseg (bez učitavanja svih redova u memoriju)
+    let totalEntriesCount = 0;
     let totalCostPeriod = 0;
     let enpCostPeriod = 0;
     let cashCardCostPeriod = 0;
 
     for (const grp of entriesByMethod) {
       const amt = Number(grp._sum?.amount || 0);
+      totalEntriesCount += Number(grp._count?.id || 0);
       totalCostPeriod = addMoney(totalCostPeriod, amt);
       if (grp.paymentMethod === "ENP_TAG") {
         enpCostPeriod = addMoney(enpCostPeriod, amt);
@@ -267,6 +256,7 @@ router.get("/", async (req, res) => {
       }
     }
 
+    const totalTopUpsCount = isManager ? Number(topUpsAgg?._count?.id || 0) : 0;
     const totalTopUpsPeriod = Number(topUpsAgg?._sum?.amount || 0);
 
     // Zbirno stanje na svim ENP tagovima (kamioni i mašine koje imaju ENP tag ili su tipa KAMION)
@@ -437,7 +427,6 @@ router.put("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const existing = await prisma.tollEntry.findUnique({
       where: { id: req.params.id },
-      include: { machine: true, worker: true },
     });
 
     if (!existing) {
@@ -483,31 +472,54 @@ router.put("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
     const newPaymentMethod = data.paymentMethod || existing.paymentMethod;
 
     const updated = await prisma.$transaction(async (tx) => {
-      // 1. Vrati staro stanje ENP taga ako je stari zapis bio ENP_TAG
-      if (existing.paymentMethod === "ENP_TAG") {
-        const oldMachine = await tx.machine.findUnique({ where: { id: existing.machineId } });
-        if (oldMachine) {
+      const trimmedTag = data.tagNumber?.trim();
+
+      // Ako je isto vozilo i pre i posle ENP_TAG, ažuriramo stanje jednim upitom za neto razliku
+      if (
+        existing.paymentMethod === "ENP_TAG" &&
+        newPaymentMethod === "ENP_TAG" &&
+        existing.machineId === newMachineId
+      ) {
+        const balanceDelta = subtractMoney(existing.amount ?? 0, newAmount ?? 0);
+        if (balanceDelta !== 0 || trimmedTag) {
           await tx.machine.update({
-            where: { id: oldMachine.id },
+            where: { id: existing.machineId },
+            data: {
+              ...(balanceDelta !== 0 ? { enpTagBalance: { increment: balanceDelta } } : {}),
+              ...(trimmedTag ? { enpTagNumber: trimmedTag } : {}),
+            },
+          });
+        }
+      } else {
+        // 1. Vrati staro stanje ENP taga ako je stari zapis bio ENP_TAG
+        if (existing.paymentMethod === "ENP_TAG") {
+          await tx.machine.update({
+            where: { id: existing.machineId },
             data: {
               enpTagBalance: { increment: Number(existing.amount || 0) },
             },
           });
         }
-      }
 
-      // 2. Oduzmi novo stanje ako je novi zapis ENP_TAG
-      if (newPaymentMethod === "ENP_TAG") {
-        const targetMachine = await tx.machine.findUnique({ where: { id: newMachineId } });
-        if (newMachineId !== existing.machineId && targetMachine?.isActive === false) {
-          throw Object.assign(new Error("Ne možete izabrati arhivirano vozilo."), { status: 409 });
-        }
-        if (targetMachine) {
+        // 2. Oduzmi novo stanje ako je novi zapis ENP_TAG
+        if (newPaymentMethod === "ENP_TAG") {
+          if (newMachineId !== existing.machineId) {
+            const targetMachine = await tx.machine.findUnique({
+              where: { id: newMachineId },
+              select: { id: true, isActive: true },
+            });
+            if (!targetMachine) {
+              throw Object.assign(new Error("Izabrano vozilo nije pronađeno."), { status: 404 });
+            }
+            if (targetMachine.isActive === false) {
+              throw Object.assign(new Error("Ne možete izabrati arhivirano vozilo."), { status: 409 });
+            }
+          }
           await tx.machine.update({
-            where: { id: targetMachine.id },
+            where: { id: newMachineId },
             data: {
               enpTagBalance: { decrement: Number(newAmount || 0) },
-              ...(data.tagNumber ? { enpTagNumber: data.tagNumber.trim() } : {}),
+              ...(trimmedTag ? { enpTagNumber: trimmedTag } : {}),
             },
           });
         }
@@ -559,7 +571,9 @@ router.put("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
     res.json({ entry: updated });
   } catch (error) {
     console.error("Greška pri izmeni putarine:", error);
-    if (error.status === 409) return res.status(409).json({ error: error.message });
+    if (error.status === 404 || error.status === 409) {
+      return res.status(error.status).json({ error: error.message });
+    }
     res.status(500).json({ error: "Greška na serveru pri izmeni putarine." });
   }
 }));
@@ -571,7 +585,7 @@ router.delete("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
   try {
     const existing = await prisma.tollEntry.findUnique({
       where: { id: req.params.id },
-      include: { machine: true },
+      include: { machine: { select: { name: true } } },
     });
 
     if (!existing) {
@@ -602,15 +616,12 @@ router.delete("/:id", inventoryMutation("tolls", async (req, res, prisma) => {
 
     await prisma.$transaction(async (tx) => {
       if (existing.paymentMethod === "ENP_TAG") {
-        const machine = await tx.machine.findUnique({ where: { id: existing.machineId } });
-        if (machine) {
-          await tx.machine.update({
-            where: { id: machine.id },
-            data: {
-              enpTagBalance: { increment: Number(existing.amount || 0) },
-            },
-          });
-        }
+        await tx.machine.update({
+          where: { id: existing.machineId },
+          data: {
+            enpTagBalance: { increment: Number(existing.amount || 0) },
+          },
+        });
       }
 
       await tx.tollEntry.delete({ where: { id: existing.id } });
@@ -720,7 +731,7 @@ router.delete("/top-up/:id", requireManager, inventoryMutation("tolls", async (r
   try {
     const existing = await prisma.tollTopUp.findUnique({
       where: { id: req.params.id },
-      include: { machine: true },
+      select: { id: true, machineId: true, amount: true },
     });
 
     if (!existing) {
@@ -728,15 +739,12 @@ router.delete("/top-up/:id", requireManager, inventoryMutation("tolls", async (r
     }
 
     await prisma.$transaction(async (tx) => {
-      const machine = await tx.machine.findUnique({ where: { id: existing.machineId } });
-      if (machine) {
-        await tx.machine.update({
-          where: { id: machine.id },
-          data: {
-            enpTagBalance: { decrement: Number(existing.amount || 0) },
-          },
-        });
-      }
+      await tx.machine.update({
+        where: { id: existing.machineId },
+        data: {
+          enpTagBalance: { decrement: Number(existing.amount || 0) },
+        },
+      });
 
       await tx.tollTopUp.delete({ where: { id: existing.id } });
     });

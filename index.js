@@ -17,6 +17,7 @@ import usersRouter from "./routes/users.js";
 import masterDataRouter from "./routes/masterData.js";
 import materialsRouter from "./routes/materials.js";
 import assignmentsRouter from "./routes/assignments.js";
+import machineUsageRouter from "./routes/machineUsage.js";
 import fieldWorkRouter from "./routes/fieldWork.js";
 import auditLogRouter from "./routes/auditLog.js";
 import workOrdersRouter from "./routes/workOrders.js";
@@ -29,6 +30,7 @@ import fertilizerRouter from "./routes/fertilizer.js";
 import seasonalWorkersRouter from "./routes/seasonalWorkers.js";
 import onionRouter from "./routes/onion.js";
 import analyticsRouter from "./routes/analytics.js";
+import communicationRouter from "./routes/communication.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -79,6 +81,7 @@ app.use("/api/users", usersRouter);
 app.use("/api/master", masterDataRouter);
 app.use("/api/materials", materialsRouter);
 app.use("/api/assignments", assignmentsRouter);
+app.use("/api/machine-usage", machineUsageRouter);
 app.use("/api/field-work", fieldWorkRouter);
 app.use("/api/audit-logs", auditLogRouter);
 app.use("/api/work-orders", workOrdersRouter);
@@ -91,6 +94,7 @@ app.use("/api/fertilizer", fertilizerRouter);
 app.use("/api/seasonal", seasonalWorkersRouter);
 app.use("/api/onion", onionRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/communication", communicationRouter);
 
 app.use(sentryErrorHandler);
 

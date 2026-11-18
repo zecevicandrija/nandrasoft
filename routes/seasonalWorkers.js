@@ -54,7 +54,8 @@ const seasonalWorkerSchema = z.object({
  */
 router.get("/workers", async (req, res) => {
   try {
-    const { search, groupName, isActive, limit, page } = req.query;
+    const { search, groupName, isActive, limit, page, includeGroups } = req.query;
+    const shouldIncludeGroups = String(includeGroups).toLowerCase() !== "false";
 
     const where = {};
 
@@ -76,23 +77,28 @@ router.get("/workers", async (req, res) => {
       ];
     }
 
-    // Izvlačenje svih dostupnih grupa za filtere
-    const allGroups = await prisma.seasonalWorker.findMany({
-      where: { groupName: { not: null } },
-      select: { groupName: true },
-      distinct: ["groupName"],
-    });
-    const groupNames = allGroups
-      .map((g) => g.groupName)
-      .filter(Boolean)
-      .sort();
+    // Izvlačenje svih dostupnih grupa za filtere (paralelno sa glavnim upitom, opciono za paginirane pozive)
+    const groupsPromise = shouldIncludeGroups
+      ? prisma.seasonalWorker.findMany({
+          where: { groupName: { not: null } },
+          select: { groupName: true },
+          distinct: ["groupName"],
+        })
+      : Promise.resolve([]);
 
     // Ako je traženo limit=all (za dropdown menije na frontendu)
     if (limit === "all") {
-      const workers = await prisma.seasonalWorker.findMany({
-        where,
-        orderBy: [{ isActive: "desc" }, { name: "asc" }],
-      });
+      const [allGroups, workers] = await Promise.all([
+        groupsPromise,
+        prisma.seasonalWorker.findMany({
+          where,
+          orderBy: [{ isActive: "desc" }, { name: "asc" }],
+        }),
+      ]);
+      const groupNames = allGroups
+        .map((g) => g.groupName)
+        .filter(Boolean)
+        .sort();
       return res.json({ workers, groupNames, total: workers.length });
     }
 
@@ -100,7 +106,8 @@ router.get("/workers", async (req, res) => {
     const currentPage = Math.max(1, Number(page) || 1);
     const skip = (currentPage - 1) * pageSize;
 
-    const [total, workers] = await Promise.all([
+    const [allGroups, total, workers] = await Promise.all([
+      groupsPromise,
       prisma.seasonalWorker.count({ where }),
       prisma.seasonalWorker.findMany({
         where,
@@ -109,6 +116,11 @@ router.get("/workers", async (req, res) => {
         take: pageSize,
       }),
     ]);
+
+    const groupNames = allGroups
+      .map((g) => g.groupName)
+      .filter(Boolean)
+      .sort();
 
     res.json({
       workers,
@@ -281,23 +293,24 @@ router.delete("/workers/:id", inventoryMutation("workers", async (req, res, pris
  */
 router.get("/groups", async (req, res) => {
   try {
-    const workers = await prisma.seasonalWorker.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        city: true,
-        hourlyRate: true,
-        groupName: true,
-        isActive: true,
-      },
-      orderBy: { name: "asc" },
-    });
-
-    const dbGroups = await prisma.seasonalGroup.findMany({
-      orderBy: { name: "asc" },
-    });
+    const [workers, dbGroups] = await Promise.all([
+      prisma.seasonalWorker.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          city: true,
+          hourlyRate: true,
+          groupName: true,
+          isActive: true,
+        },
+        orderBy: { name: "asc" },
+      }),
+      prisma.seasonalGroup.findMany({
+        orderBy: { name: "asc" },
+      }),
+    ]);
 
     const groupMap = new Map();
     // Sve definisane grupe iz tabele (čak i ako trenutno imaju 0 radnika)
@@ -357,8 +370,10 @@ router.post("/groups", inventoryMutation("seasonal", async (req, res, prisma) =>
     }
     const cleanName = name.trim();
 
-    const previousGroup = await prisma.seasonalGroup.findUnique({ where: { name: cleanName } });
-    const previousMembers = await prisma.seasonalWorker.findMany({ where: { groupName: cleanName }, select: { id: true, name: true, groupName: true } });
+    const [previousGroup, previousMembers] = await Promise.all([
+      prisma.seasonalGroup.findUnique({ where: { name: cleanName } }),
+      prisma.seasonalWorker.findMany({ where: { groupName: cleanName }, select: { id: true, name: true, groupName: true } }),
+    ]);
 
     // 1. Sačuvaj grupu u seasonalGroup tabeli (trajno perzistirana i sa 0 radnika)
     const savedGroup = await prisma.seasonalGroup.upsert({
@@ -368,14 +383,17 @@ router.post("/groups", inventoryMutation("seasonal", async (req, res, prisma) =>
     });
 
     // 2. Ako su prosleđeni radnici, dodeli ih grupi
-    if (Array.isArray(workerIds) && workerIds.length > 0) {
+    const hasWorkerIds = Array.isArray(workerIds) && workerIds.length > 0;
+    if (hasWorkerIds) {
       await prisma.seasonalWorker.updateMany({
         where: { id: { in: workerIds } },
         data: { groupName: cleanName },
       });
     }
 
-    const members = await prisma.seasonalWorker.findMany({ where: { groupName: cleanName }, select: { id: true, name: true, groupName: true } });
+    const members = hasWorkerIds
+      ? await prisma.seasonalWorker.findMany({ where: { groupName: cleanName }, select: { id: true, name: true, groupName: true } })
+      : previousMembers;
     await writeAudit(prisma, req, { entityType: "SeasonalGroup", entityId: savedGroup.id, action: previousGroup ? "IZMENA" : "KREIRANJE",
       description: "Promena grupe sezonaca", oldValues: previousGroup || previousMembers.length ? { name: cleanName, members: previousMembers } : null, newValues: { name: cleanName, members } });
     res.status(201).json({ message: `Grupa "${cleanName}" je uspešno sačuvana.` });
@@ -396,25 +414,32 @@ router.put("/groups/:groupName", inventoryMutation("seasonal", async (req, res, 
 
     const finalName = newName && newName.trim() ? newName.trim() : currentGroupName;
 
-    const previousMembers = await prisma.seasonalWorker.findMany({ where: { groupName: currentGroupName }, select: { id: true, name: true, groupName: true } });
+    const [existingGroup, previousMembers] = await Promise.all([
+      prisma.seasonalGroup.findUnique({ where: { name: currentGroupName } }),
+      prisma.seasonalWorker.findMany({ where: { groupName: currentGroupName }, select: { id: true, name: true, groupName: true } }),
+    ]);
 
-    // Ažuriraj ili kreiraj u seasonalGroup
-    const savedGroup = await prisma.seasonalGroup.upsert({
-      where: { name: currentGroupName },
-      update: { name: finalName },
-      create: { name: finalName },
-    });
+    // Ažuriraj ili kreiraj u seasonalGroup (preskoči UPDATE ako grupa postoji i naziv je nepromenjen)
+    const savedGroup = existingGroup && finalName === currentGroupName
+      ? existingGroup
+      : await prisma.seasonalGroup.upsert({
+          where: { name: currentGroupName },
+          update: { name: finalName },
+          create: { name: finalName },
+        });
 
     // Ako je promenjen naziv grupe, ažuriraj radnike i stare logove
     if (finalName !== currentGroupName) {
-      await prisma.seasonalWorker.updateMany({
-        where: { groupName: currentGroupName },
-        data: { groupName: finalName },
-      });
-      await prisma.seasonalWorkLog.updateMany({
-        where: { groupName: currentGroupName },
-        data: { groupName: finalName },
-      });
+      await Promise.all([
+        prisma.seasonalWorker.updateMany({
+          where: { groupName: currentGroupName },
+          data: { groupName: finalName },
+        }),
+        prisma.seasonalWorkLog.updateMany({
+          where: { groupName: currentGroupName },
+          data: { groupName: finalName },
+        }),
+      ]);
     }
 
     // Ažuriranje članova grupe
@@ -451,19 +476,21 @@ router.delete("/groups/:groupName", inventoryMutation("seasonal", async (req, re
   try {
     const groupName = decodeURIComponent(req.params.groupName).trim();
 
-    const previousGroup = await prisma.seasonalGroup.findUnique({ where: { name: groupName } });
-    const previousMembers = await prisma.seasonalWorker.findMany({ where: { groupName: groupName }, select: { id: true, name: true, groupName: true } });
+    const [previousGroup, previousMembers] = await Promise.all([
+      prisma.seasonalGroup.findUnique({ where: { name: groupName } }),
+      prisma.seasonalWorker.findMany({ where: { groupName: groupName }, select: { id: true, name: true, groupName: true } }),
+    ]);
 
-    // Obriši iz seasonalGroup tabele
-    await prisma.seasonalGroup.deleteMany({
-      where: { name: groupName },
-    });
-
-    // Ukloni pripadnost radnika ovoj grupi
-    await prisma.seasonalWorker.updateMany({
-      where: { groupName },
-      data: { groupName: null },
-    });
+    // Obriši iz seasonalGroup tabele i ukloni pripadnost radnika ovoj grupi paralelno
+    await Promise.all([
+      prisma.seasonalGroup.deleteMany({
+        where: { name: groupName },
+      }),
+      prisma.seasonalWorker.updateMany({
+        where: { groupName },
+        data: { groupName: null },
+      }),
+    ]);
 
     await writeAudit(prisma, req, { entityType: "SeasonalGroup", entityId: previousGroup?.id || groupName, action: "BRISANJE",
       description: "Promena grupe sezonaca", oldValues: { name: groupName, members: previousMembers } });
@@ -535,24 +562,27 @@ router.get("/logs", async (req, res) => {
     const currentPage = isAll ? 1 : Math.max(1, Number(page) || 1);
     const skip = isAll ? undefined : (currentPage - 1) * pageSize;
 
-    const [total, logs] = await Promise.all([
-      prisma.seasonalWorkLog.count({ where }),
-      prisma.seasonalWorkLog.findMany({
-        where,
-        include: {
-          seasonalWorker: true,
-          parcel: {
-            select: { id: true, code: true, name: true, currentCrop: true, areaHa: true },
-          },
-          supervisor: {
-            select: { id: true, name: true, role: true },
-          },
+    const logsQuery = prisma.seasonalWorkLog.findMany({
+      where,
+      include: {
+        seasonalWorker: true,
+        parcel: {
+          select: { id: true, code: true, name: true, currentCrop: true, areaHa: true },
         },
-        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        skip,
-        take: pageSize,
-      }),
+        supervisor: {
+          select: { id: true, name: true, role: true },
+        },
+      },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      skip,
+      take: pageSize,
+    });
+
+    const [totalCount, logs] = await Promise.all([
+      isAll ? Promise.resolve(null) : prisma.seasonalWorkLog.count({ where }),
+      logsQuery,
     ]);
+    const total = isAll ? logs.length : totalCount;
 
     res.json({
       logs,
@@ -717,10 +747,11 @@ router.post("/logs/group", inventoryMutation("seasonal", async (req, res, prisma
       ? await prisma.seasonalWorkLog.createManyAndReturn({ data: logsData })
       : await prisma.$transaction(logsData.map((data) => prisma.seasonalWorkLog.create({ data })));
 
+    const workerNameById = new Map(workers.map((worker) => [worker.id, worker.name]));
     await writeAuditBatch(prisma, req, createdLogs.map((log) => ({
       entityType: "SeasonalWorkLog", entityId: log.id, action: "KREIRANJE",
       description: "Grupni unos rada i dnevnica", newValues: log,
-      context: { workerName: workers.find((worker) => worker.id === log.seasonalWorkerId)?.name, groupSize: createdLogs.length },
+      context: { workerName: workerNameById.get(log.seasonalWorkerId), groupSize: createdLogs.length },
     })));
     res.status(201).json({
       success: true,
@@ -860,7 +891,7 @@ router.delete("/logs/:id", inventoryMutation("seasonal", async (req, res, prisma
  */
 router.get("/summary", async (req, res) => {
   try {
-    const { dateFrom, dateTo, parcelId, workerId, groupName } = req.query;
+    const { dateFrom, dateTo, parcelId, workerId, groupName, totalsOnly } = req.query;
 
     const where = {};
 
@@ -887,9 +918,31 @@ router.get("/summary", async (req, res) => {
       }
     }
 
+    if (String(totalsOnly).toLowerCase() === "true") {
+      const agg = await prisma.seasonalWorkLog.aggregate({
+        where,
+        _count: { _all: true },
+        _sum: { hoursWorked: true, dailyWageApplied: true },
+      });
+      return res.json({
+        totals: {
+          totalHours: Number((Number(agg._sum.hoursWorked) || 0).toFixed(2)),
+          totalDailyWage: Number((Number(agg._sum.dailyWageApplied) || 0).toFixed(2)),
+          totalLogs: agg._count._all,
+        },
+      });
+    }
+
     const logs = await prisma.seasonalWorkLog.findMany({
       where,
-      include: {
+      select: {
+        date: true,
+        seasonalWorkerId: true,
+        parcelId: true,
+        jobDescription: true,
+        hoursWorked: true,
+        dailyWageApplied: true,
+        groupName: true,
         seasonalWorker: { select: { id: true, name: true, phone: true, groupName: true } },
         parcel: { select: { id: true, code: true, name: true, currentCrop: true } },
       },
@@ -1104,9 +1157,18 @@ router.get("/export-excel", async (req, res) => {
 
     const logs = await prisma.seasonalWorkLog.findMany({
       where,
-      include: {
-        seasonalWorker: true,
-        parcel: true,
+      select: {
+        date: true,
+        jobDescription: true,
+        startTime: true,
+        endTime: true,
+        breakMinutes: true,
+        hoursWorked: true,
+        hourlyRateApplied: true,
+        dailyWageApplied: true,
+        groupName: true,
+        seasonalWorker: { select: { name: true, groupName: true, city: true, phone: true } },
+        parcel: { select: { name: true, code: true } },
         supervisor: { select: { name: true } },
       },
       orderBy: [{ date: "asc" }, { seasonalWorker: { name: "asc" } }],

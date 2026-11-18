@@ -61,7 +61,19 @@ function fixture(size) {
       return rows;
     },
   }]));
-  db.$queryRaw = async (sql) => { calls.push({ operation: "raw", sql }); return []; };
+  db.$queryRaw = async (sql) => {
+    if (!sql.text.includes("FROM field_work_machine_usage")) { calls.push({ operation: "raw", sql }); return []; }
+    const by = [...sql.text.split("GROUP BY ")[1].split("ORDER BY")[0].matchAll(/"(\w+)"/g)].map(m => m[1]);
+    const where = { status: "ZAVRSENO" };
+    for (const match of sql.text.matchAll(/"(\w+)" IN \(([^)]+)\)/g)) {
+      where[match[1]] = { in: [...match[2].matchAll(/\$(\d+)/g)].map(m => sql.values[Number(m[1]) - 1]) };
+    }
+    const dates = [...sql.text.matchAll(/date (>=|<=) \$(\d+)/g)];
+    if (dates.length) where.date = Object.fromEntries(dates.map(m => [m[1] === ">=" ? "gte" : "lte", sql.values[Number(m[2]) - 1]]));
+    const rows = await db.fieldWork.groupBy({ by, where, _sum: { areaDoneHa: true, workHours: true }, ...(sql.text.includes("ORDER BY") && { orderBy: { _sum: { areaDoneHa: "desc" } } }) });
+    calls.pop(); calls.push({ operation: "raw", sql });
+    return rows.map(({ _sum, _count, ...keys }) => ({ ...keys, area: _sum.areaDoneHa, hours: _sum.workHours, count: _count }));
+  };
   return { db, data, calls };
 }
 
@@ -156,7 +168,8 @@ test("PostgreSQL recent repairs query bounds each machine and preserves historic
       SELECT n::text, m, '2020-01-01'::timestamp + n * interval '1 day', 0.01
       FROM generate_series(1,15) n CROSS JOIN unnest(ARRAY['m0','m1','excluded']) m;`);
     const { db } = fixture(2);
-    db.$queryRaw = async (sql) => (await client.query({ text: sql.text, values: sql.values })).rows;
+    const fakeUsageQuery = db.$queryRaw;
+    db.$queryRaw = async (sql) => sql.text.includes("FROM field_work_machine_usage") ? fakeUsageQuery(sql) : (await client.query({ text: sql.text, values: sql.values })).rows;
     const stats = await loadAnalyticsBatch(db, "machine", ["m0", "m1' OR true --", "m1"], { date: range }, { dateReported: range });
     for (const id of ["m0", "m1"]) {
       const repairs = stats.get(id).recentRepairs;

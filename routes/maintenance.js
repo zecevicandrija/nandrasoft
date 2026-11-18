@@ -1,7 +1,7 @@
 import { addMoney } from "../lib/money.js";
 import { generateOrderNumber } from "../lib/documentNumbers.js";
 import { machineMutation, syncMachineStatus } from "../lib/machineAvailability.js";
-import { requireWorkerIdentity, resolveWorkerForUser, getRequestWorker } from "../lib/workerIdentity.js";
+import { requireWorkerIdentity, resolveWorkerForUser, getRequestWorker, isManager } from "../lib/workerIdentity.js";
 import { photoUrlSchema } from "../lib/photoUrl.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -73,23 +73,17 @@ async function syncBrokenMachines(userId) {
 // ==========================================
 router.get("/stats", async (req, res) => {
   try {
-    const [
-      brokenIssues,
-      inRepairIssues,
-      waitingPartsIssues,
-      repairedIssues,
-      freeMachines,
-      brokenMachines,
-      serviceMachines,
-      remontOrders,
-    ] = await Promise.all([
-      prisma.maintenanceIssue.count({ where: { status: "OTVOREN" } }),
-      prisma.maintenanceIssue.count({ where: { status: "U_RADU" } }),
-      prisma.maintenanceIssue.count({ where: { status: "CEKA_DELOVE" } }),
-      prisma.maintenanceIssue.count({ where: { status: "POPRAVLJENO" } }),
-      prisma.machine.count({ where: { status: "SLOBODNA", isActive: true } }),
-      prisma.machine.count({ where: { status: "U_KVARU", isActive: true } }),
-      prisma.machine.count({ where: { status: "SERVIS", isActive: true } }),
+    const [issueGroups, machineGroups, remontOrders] = await Promise.all([
+      prisma.maintenanceIssue.groupBy({
+        by: ["status"],
+        where: { status: { in: ["OTVOREN", "U_RADU", "CEKA_DELOVE", "POPRAVLJENO"] } },
+        _count: { _all: true },
+      }),
+      prisma.machine.groupBy({
+        by: ["status"],
+        where: { isActive: true, status: { in: ["SLOBODNA", "U_KVARU", "SERVIS"] } },
+        _count: { _all: true },
+      }),
       prisma.workOrder.count({
         where: {
           orderType: "REMONT_SERVIS",
@@ -98,15 +92,23 @@ router.get("/stats", async (req, res) => {
       }),
     ]);
 
+    const issueCounts = new Map(issueGroups.map((g) => [g.status, g._count._all]));
+    const machineCounts = new Map(machineGroups.map((g) => [g.status, g._count._all]));
+
+    const brokenIssues = issueCounts.get("OTVOREN") || 0;
+    const inRepairIssues = issueCounts.get("U_RADU") || 0;
+    const waitingPartsIssues = issueCounts.get("CEKA_DELOVE") || 0;
+    const repairedIssues = issueCounts.get("POPRAVLJENO") || 0;
+
     res.json({
       brokenIssues,
       inRepairIssues,
       waitingPartsIssues,
       repairedIssues,
       totalActiveIssues: brokenIssues + inRepairIssues + waitingPartsIssues,
-      freeMachines,
-      brokenMachines,
-      serviceMachines,
+      freeMachines: machineCounts.get("SLOBODNA") || 0,
+      brokenMachines: machineCounts.get("U_KVARU") || 0,
+      serviceMachines: machineCounts.get("SERVIS") || 0,
       remontOrders,
     });
   } catch (error) {
@@ -153,13 +155,21 @@ router.get("/issues", async (req, res) => {
       prisma.maintenanceIssue.findMany({
         where,
         include: {
-          machine: true,
-          reportedBy: { select: { id: true, name: true, phone: true } },
-          mechanic: { select: { id: true, name: true, phone: true } },
-          servicePartner: { select: { id: true, name: true, phone: true } },
+          machine: {
+            select: {
+              id: true,
+              name: true,
+              brandModel: true,
+              type: true,
+              regNumber: true,
+              currentHours: true,
+            },
+          },
+          reportedBy: { select: { id: true, name: true } },
+          createdBy: { select: { id: true, name: true } },
+          mechanic: { select: { id: true, name: true } },
           parcel: { select: { id: true, code: true, name: true } },
-          workOrder: { select: { id: true, orderNumber: true, status: true } },
-          createdBy: { select: { id: true, name: true, role: true } },
+          workOrder: { select: { id: true, orderNumber: true, issuedBy: { select: { id: true, name: true } } } },
         },
         orderBy: [{ dateReported: "desc" }, { createdAt: "desc" }],
         skip,
@@ -271,65 +281,93 @@ router.post("/issues", machineMutation(async (req, res, prisma) => {
 // ==========================================
 // 4. RADNI NALOZI ZA REMONT (TAB 2)
 // ==========================================
-router.get("/remont-orders", machineMutation(async (req, res, prisma) => {
-  try {
-    const { page, limit, machineId, workerId, search } = req.query;
+function buildRemontOrdersQuery(query) {
+  const { page, limit, machineId, workerId, search } = query;
 
-    const takeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
-    const pageNum = Math.max(1, Number(page) || 1);
-    const skip = (pageNum - 1) * takeLimit;
+  const takeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+  const pageNum = Math.max(1, Number(page) || 1);
+  const skip = (pageNum - 1) * takeLimit;
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
 
-    const andConditions = [
-      { orderType: "REMONT_SERVIS" },
-      {
-        OR: [
-          // 1. Svi nalozi koji još uvek nisu završeni ili otkazani
-          { status: { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] } },
-          // 2. Završeni nalozi ali SAMO ONI koji su završeni DANAS (vidljivi do kraja dana do 23:59:59h)
-          {
-            status: "ZAVRSEN",
-            updatedAt: { gte: startOfToday },
-          },
-        ],
-      },
-    ];
-
-    if (machineId) andConditions.push({ machineId: String(machineId) });
-    if (workerId) andConditions.push({ workerId: String(workerId) });
-    if (search) {
-      andConditions.push({
-        OR: [
-          { orderNumber: { contains: String(search), mode: "insensitive" } },
-          { instructions: { contains: String(search), mode: "insensitive" } },
-          { machine: { name: { contains: String(search), mode: "insensitive" } } },
-          { worker: { name: { contains: String(search), mode: "insensitive" } } },
-        ],
-      });
-    }
-
-    const where = { AND: andConditions };
-
-    const [orders, total] = await Promise.all([
-      prisma.workOrder.findMany({
-        where,
-        include: {
-          machine: true,
-          attachment: true,
-          worker: true,
-          issuedBy: { select: { id: true, name: true, role: true } },
-          maintenance: true,
+  const andConditions = [
+    { orderType: "REMONT_SERVIS" },
+    {
+      OR: [
+        // 1. Svi nalozi koji još uvek nisu završeni ili otkazani
+        { status: { in: ["PLANIRAN", "DODELJEN", "U_TOKU"] } },
+        // 2. Završeni nalozi ali SAMO ONI koji su završeni DANAS (vidljivi do kraja dana do 23:59:59h)
+        {
+          status: "ZAVRSEN",
+          updatedAt: { gte: startOfToday },
         },
-        orderBy: [{ orderDate: "desc" }, { createdAt: "desc" }],
-        skip,
-        take: takeLimit,
-      }),
-      prisma.workOrder.count({ where }),
-    ]);
+      ],
+    },
+  ];
 
-    // Automatska sinhronizacija: ako neki nalog za remont nema povezan MaintenanceIssue, kreiraj ga odmah
+  if (machineId) andConditions.push({ machineId: String(machineId) });
+  if (workerId) andConditions.push({ workerId: String(workerId) });
+  if (search) {
+    andConditions.push({
+      OR: [
+        { orderNumber: { contains: String(search), mode: "insensitive" } },
+        { instructions: { contains: String(search), mode: "insensitive" } },
+        { machine: { name: { contains: String(search), mode: "insensitive" } } },
+        { worker: { name: { contains: String(search), mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  return {
+    where: { AND: andConditions },
+    takeLimit,
+    pageNum,
+    skip,
+  };
+}
+
+const remontOrderInclude = {
+  machine: { select: { id: true, name: true, status: true } },
+  worker: { select: { id: true, name: true } },
+  issuedBy: { select: { id: true, name: true } },
+  maintenance: {
+    select: {
+      id: true,
+      status: true,
+      repairedAt: true,
+      title: true,
+      dateReported: true,
+      repairNotes: true,
+      partsReplaced: true,
+      lubricantType: true,
+      lubricantLiters: true,
+      partsCost: true,
+      laborCost: true,
+      machine: { select: { id: true, name: true } },
+    },
+  },
+};
+
+function queryRemontOrders(db, { where, skip, takeLimit }) {
+  return Promise.all([
+    db.workOrder.findMany({
+      where,
+      include: remontOrderInclude,
+      orderBy: [{ orderDate: "desc" }, { createdAt: "desc" }],
+      skip,
+      take: takeLimit,
+    }),
+    db.workOrder.count({ where }),
+  ]);
+}
+
+// Fallback za legacy naloge koji nemaju povezan MaintenanceIssue: zaključava mašine samo kada zaista treba upis.
+const syncAndFetchRemontOrders = machineMutation(async (req, res, db) => {
+  try {
+    const params = buildRemontOrdersQuery(req.query);
+    const [orders, total] = await queryRemontOrders(db, params);
+
     for (let i = 0; i < orders.length; i++) {
       const order = orders[i];
       if (!order.maintenance && order.machineId) {
@@ -346,13 +384,17 @@ router.get("/remont-orders", machineMutation(async (req, res, prisma) => {
             ? "U_RADU"
             : "OTVOREN";
 
-        const newIssue = await prisma.maintenanceIssue.create({
+        const issuerWorker = order.issuedById
+          ? await resolveWorkerForUser({ id: order.issuedById }, db)
+          : null;
+
+        const newIssue = await db.maintenanceIssue.create({
           data: {
             machineId: order.machineId,
             serviceType: "REDOVAN_SERVIS",
             priority: issuePriority,
             status: issueStatus,
-            reportedById: order.workerId,
+            reportedById: issuerWorker?.id || order.workerId,
             mechanicId: order.workerId,
             title: `Radni nalog ${order.orderNumber}: ${
               order.instructions ? order.instructions.slice(0, 50) : "Servis mašine"
@@ -361,14 +403,10 @@ router.get("/remont-orders", machineMutation(async (req, res, prisma) => {
             isMachineStopped: true,
             createdById: order.issuedById,
           },
-          include: {
-            machine: true,
-            mechanic: true,
-            reportedBy: true,
-          },
+          select: remontOrderInclude.maintenance.select,
         });
 
-        await prisma.workOrder.update({
+        await db.workOrder.update({
           where: { id: order.id },
           data: { maintenanceId: newIssue.id },
         });
@@ -376,14 +414,13 @@ router.get("/remont-orders", machineMutation(async (req, res, prisma) => {
         orders[i].maintenance = newIssue;
         orders[i].maintenanceId = newIssue.id;
 
-        // Takođe sinhronizuj status mašine u SERVIS ako nije završeno
         if (
           order.status !== "ZAVRSEN" &&
           order.machine &&
           order.machine.status !== "SERVIS" &&
           order.machine.status !== "U_KVARU"
         ) {
-          await prisma.machine.update({
+          await db.machine.update({
             where: { id: order.machineId },
             data: { status: "SERVIS" },
           });
@@ -391,20 +428,42 @@ router.get("/remont-orders", machineMutation(async (req, res, prisma) => {
       }
     }
 
-    const totalPages = Math.max(1, Math.ceil(total / takeLimit));
-
+    const totalPages = Math.max(1, Math.ceil(total / params.takeLimit));
     res.json({
       orders,
       total,
-      page: pageNum,
-      limit: takeLimit,
+      page: params.pageNum,
+      limit: params.takeLimit,
       totalPages,
     });
   } catch (error) {
     console.error("Greška pri dohvatanju naloga za remont:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
-}));
+});
+
+router.get("/remont-orders", async (req, res) => {
+  try {
+    const params = buildRemontOrdersQuery(req.query);
+    const [orders, total] = await queryRemontOrders(prisma, params);
+
+    if (orders.some((order) => !order.maintenance && order.machineId)) {
+      return syncAndFetchRemontOrders(req, res);
+    }
+
+    const totalPages = Math.max(1, Math.ceil(total / params.takeLimit));
+    res.json({
+      orders,
+      total,
+      page: params.pageNum,
+      limit: params.takeLimit,
+      totalPages,
+    });
+  } catch (error) {
+    console.error("Greška pri dohvatanju naloga za remont:", error);
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+});
 
 // ==========================================
 // 5. IZDAVANJE NALOGA ZA REMONT (RUKOVODILAC & DIREKTOR)
@@ -435,6 +494,7 @@ router.post("/remont-order", requireManager, machineMutation(async (req, res, pr
     if (machine.isActive === false) return res.status(409).json({ error: "Mašina je arhivirana. Prvo je ponovo aktivirajte za novi servis." });
 
     const orderNumber = await generateOrderNumber(prisma);
+    const issuerWorker = await resolveWorkerForUser(req.user, prisma);
 
     // Kreiramo MaintenanceIssue i povezani WorkOrder u transakciji, a mašinu stavljamo u status SERVIS
     const issue = await prisma.maintenanceIssue.create({
@@ -443,7 +503,7 @@ router.post("/remont-order", requireManager, machineMutation(async (req, res, pr
         serviceType,
         priority,
         status: "OTVOREN",
-        reportedById: workerId,
+        reportedById: issuerWorker?.id || workerId,
         mechanicId: workerId,
         title: `Radni nalog ${orderNumber}: ${instructions.slice(0, 50)}`,
         description: instructions,
@@ -524,7 +584,7 @@ router.put("/issues/:id/status", machineMutation(async (req, res, prisma) => {
 
     const { status } = parsed.data;
     const worker = await getRequestWorker(req, prisma);
-    if (!worker) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
+    if (!worker && !isManager(req.user)) return res.status(403).json({ error: "Nalog nije povezan sa aktivnim profilom radnika." });
 
     const issue = await prisma.maintenanceIssue.findUnique({
       where: { id: req.params.id },
@@ -550,28 +610,19 @@ router.put("/issues/:id/status", machineMutation(async (req, res, prisma) => {
     const updateData = { status };
 
     // Ako prelazi u rad, automatski dodeli trenutnog mehaničara
-    if (status === "U_RADU" && !issue.mechanicId) {
+    if (status === "U_RADU" && !issue.mechanicId && worker) {
       updateData.mechanicId = worker.id;
     }
 
-    const [updatedIssue] = await prisma.$transaction([
-      prisma.maintenanceIssue.update({
-        where: { id: issue.id },
-        data: updateData,
-        include: {
-          machine: true,
-          mechanic: true,
-          reportedBy: true,
-        },
-      }),
-      // Ako je mašina bila slobodna a kvar preuzet, prebaci je u SERVIS
-      prisma.machine.update({
-        where: { id: issue.machineId },
-        data: {
-          status: status === "OTKAZAN" ? "SLOBODNA" : "SERVIS",
-        },
-      }),
-    ]);
+    const updatedIssue = await prisma.maintenanceIssue.update({
+      where: { id: issue.id },
+      data: updateData,
+      include: {
+        machine: true,
+        mechanic: true,
+        reportedBy: true,
+      },
+    });
 
     // Ako je povezano sa radnim nalogom, sinhronizuj i radni nalog
     if (issue.workOrder) {
@@ -583,7 +634,10 @@ router.put("/issues/:id/status", machineMutation(async (req, res, prisma) => {
       });
     }
 
-    await syncMachineStatus(prisma, issue.machineId);
+    const updatedMachine = await syncMachineStatus(prisma, issue.machineId);
+    if (updatedMachine) {
+      updatedIssue.machine = updatedMachine;
+    }
 
     await prisma.auditLog.create({
       data: {
@@ -604,6 +658,72 @@ router.put("/issues/:id/status", machineMutation(async (req, res, prisma) => {
     });
   } catch (error) {
     console.error("Greška pri promeni statusa kvara:", error);
+    res.status(500).json({ error: "Greška na serveru." });
+  }
+}));
+
+// ==========================================
+// 6.1 TRAJNO BRISANJE OTKAZANOG KVARA / SERVISA (RUKOVODILAC & DIREKTOR)
+// ==========================================
+router.delete("/issues/:id", requireManager, machineMutation(async (req, res, prisma) => {
+  try {
+    const issue = await prisma.maintenanceIssue.findUnique({
+      where: { id: req.params.id },
+      include: { machine: true, workOrder: true },
+    });
+
+    if (!issue) {
+      return res.status(404).json({ error: "Zapis o kvaru/servisu nije pronađen." });
+    }
+
+    if (issue.status !== "OTKAZAN") {
+      return res.status(409).json({
+        error: "Samo otkazane prijave mogu biti trajno obrisane. Prvo otkažite prijavu.",
+      });
+    }
+
+    if (issue.workOrder) {
+      if (
+        issue.workOrder.fieldWorkId ||
+        (await prisma.machineAssignment.findFirst({ where: { workOrderId: issue.workOrder.id } }))
+      ) {
+        return res.status(409).json({
+          error: "Povezani radni nalog ima istoriju rada ili zaduženja i ne može se trajno obrisati.",
+        });
+      }
+      await prisma.workOrder.delete({
+        where: { id: issue.workOrder.id },
+      });
+    }
+
+    await prisma.maintenanceIssue.delete({
+      where: { id: issue.id },
+    });
+
+    await syncMachineStatus(prisma, issue.machineId);
+
+    await prisma.auditLog.create({
+      data: {
+        entityType: "MaintenanceIssue",
+        entityId: issue.id,
+        action: "BRISANJE",
+        userId: req.user.id,
+        userName: req.user.name,
+        userRole: req.user.role,
+        description: issue.workOrder
+          ? `Trajno obrisana otkazana prijava "${issue.title}" i povezani radni nalog ${issue.workOrder.orderNumber}`
+          : `Trajno obrisana otkazana prijava kvara/servisa "${issue.title}"`,
+        oldValues: issue,
+      },
+    });
+
+    res.json({
+      message: issue.workOrder
+        ? `Prijava i povezani radni nalog ${issue.workOrder.orderNumber} su trajno obrisani.`
+        : "Otkazana prijava je trajno obrisana.",
+    });
+  } catch (error) {
+    console.error("Greška pri brisanju prijave kvara/servisa:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
 }));
@@ -682,38 +802,30 @@ router.post("/issues/:id/resolve", machineMutation(async (req, res, prisma) => {
 
     const totalCost = addMoney(partsCost || 0, laborCost || 0);
 
-    // Atomska transakcija:
+    // Atomska transakcija (u okviru machineMutation):
     // 1. Ažuriraj MaintenanceIssue na POPRAVLJENO i upiši troškove i zamenjene delove
-    // 2. Recompute availability after synchronizing the linked order.
-    const [resolvedIssue] = await prisma.$transaction([
-      prisma.maintenanceIssue.update({
-        where: { id: issue.id },
-        data: {
-          status: "POPRAVLJENO",
-          repairedAt: new Date(),
-          repairNotes,
-          partsReplaced: partsReplaced || null,
-          lubricantType: lubricantType || null,
-          lubricantLiters: lubricantLiters || null,
-          partsCost: partsCost || 0,
-          laborCost: laborCost || 0,
-          totalCost,
-          downtimeHours: downtimeHours || 0,
-          mechanicId: issue.mechanicId || worker.id,
-        },
-        include: {
-          machine: true,
-          mechanic: true,
-          reportedBy: true,
-        },
-      }),
-      prisma.machine.update({
-        where: { id: issue.machineId },
-        data: {
-          status: "SLOBODNA",
-        },
-      }),
-    ]);
+    // 2. Sinhronizuj povezani radni nalog, pa tek onda preračunaj status mašine jednom.
+    const resolvedIssue = await prisma.maintenanceIssue.update({
+      where: { id: issue.id },
+      data: {
+        status: "POPRAVLJENO",
+        repairedAt: new Date(),
+        repairNotes,
+        partsReplaced: partsReplaced || null,
+        lubricantType: lubricantType || null,
+        lubricantLiters: lubricantLiters || null,
+        partsCost: partsCost || 0,
+        laborCost: laborCost || 0,
+        totalCost,
+        downtimeHours: downtimeHours || 0,
+        mechanicId: issue.mechanicId || worker.id,
+      },
+      include: {
+        machine: true,
+        mechanic: true,
+        reportedBy: true,
+      },
+    });
 
     // Ako je postojao povezani radni nalog, označi ga kao ZAVRSEN
     if (issue.workOrder) {
@@ -724,6 +836,9 @@ router.post("/issues/:id/resolve", machineMutation(async (req, res, prisma) => {
     }
 
     const updatedMachine = await syncMachineStatus(prisma, issue.machineId);
+    if (updatedMachine) {
+      resolvedIssue.machine = updatedMachine;
+    }
 
     await prisma.auditLog.create({
       data: {
@@ -996,11 +1111,16 @@ router.get("/history", async (req, res) => {
       prisma.maintenanceIssue.findMany({
         where,
         include: {
-          machine: true,
-          mechanic: { select: { id: true, name: true, phone: true } },
+          machine: {
+            select: {
+              id: true,
+              name: true,
+              brandModel: true,
+              type: true,
+            },
+          },
+          mechanic: { select: { id: true, name: true } },
           reportedBy: { select: { id: true, name: true } },
-          servicePartner: { select: { id: true, name: true } },
-          workOrder: { select: { id: true, orderNumber: true } },
         },
         orderBy: { repairedAt: "desc" },
         skip,

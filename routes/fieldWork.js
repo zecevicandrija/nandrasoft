@@ -1,3 +1,6 @@
+import { completeMachineUsage } from "../lib/completeMachineUsage.js";
+import { usageInclude } from "../lib/machineUsageService.js";
+import { assertCorrectionAccess, statusError } from "../lib/workOrderStatusService.js";
 import { materialsSchema, materialsInclude, prepareMaterials, materialText } from "../lib/workMaterials.js";
 import { optionalContractorId, validateContractor } from "../lib/contractors.js";
 import { reportingQuery, fieldWorkStats, unassignedWorkPage } from "../lib/fieldWorkReporting.js";
@@ -50,7 +53,16 @@ router.get("/stats", async (req, res) => {
   const parsed = reportingQuery.safeParse(req.query);
   if (!parsed.success) return res.status(400).json({ error: "Neispravni datumi ili filteri izveštaja." });
   try {
-    return res.json(await fieldWorkStats(prisma, parsed.data, isManagerUser(req.user) ? null : req.worker.id));
+    return res.json(await fieldWorkStats(
+      prisma,
+      parsed.data,
+      isManagerUser(req.user) ? null : req.worker.id,
+      new Date(),
+      {
+        includeBreakdown: parsed.data.includeBreakdown !== "false",
+        includeMissingWarnings: isManagerUser(req.user),
+      }
+    ));
   } catch (error) {
     console.error("Field-work statistics failed:", error);
     return res.status(500).json({ error: "Statistika nije učitana. Pokušajte ponovo." });
@@ -69,70 +81,150 @@ router.get("/unassigned-warnings", async (req, res) => {
   }
 });
 
-// ==========================================
-// 2. LISTA RADOVA SA FILTERIMA (DNEVNIK RADA)
-// ==========================================
-router.get("/", async (req, res) => {
-  try {
-    const {
-      parcelId,
-      machineId,
-      workerId,
-      workTypeId,
-      shift,
-      status,
-      dateFrom,
-      dateTo,
-      search,
-      limit = 50,
-      page = 1,
-    } = req.query;
+function buildFieldWorkWhere(req, { includeShiftAndStatus = false } = {}) {
+  const {
+    parcelId,
+    machineId,
+    workerId,
+    workTypeId,
+    shift,
+    status,
+    dateFrom,
+    dateTo,
+    search,
+  } = req.query;
 
-    const where = {};
+  const where = {};
 
-    if (parcelId) where.parcelId = String(parcelId);
-    if (machineId) where.machineId = String(machineId);
-    if (workerId) where.workerId = String(workerId);
-    if (workTypeId) where.workTypeId = String(workTypeId);
-    if (shift) where.shift = String(shift);
-    if (status) {
-      where.status = String(status);
-    } else {
-      // Podrazumevano prikazujemo sve koji nisu STORNO osim ako se eksplicitno traži
-      where.status = { not: "STORNO" };
+  if (parcelId) where.parcelId = String(parcelId);
+  if (machineId) {
+    where.AND = [
+      {
+        OR: [
+          { machineAssignments: { some: { machineId: String(machineId), voidedAt: null } } },
+          { machineId: String(machineId), machineAssignments: { none: { voidedAt: null } } },
+        ],
+      },
+    ];
+  }
+  if (workerId) where.workerId = String(workerId);
+  if (workTypeId) where.workTypeId = String(workTypeId);
+  if (includeShiftAndStatus && shift) where.shift = String(shift);
+  if (includeShiftAndStatus && status) {
+    where.status = String(status);
+  } else {
+    // Podrazumevano prikazujemo sve koji nisu STORNO osim ako se eksplicitno traži
+    where.status = { not: "STORNO" };
+  }
+
+  if (dateFrom || dateTo) {
+    where.date = {};
+    if (dateFrom) where.date.gte = new Date(String(dateFrom));
+    if (dateTo) {
+      const end = new Date(String(dateTo));
+      end.setHours(23, 59, 59, 999);
+      where.date.lte = end;
     }
+  }
 
-    if (dateFrom || dateTo) {
-      where.date = {};
-      if (dateFrom) where.date.gte = new Date(String(dateFrom));
-      if (dateTo) {
-        const end = new Date(String(dateTo));
-        end.setHours(23, 59, 59, 999);
-        where.date.lte = end;
-      }
-    }
+  // Izolacija podataka: Radnici/operateri vide isključivo sopstvene unose
+  if (!isManagerUser(req.user)) {
+    const opFilter = getOperatorFilter(req.worker);
+    where.AND = where.AND || [];
+    where.AND.push(opFilter);
+  }
 
-    // Izolacija podataka: Radnici/operateri vide isključivo sopstvene unose
-    if (!isManagerUser(req.user)) {
-      const opFilter = getOperatorFilter(req.worker);
-      where.AND = where.AND || [];
-      where.AND.push(opFilter);
-    }
-
-    if (search) {
-      const s = String(search).trim();
+  if (search) {
+    const s = String(search).trim();
+    if (s) {
       where.AND = where.AND || [];
       where.AND.push({
         OR: [
           { parcel: { name: { contains: s, mode: "insensitive" } } },
           { parcel: { code: { contains: s, mode: "insensitive" } } },
           { machine: { name: { contains: s, mode: "insensitive" } } },
+          { machineAssignments: { some: { voidedAt: null, machine: { name: { contains: s, mode: "insensitive" } } } } },
           { worker: { name: { contains: s, mode: "insensitive" } } },
           { workType: { name: { contains: s, mode: "insensitive" } } },
           { notes: { contains: s, mode: "insensitive" } },
         ],
       });
     }
+  }
+
+  return where;
+}
+
+const fieldWorkListSelect = {
+  id: true,
+  date: true,
+  shift: true,
+  parcelId: true,
+  contractorId: true,
+  machineId: true,
+  attachmentId: true,
+  workerId: true,
+  workTypeId: true,
+  areaDoneHa: true,
+  startTime: true,
+  endTime: true,
+  workHours: true,
+  status: true,
+  notes: true,
+  photoUrl: true,
+  parcel: { select: { id: true, code: true, name: true, areaHa: true } },
+  contractor: { select: { id: true, name: true } },
+  machine: { select: { id: true, name: true } },
+  attachment: { select: { id: true, name: true } },
+  worker: { select: { id: true, name: true } },
+  workType: { select: { id: true, name: true } },
+  machineAssignments: {
+    where: { voidedAt: null },
+    select: {
+      id: true,
+      machineId: true,
+      areaDoneHa: true,
+      machine: { select: { id: true, name: true } },
+    },
+    orderBy: { assignedAt: "asc" },
+  },
+  workOrder: { select: { id: true, status: true } },
+  materials: materialsInclude,
+};
+
+const fieldWorkExportSelect = {
+  date: true,
+  shift: true,
+  areaDoneHa: true,
+  startTime: true,
+  endTime: true,
+  workHours: true,
+  notes: true,
+  parcel: { select: { code: true, name: true, areaHa: true } },
+  contractor: { select: { name: true } },
+  machine: { select: { name: true } },
+  worker: { select: { name: true } },
+  workType: { select: { name: true } },
+  machineAssignments: {
+    where: { voidedAt: null },
+    select: {
+      areaDoneHa: true,
+      startHours: true,
+      endHours: true,
+      machine: { select: { name: true } },
+    },
+    orderBy: { assignedAt: "asc" },
+  },
+  materials: materialsInclude,
+};
+
+// ==========================================
+// 2. LISTA RADOVA SA FILTERIMA (DNEVNIK RADA)
+// ==========================================
+router.get("/", async (req, res) => {
+  try {
+    const { limit = 50, page = 1 } = req.query;
+    const where = buildFieldWorkWhere(req, { includeShiftAndStatus: true });
 
     const take = Math.min(Number(limit) || 50, 100);
     const skip = ((Number(page) || 1) - 1) * take;
@@ -141,16 +233,7 @@ router.get("/", async (req, res) => {
       prisma.fieldWork.count({ where }),
       prisma.fieldWork.findMany({
         where,
-        include: {
-          parcel: true, contractor: true,
-          machine: true,
-          attachment: true,
-          worker: true,
-          workType: true, materials: materialsInclude,
-          createdBy: {
-            select: { id: true, name: true, email: true, role: true },
-          },
-        },
+        select: fieldWorkListSelect,
         orderBy: [{ date: "desc" }, { createdAt: "desc" }],
         skip,
         take,
@@ -199,6 +282,11 @@ const fieldWorkSchema = z.object({
   photoUrl: z.string().url("Neispravan URL slike").optional().nullable(),
   autoAssignMachine: z.boolean().optional().default(true),
   workOrderId: z.string().optional().nullable(),
+  cancelRemainder: z.boolean().optional(),
+  usageAreas: z.array(z.object({ assignmentId: z.string(), areaDoneHa: z.number().finite().nonnegative() })).optional(),
+  machineReturns: z.array(z.object({ assignmentId: z.string(), endHours: z.number().finite().nonnegative(),
+    endFuelLiters: z.number().finite().nonnegative(), expectedMachineUpdatedAt: z.string(),
+    isOperational: z.boolean().default(true), returnNotes: z.string().max(500).optional() })).optional(),
   endFuelLiters: z.number().nonnegative().optional().nullable(),
   endHours: z.number().nonnegative().optional().nullable(),
   isOperational: z.boolean().optional().default(true),
@@ -232,6 +320,10 @@ router.post("/", machineMutation(async (req, res, prisma) => {
       autoAssignMachine,
     } = parsed.data;
 
+    if (status !== "ZAVRSENO") return res.status(400).json({ error: "Za pocetak rada koristite zaduzivanje/prihvatanje naloga. Ovde se evidentira zavrseni rad." });
+    if (parsed.data.cancelRemainder && (!isManagerUser(req.user) || !parsed.data.workOrderId)) {
+      return res.status(403).json({ error: "Samo rukovodilac ili direktor može otkazati preostali deo naloga." });
+    }
     // Resolve identity only through the unique User -> Worker relation.
     let finalWorkerId = workerId;
     if (!isManagerUser(req.user) || !finalWorkerId) {
@@ -305,6 +397,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
       activeAssignment = await prisma.machineAssignment.findFirst({
         where: {
           workOrderId: parsed.data.workOrderId,
+          machineId,
           status: "ZADUZENA",
         },
       });
@@ -320,6 +413,14 @@ router.post("/", machineMutation(async (req, res, prisma) => {
       });
     }
 
+    if (!linkedOrder && activeAssignment?.workOrderId) {
+      linkedOrder = await prisma.workOrder.findUnique({ where: { id: activeAssignment.workOrderId }, include: { materials: materialsInclude } });
+      if (!linkedOrder || !canAccessWorkerRecord(req, linkedOrder) || linkedOrder.workerId !== finalWorkerId ||
+          linkedOrder.machineId !== machineId || linkedOrder.parcelId !== parcelId ||
+          (linkedOrder.workTypeId && linkedOrder.workTypeId !== workTypeId) || (linkedOrder.attachmentId || null) !== (attachmentId || null)) {
+        return res.status(409).json({ error: "Zaduženje pripada radnom nalogu. Otvorite taj nalog i evidentirajte njegov rad." });
+      }
+    }
     if (activeAssignment && (activeAssignment.workerId !== finalWorkerId || activeAssignment.machineId !== machineId ||
         (linkedOrder && (activeAssignment.workOrderId !== linkedOrder.id || activeAssignment.parcelId !== parcelId)))) {
       return res.status(403).json({ error: "Zaduženje mašine ne odgovara radniku i radnom nalogu." });
@@ -412,132 +513,19 @@ router.post("/", machineMutation(async (req, res, prisma) => {
         },
         include: {
           parcel: true, contractor: true,
-          machine: true,
+          machine: true, machineAssignments: usageInclude, workOrder: { select: { id: true, status: true } },
           attachment: true,
           worker: true,
           workType: true, materials: materialsInclude,
         },
       });
 
-      // 5. Pametno razduživanje ili povezivanje zaduženja mašine
-      const workDate = date ? new Date(date) : new Date();
-      const currentH = machineObj.currentHours || 0;
-      const hoursToAdd = finalWorkHours || 0;
-      const finalEndHours =
-        parsed.data.endHours !== undefined && parsed.data.endHours !== null
-          ? parsed.data.endHours
-          : currentH + hoursToAdd;
-
-      const isOperational = parsed.data.isOperational !== false;
-      const endFuel =
-        parsed.data.endFuelLiters !== undefined && parsed.data.endFuelLiters !== null
-          ? parsed.data.endFuelLiters
-          : null;
-
-      if (activeAssignment && status === "ZAVRSENO") {
-        // Postojeće zaduženje: RAZDUŽI MAŠINU
-        await tx.machineAssignment.update({
-          where: { id: activeAssignment.id, workerId: finalWorkerId, machineId, status: "ZADUZENA" },
-          data: {
-            returnedAt: workDate,
-            endHours: finalEndHours,
-            endFuelLiters: endFuel,
-            isOperational,
-            returnNotes: parsed.data.returnNotes || null,
-            photoUrl: photoUrl || null,
-            status: isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM",
-          },
-        });
-
-        // Ažuriraj stanje mašine (vraća se u SLOBODNA ili U_KVARU)
-        await tx.machine.update({
-          where: { id: machineId },
-          data: {
-            status: isOperational ? "SLOBODNA" : "U_KVARU",
-            currentHours: finalEndHours,
-            ...(endFuel !== null ? measuredFuelData(currentMachine, endFuel) : {}),
-          },
-        });
-
-        if (!isOperational) {
-          await tx.maintenanceIssue.create({
-            data: {
-              serviceType: "KVAR_NJIVA",
-              priority: "VISOKA",
-              status: "OTVOREN",
-              machineId,
-              parcelId: parsed.data.parcelId || null,
-              reportedById: finalWorkerId,
-              title: `Prijava kvara pri radu na njivi: ${machineObj.name}`,
-              description: parsed.data.returnNotes || "Radnik prijavio neispravnost prilikom završetka rada na njivi.",
-              photoUrl: photoUrl || null,
-              isMachineStopped: true,
-              createdById: req.user.id,
-            },
-          });
-        }
-      } else if (!activeAssignment && autoAssignMachine !== false) {
-        // Ako nije bilo prethodnog jutarnjeg zaduženja, automatski evidentiraj zaduženje/razduženje
-        await tx.machineAssignment.create({
-          data: {
-            machineId,
-            workerId: finalWorkerId,
-            parcelId: parsed.data.parcelId || null,
-            workOrderId: parsed.data.workOrderId || null,
-            assignedAt: workDate,
-            returnedAt: status === "ZAVRSENO" ? workDate : null,
-            startHours: currentH,
-            endHours: status === "ZAVRSENO" ? finalEndHours : null,
-            startFuelLiters: machineObj.currentFuelLiters !== undefined && machineObj.currentFuelLiters !== null ? machineObj.currentFuelLiters : null,
-            endFuelLiters: endFuel,
-            isOperational,
-            returnNotes: parsed.data.returnNotes || null,
-            photoUrl: photoUrl || null,
-            status: status === "ZAVRSENO" ? (isOperational ? "RAZDUZENA" : "VRACENA_SA_KVAROM") : "ZADUZENA",
-            assignNotes: `Automatski evidentirano uz rad na njivi`,
-            createdById: req.user.id,
-          },
-        });
-
-        if (status === "ZAVRSENO") {
-          await tx.machine.update({
-            where: { id: machineId },
-            data: {
-              status: isOperational ? "SLOBODNA" : "U_KVARU",
-              currentHours: finalEndHours,
-              ...(endFuel !== null ? measuredFuelData(currentMachine, endFuel) : {}),
-            },
-          });
-
-          if (!isOperational) {
-            await tx.maintenanceIssue.create({
-              data: {
-                serviceType: "KVAR_NJIVA",
-                priority: "VISOKA",
-                status: "OTVOREN",
-                machineId,
-                parcelId: parsed.data.parcelId || null,
-                reportedById: finalWorkerId,
-                title: `Prijava kvara pri radu na njivi: ${machineObj.name}`,
-                description: parsed.data.returnNotes || "Radnik prijavio neispravnost prilikom završetka rada na njivi.",
-              photoUrl: photoUrl || null,
-                isMachineStopped: true,
-                createdById: req.user.id,
-              },
-            });
-          }
-        }
-      }
-
-      if (linkedOrder && status === "ZAVRSENO") {
-        await tx.workOrder.update({
-          where: {
-            id: linkedOrder.id, workerId: finalWorkerId, machineId, parcelId,
-            status: linkedOrder.status,
-          },
-          data: { status: "ZAVRSEN", fieldWorkId: work.id },
-        });
-      }
+      await completeMachineUsage(tx, req, { work, order: linkedOrder, machine: currentMachine,
+        activeAssignment, input: parsed.data, workHours: finalWorkHours });
+      await tx.auditLog.create({ data: { entityType: "FieldWork", entityId: work.id, action: "KREIRANJE",
+        userId: req.user.id, userName: req.user.name, userRole: req.user.role,
+        description: "Evidentiran rad i završeno razduženje korišćenih mašina.",
+        newValues: { workerId: finalWorkerId, workOrderId: linkedOrder?.id || null, areaDoneHa, workHours: finalWorkHours ?? null } } });
       return work;
     }, { isolationLevel: "Serializable" });
 
@@ -550,7 +538,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
       },
     });
   } catch (error) {
-    if (error.status === 400) return res.status(400).json({ error: error.message });
+    if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("Greška pri unosu rada na njivi:", error);
     if (error.status === 409 || ["P2025", "P2034"].includes(error.code)) {
       return res.status(409).json({ error: "Podaci su promenjeni. Osvežite podatke i pokušajte ponovo." });
@@ -574,6 +562,22 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       return res.status(404).json({ error: "Zapis o radu nije pronađen." });
     }
 
+    assertCorrectionAccess(req, existing, existing.date);
+    const linked = await prisma.workOrder.findFirst({ where: { fieldWorkId: id } });
+    if ((req.body.status !== undefined && req.body.status !== existing.status) ||
+        (req.body.machineId && req.body.machineId !== existing.machineId)) {
+      throw statusError("Koristite korekciju/zamenu masine ili postupak storniranja rada.");
+    }
+    if (req.body.date && new Date(req.body.date).toISOString().slice(0, 10) !== new Date(existing.date).toISOString().slice(0, 10)) {
+      throw statusError("Datum evidentiranog rada ne moze se direktno menjati.");
+    }
+    const usage = await prisma.machineAssignment.findFirst({ where: { fieldWorkId: id } });
+    if (linked || usage) for (const key of ["workerId", "parcelId", "workTypeId", "attachmentId"]) {
+      if (req.body[key] !== undefined && (req.body[key] || null) !== (existing[key] || null)) throw statusError("Rad ima povezanu realizaciju. Radnika, parcelu, operaciju i prikljucak ne mozete direktno promeniti.");
+    }
+    if (req.body.areaDoneHa !== undefined && req.body.areaDoneHa !== existing.areaDoneHa && usage) {
+      throw statusError("Ukupnu povrsinu menjajte zajedno sa raspodelom kroz pregled koriscenih masina.");
+    }
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
     const isOperator = req.user.role === "OPERATER";
 
@@ -590,21 +594,6 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
         return res.status(403).json({ error: "Možete menjati isključivo sopstvene unose rada." });
       }
 
-      // 2. Sme da menja samo do kraja tog dana u kojem je rad obavljen/unet
-      const now = new Date();
-      const recordDate = new Date(existing.date);
-      const isSameDay =
-        now.getFullYear() === recordDate.getFullYear() &&
-        now.getMonth() === recordDate.getMonth() &&
-        now.getDate() === recordDate.getDate();
-
-      if (!isSameDay) {
-        return res.status(403).json({
-          error: "Istekao je rok za izmenu. Unos rada možete izmeniti samo do kraja dana u kojem je zabeležen.",
-        });
-      }
-
-      // Ne može prebaciti rad na drugog radnika
       if (req.body.workerId && req.body.workerId !== existing.workerId) {
         return res.status(403).json({ error: "Ne možete menjati dodeljenog radnika." });
       }
@@ -617,7 +606,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       });
     }
 
-    const updateData = { ...parsed.data };
+    const updateData = Object.fromEntries(Object.entries(parsed.data).filter(([key]) => Object.hasOwn(req.body, key)));
     delete updateData.autoAssignMachine;
 
     // Plausibility provera ako se menja parcela ili površina
@@ -775,7 +764,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       data: prismaUpdateData,
       include: {
         parcel: true, contractor: true,
-        machine: true,
+        machine: true, machineAssignments: usageInclude, workOrder: { select: { id: true, status: true } },
         attachment: true,
         worker: true,
         workType: true, materials: materialsInclude,
@@ -804,7 +793,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       work: updated,
     });
   } catch (error) {
-    if (error.status === 400) return res.status(400).json({ error: error.message });
+    if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("Greška pri ažuriranju rada:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
@@ -832,6 +821,9 @@ router.delete("/:id", machineMutation(async (req, res, prisma) => {
 
     const hardDelete = req.query.permanent === "true" && req.user.role === "DIREKTOR";
 
+    if (hardDelete && (await prisma.machineAssignment.findFirst({ where: { fieldWorkId: id } }) || await prisma.workOrder.findFirst({ where: { fieldWorkId: id } }))) {
+      return res.status(409).json({ error: "Rad sa povezanom istorijom moze se stornirati, ali ne trajno obrisati." });
+    }
     if (hardDelete) {
       await prisma.fieldWork.delete({ where: { id } });
 
@@ -878,7 +870,7 @@ router.delete("/:id", machineMutation(async (req, res, prisma) => {
         },
       });
 
-      res.json({ message: "Zapis o radu je storniran." });
+      res.json({ message: "Rad je storniran i isključen iz učinka. Stvarno korišćenje, gorivo i kvarovi ostaju u istoriji." });
     }
   } catch (error) {
     console.error("Greška pri brisanju rada:", error);
@@ -891,54 +883,11 @@ router.delete("/:id", machineMutation(async (req, res, prisma) => {
 // ==========================================
 router.get("/export/excel", async (req, res) => {
   try {
-    const { parcelId, machineId, workerId, workTypeId, dateFrom, dateTo, search } = req.query;
-
-    const where = { status: { not: "STORNO" } };
-    if (parcelId) where.parcelId = String(parcelId);
-    if (machineId) where.machineId = String(machineId);
-    if (workerId) where.workerId = String(workerId);
-    if (workTypeId) where.workTypeId = String(workTypeId);
-
-    if (dateFrom || dateTo) {
-      where.date = {};
-      if (dateFrom) where.date.gte = new Date(String(dateFrom));
-      if (dateTo) {
-        const end = new Date(String(dateTo));
-        end.setHours(23, 59, 59, 999);
-        where.date.lte = end;
-      }
-    }
-
-    if (!isManagerUser(req.user)) {
-      const opFilter = getOperatorFilter(req.worker);
-      where.AND = where.AND || [];
-      where.AND.push(opFilter);
-    }
-
-    if (search) {
-      const s = String(search).trim();
-      where.AND = where.AND || [];
-      where.AND.push({
-        OR: [
-          { parcel: { name: { contains: s, mode: "insensitive" } } },
-          { parcel: { code: { contains: s, mode: "insensitive" } } },
-          { machine: { name: { contains: s, mode: "insensitive" } } },
-          { worker: { name: { contains: s, mode: "insensitive" } } },
-          { workType: { name: { contains: s, mode: "insensitive" } } },
-          { notes: { contains: s, mode: "insensitive" } },
-        ],
-      });
-    }
+    const where = buildFieldWorkWhere(req);
 
     const works = await prisma.fieldWork.findMany({
       where,
-      include: {
-        parcel: true, contractor: true,
-        machine: true,
-        worker: true,
-        workType: true, materials: materialsInclude,
-        createdBy: { select: { name: true } },
-      },
+      select: fieldWorkExportSelect,
       orderBy: { date: "desc" },
     });
 
@@ -1029,7 +978,7 @@ router.get("/export/excel", async (req, res) => {
         w.parcel.areaHa,
         w.areaDoneHa,
         w.worker.name,
-        w.machine.name,
+        w.machineAssignments?.length ? w.machineAssignments.map(a => `${a.machine.name}: ${a.areaDoneHa ?? 0} ha, ${Math.max(0, (a.endHours ?? a.startHours) - a.startHours)} rh`).join("; ") : w.machine.name,
         w.workType.name,
         timeRange,
         w.workHours || 0,

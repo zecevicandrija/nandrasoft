@@ -549,7 +549,6 @@ router.get("/dashboard", async (req, res) => {
 
     const packagedStockKg = packagings.reduce((sum, p) => sum + Math.max(0, p.availableWeightKg || 0), 0);
     const packagedPackagesCount = packagings.reduce((sum, p) => sum + Math.max(0, p.availableCount || 0), 0);
-    const packagedPalletsCount = Number((packagedStockKg / 1000).toFixed(1)); // 1 paleta = 100x10kg ili 200x5kg = 1.000kg
 
     const packagedByTypeMap = {};
     for (const p of packagings) {
@@ -566,12 +565,19 @@ router.get("/dashboard", async (req, res) => {
       const availKg = Math.max(0, p.availableWeightKg || 0);
       packagedByTypeMap[p.packageType].availableCount += Math.max(0, p.availableCount || 0);
       packagedByTypeMap[p.packageType].availableWeightKg += availKg;
-      packagedByTypeMap[p.packageType].availablePallets = Number(
-        (packagedByTypeMap[p.packageType].availableWeightKg / 1000).toFixed(1)
-      );
+      // Dispatches count bags, so the remaining physical pallets are unknown after a partial dispatch.
+      const group = packagedByTypeMap[p.packageType];
+      if (p.availableCount > 0 && group.availablePallets !== null) {
+        group.availablePallets = p.availableCount === p.packageCount && p.palletsCount != null
+          ? group.availablePallets + p.palletsCount : null;
+      }
       packagedByTypeMap[p.packageType].totalPackedCount += p.packageCount || 0;
       packagedByTypeMap[p.packageType].totalPackedWeightKg += p.totalWeightKg || 0;
     }
+
+    const groups = Object.values(packagedByTypeMap);
+    const packagedPalletsCount = groups.some(group => group.availablePallets === null)
+      ? null : groups.reduce((sum, group) => sum + group.availablePallets, 0);
 
     // 5. Isporučeno kupcima
     const shippedKg = shipments.reduce((sum, s) => sum + (s.totalWeightKg || 0), 0);
@@ -1224,127 +1230,132 @@ const sortingSchema = z.object({
   inputQuantityKg: z.number().positive("Ulazna količina za sortiranje mora biti veća od 0 kg."),
   qualityQuantityKg: z.number().nonnegative("Količina I klase ne može biti negativna."),
   smallQuantityKg: z.number().nonnegative("Količina sitnog luka ne može biti negativna."),
+  plevaKg: z.number().nonnegative("Pleva ne može biti negativna."),
   wasteQuantityKg: z.number().nonnegative("Količina otpada/kala ne može biti negativna."),
   notes: z.string().optional().nullable(),
 });
 
+function parseSorting(body) {
+  const parsed = sortingSchema.safeParse({
+    ...body,
+    inputQuantityKg: Number(body.inputQuantityKg),
+    qualityQuantityKg: Number(body.qualityQuantityKg || 0),
+    smallQuantityKg: Number(body.smallQuantityKg || 0),
+    plevaKg: Number(body.plevaKg ?? 0),
+    wasteQuantityKg: Number(body.wasteQuantityKg || 0),
+  });
+
+  if (!parsed.success) {
+    throw new Error(parsed.error.issues[0].message);
+  }
+
+  const data = parsed.data;
+  const sumOutputs = data.qualityQuantityKg + data.smallQuantityKg + data.wasteQuantityKg + data.plevaKg;
+
+  if (Math.abs(sumOutputs - data.inputQuantityKg) > 0.5) {
+    throw new Error(`Zbir izlaznih frakcija (${sumOutputs.toLocaleString("sr-RS")} kg) mora odgovarati ulaznoj količini (${data.inputQuantityKg.toLocaleString("sr-RS")} kg).`);
+  }
+  return data;
+}
+
+async function recordSorting(tx, req, data) {
+  const lot = await tx.onionLot.findUnique({
+    where: { id: data.lotId },
+    include: {
+      storageEntries: {
+        where: { currentQuantityKg: { gt: 0 } },
+        orderBy: { date: "asc" },
+      },
+    },
+  });
+
+  if (!lot) {
+    throw new Error("Izabrani LOT ne postoji.");
+  }
+
+  if (data.inputQuantityKg > lot.rawStockKg + 0.01) {
+    throw new Error(
+      `Na LOT-u ${lot.lotNumber} ima samo ${lot.rawStockKg.toLocaleString("sr-RS")} kg nesortiranog sirovog luka.`
+    );
+  }
+
+  if (data.storageEntryId) {
+    const stEntry = await tx.onionStorageEntry.findUnique({
+      where: { id: data.storageEntryId },
+    });
+    if (!stEntry || stEntry.lotId !== lot.id) {
+      throw new Error("Izabrana lokacija skladišta ne pripada ovom LOT-u.");
+    }
+    if (data.inputQuantityKg > stEntry.currentQuantityKg + 0.01) {
+      throw new Error(
+        `U lokaciji "${stEntry.locationOrChamber}" ima samo ${stEntry.currentQuantityKg.toLocaleString("sr-RS")} kg ovog LOT-a.`
+      );
+    }
+    await tx.onionStorageEntry.update({
+      where: { id: stEntry.id },
+      data: {
+        currentQuantityKg: Math.max(0, stEntry.currentQuantityKg - data.inputQuantityKg),
+      },
+    });
+  } else if (lot.storageEntries.length > 0) {
+    let remainingToDeduct = data.inputQuantityKg;
+    for (const entry of lot.storageEntries) {
+      if (remainingToDeduct <= 0) break;
+      const deduct = Math.min(entry.currentQuantityKg, remainingToDeduct);
+      await tx.onionStorageEntry.update({
+        where: { id: entry.id },
+        data: {
+          currentQuantityKg: Math.max(0, entry.currentQuantityKg - deduct),
+        },
+      });
+      remainingToDeduct -= deduct;
+    }
+  }
+
+  const wastePercentage =
+    data.inputQuantityKg > 0
+      ? Number(((data.wasteQuantityKg / data.inputQuantityKg) * 100).toFixed(2))
+      : 0;
+
+  const sorting = await tx.onionSorting.create({
+    data: {
+      date: data.date ? new Date(data.date) : new Date(),
+      lotId: lot.id,
+      storageEntryId: data.storageEntryId || null,
+      inputQuantityKg: data.inputQuantityKg,
+      qualityQuantityKg: data.qualityQuantityKg,
+      smallQuantityKg: data.smallQuantityKg,
+      wasteQuantityKg: data.wasteQuantityKg,
+      plevaKg: data.plevaKg,
+      wastePercentage,
+      supervisorId: req.user.id,
+      notes: data.notes || null,
+    },
+    include: {
+      lot: { include: { parcel: true } },
+      supervisor: { select: { id: true, name: true } },
+    },
+  });
+
+  const updatedLot = await tx.onionLot.update({
+    where: { id: lot.id },
+    data: {
+      rawStockKg: Math.max(0, lot.rawStockKg - data.inputQuantityKg),
+      sortedQualityKg: lot.sortedQualityKg + data.qualityQuantityKg,
+      sortedSmallKg: lot.sortedSmallKg + data.smallQuantityKg,
+      sortedWasteKg: lot.sortedWasteKg + data.wasteQuantityKg + data.plevaKg,
+      totalWasteKg: lot.totalWasteKg + data.wasteQuantityKg + data.plevaKg,
+      status: "U_OBRADI",
+    },
+  });
+  await writeAudit(tx, req, { entityType: "OnionSorting", entityId: sorting.id, action: "KREIRANJE", description: "Sortiranje luka", oldValues: null, newValues: sorting });
+  return { sorting, updatedLot };
+}
+
 router.post("/sorting", inventoryMutation("onion", async (req, res, prisma) => {
   try {
-    const parsed = sortingSchema.safeParse({
-      ...req.body,
-      inputQuantityKg: Number(req.body.inputQuantityKg),
-      qualityQuantityKg: Number(req.body.qualityQuantityKg || 0),
-      smallQuantityKg: Number(req.body.smallQuantityKg || 0),
-      wasteQuantityKg: Number(req.body.wasteQuantityKg || 0),
-    });
-
-    if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.issues[0].message });
-    }
-
-    const data = parsed.data;
-    const sumOutputs = data.qualityQuantityKg + data.smallQuantityKg + data.wasteQuantityKg;
-
-    if (Math.abs(sumOutputs - data.inputQuantityKg) > 0.5) {
-      return res.status(400).json({
-        error: `Zbir izlaznih frakcija (${sumOutputs.toLocaleString("sr-RS")} kg) mora odgovarati ulaznoj količini (${data.inputQuantityKg.toLocaleString("sr-RS")} kg).`,
-      });
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      const lot = await tx.onionLot.findUnique({
-        where: { id: data.lotId },
-        include: {
-          storageEntries: {
-            where: { currentQuantityKg: { gt: 0 } },
-            orderBy: { date: "asc" },
-          },
-        },
-      });
-
-      if (!lot) {
-        throw new Error("Izabrani LOT ne postoji.");
-      }
-
-      if (data.inputQuantityKg > lot.rawStockKg + 0.01) {
-        throw new Error(
-          `Na LOT-u ${lot.lotNumber} ima samo ${lot.rawStockKg.toLocaleString("sr-RS")} kg nesortiranog sirovog luka.`
-        );
-      }
-
-      if (data.storageEntryId) {
-        const stEntry = await tx.onionStorageEntry.findUnique({
-          where: { id: data.storageEntryId },
-        });
-        if (!stEntry || stEntry.lotId !== lot.id) {
-          throw new Error("Izabrana lokacija skladišta ne pripada ovom LOT-u.");
-        }
-        if (data.inputQuantityKg > stEntry.currentQuantityKg + 0.01) {
-          throw new Error(
-            `U lokaciji "${stEntry.locationOrChamber}" ima samo ${stEntry.currentQuantityKg.toLocaleString("sr-RS")} kg ovog LOT-a.`
-          );
-        }
-        await tx.onionStorageEntry.update({
-          where: { id: stEntry.id },
-          data: {
-            currentQuantityKg: Math.max(0, stEntry.currentQuantityKg - data.inputQuantityKg),
-          },
-        });
-      } else if (lot.storageEntries.length > 0) {
-        let remainingToDeduct = data.inputQuantityKg;
-        for (const entry of lot.storageEntries) {
-          if (remainingToDeduct <= 0) break;
-          const deduct = Math.min(entry.currentQuantityKg, remainingToDeduct);
-          await tx.onionStorageEntry.update({
-            where: { id: entry.id },
-            data: {
-              currentQuantityKg: Math.max(0, entry.currentQuantityKg - deduct),
-            },
-          });
-          remainingToDeduct -= deduct;
-        }
-      }
-
-      const wastePercentage =
-        data.inputQuantityKg > 0
-          ? Number(((data.wasteQuantityKg / data.inputQuantityKg) * 100).toFixed(2))
-          : 0;
-
-      const sorting = await tx.onionSorting.create({
-        data: {
-          date: data.date ? new Date(data.date) : new Date(),
-          lotId: lot.id,
-          storageEntryId: data.storageEntryId || null,
-          inputQuantityKg: data.inputQuantityKg,
-          qualityQuantityKg: data.qualityQuantityKg,
-          smallQuantityKg: data.smallQuantityKg,
-          wasteQuantityKg: data.wasteQuantityKg,
-          wastePercentage,
-          supervisorId: req.user.id,
-          notes: data.notes || null,
-        },
-        include: {
-          lot: { include: { parcel: true } },
-          supervisor: { select: { id: true, name: true } },
-        },
-      });
-
-      const updatedLot = await tx.onionLot.update({
-        where: { id: lot.id },
-        data: {
-          rawStockKg: Math.max(0, lot.rawStockKg - data.inputQuantityKg),
-          sortedQualityKg: lot.sortedQualityKg + data.qualityQuantityKg,
-          sortedSmallKg: lot.sortedSmallKg + data.smallQuantityKg,
-          sortedWasteKg: lot.sortedWasteKg + data.wasteQuantityKg,
-          totalWasteKg: lot.totalWasteKg + data.wasteQuantityKg,
-          status: "U_OBRADI",
-        },
-      });
-
-      return { sorting, updatedLot };
-    });
-
-    await writeAudit(prisma, req, { entityType: "OnionSorting", entityId: result.sorting.id, action: "KREIRANJE", description: "Kreiranje: sortiranje luka", oldValues: null, newValues: result.sorting });
+    const data = parseSorting(req.body);
+    const result = await recordSorting(prisma, req, data);
     res.status(201).json({
       ...result,
       message: `Sortiranje uspešno sačuvano: ${data.qualityQuantityKg.toLocaleString("sr-RS")} kg I klase, ${data.smallQuantityKg.toLocaleString("sr-RS")} kg sitnog, ${data.wasteQuantityKg.toLocaleString("sr-RS")} kg otpada (${result.sorting.wastePercentage}%).`,
@@ -1358,6 +1369,51 @@ router.post("/sorting", inventoryMutation("onion", async (req, res, prisma) => {
 // =========================================================================
 // 6. PAKOVANJE & PAKERICA (PACKAGING) + OPCIJA IZMENE
 // =========================================================================
+router.get("/processing-history", async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+    const parcel = req.query.parcelId || null;
+    const type = req.query.packageType || null;
+    const history = await prisma.$transaction(async (tx) => {
+      const keys = await tx.$queryRaw`
+        WITH records AS (
+          SELECT p.id, p.date, p."createdAt", 'packaging' AS kind FROM onion_packaging p
+          JOIN onion_lot l ON l.id = p."lotId"
+          WHERE (${parcel}::text IS NULL OR l."parcelId" = ${parcel})
+            AND (${type}::text IS NULL OR p."packageType"::text = ${type})
+          UNION ALL
+          SELECT s.id, s.date, s."createdAt", 'sorting' FROM onion_sorting s
+          JOIN onion_lot l ON l.id = s."lotId"
+          WHERE ${type}::text IS NULL AND (${parcel}::text IS NULL OR l."parcelId" = ${parcel})
+            AND NOT EXISTS (SELECT 1 FROM onion_packaging p WHERE p."sortingId" = s.id)
+        ), page_rows AS (
+          SELECT * FROM records ORDER BY date DESC, "createdAt" DESC, kind, id
+          LIMIT ${limit} OFFSET ${(page - 1) * limit}
+        )
+        SELECT page_rows.*, counts.total FROM (SELECT count(*)::int AS total FROM records) counts
+        LEFT JOIN page_rows ON true ORDER BY date DESC, "createdAt" DESC, kind, id`;
+      const ids = (kind) => keys.filter((row) => row.kind === kind).map((row) => row.id);
+      const include = { lot: { include: { parcel: true } }, supervisor: { select: { name: true } } };
+      const packages = await tx.onionPackaging.findMany({
+        where: { id: { in: ids("packaging") } }, include: { ...include, sorting: true },
+      });
+      const sortings = await tx.onionSorting.findMany({ where: { id: { in: ids("sorting") } }, include });
+      const rows = keys.filter((row) => row.id).map(({ kind, id }) => {
+        if (kind === "packaging") return packages.find((p) => p.id === id);
+        const sorting = sortings.find((s) => s.id === id);
+        return { id, date: sorting.date, lot: sorting.lot, supervisor: sorting.supervisor, sorting };
+      });
+      const total = keys[0].total;
+      return { rows, total, totalPages: Math.max(1, Math.ceil(total / limit)) };
+    }, { isolationLevel: "RepeatableRead" });
+    res.json(history);
+  } catch (error) {
+    console.error("Greška pri čitanju evidencije prerade:", error);
+    res.status(500).json({ error: "Evidencija sortiranja i pakovanja nije učitana." });
+  }
+});
+
 router.get("/packaging", async (req, res) => {
   try {
     const { lotId, parcelId, packageType, onlyAvailable, page, limit } = req.query;
@@ -1405,6 +1461,11 @@ router.get("/packaging", async (req, res) => {
   }
 });
 
+const optionalCount = z.preprocess(
+  value => value === "" ? null : typeof value === "string" ? Number(value) : value,
+  z.number().int().positive().max(2147483647).nullish(),
+);
+
 const packagingSchema = z.object({
   date: z.string().optional(),
   lotId: z.string().min(1, "Izbor LOT-a je obavezan."),
@@ -1419,9 +1480,9 @@ const packagingSchema = z.object({
   ]),
   unitWeightKg: z.number().positive("Težina po jedinici pakovanja mora biti veća od 0."),
   packageCount: z.number().int().positive("Broj džakova/jedinica mora biti ceo pozitivan broj."),
-  palletsCount: z.number().positive().optional().nullable(),
+  palletsCount: optionalCount,
   palletNumber: z.string().optional().nullable(),
-  packerCount: z.number().int().positive().optional(),
+  packerCount: optionalCount,
   packerNotes: z.string().optional().nullable(),
   responsiblePerson: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
@@ -1430,8 +1491,6 @@ const packagingSchema = z.object({
 const packagingUpdateSchema = packagingSchema.omit({ date: true, lotId: true }).partial().extend({
   unitWeightKg: numericInput(z.number().positive().optional()),
   packageCount: numericInput(z.number().int().positive().max(2147483647).optional()),
-  palletsCount: numericInput(z.number().positive().nullable().optional()),
-  packerCount: numericInput(z.number().int().positive().max(2147483647).optional()),
 }).strict();
 
 router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) => {
@@ -1444,21 +1503,11 @@ router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) =>
         : defaultUnitWeight;
     const packageCount = Number(req.body.packageCount);
     const totalWeightKg = Number((unitWeightKg * packageCount).toFixed(2));
-    const computedPalletsCount =
-      req.body.palletsCount !== undefined && req.body.palletsCount !== "" && req.body.palletsCount !== null
-        ? Number(req.body.palletsCount)
-        : Number((totalWeightKg / 1000).toFixed(2)); // 100 džakova po 10kg = 1.000kg = 1 paleta; 200 džakova po 5kg = 1.000kg = 1 paleta
-
     const parsed = packagingSchema.safeParse({
       ...req.body,
       packageType: pkgType,
       unitWeightKg,
       packageCount,
-      palletsCount: computedPalletsCount,
-      packerCount:
-        req.body.packerCount !== undefined && req.body.packerCount !== ""
-          ? Number(req.body.packerCount)
-          : BOX_PALLET_SPEC.defaultPackerWomenCount,
     });
 
     if (!parsed.success) {
@@ -1468,6 +1517,8 @@ router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) =>
     const data = parsed.data;
 
     const result = await prisma.$transaction(async (tx) => {
+      const sorted = req.body.sorting == null ? null : await recordSorting(tx, req,
+        parseSorting({ ...req.body.sorting, lotId: data.lotId, date: data.date }));
       const lot = await tx.onionLot.findUnique({
         where: { id: data.lotId },
         include: { packagings: true },
@@ -1490,15 +1541,16 @@ router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) =>
         data: {
           date: data.date ? new Date(data.date) : new Date(),
           lotId: lot.id,
+          sortingId: sorted?.sorting.id ?? null,
           packageType: data.packageType,
           unitWeightKg: data.unitWeightKg,
           packageCount: data.packageCount,
           totalWeightKg,
           availableCount: data.packageCount,
           availableWeightKg: totalWeightKg,
-          palletsCount: data.palletsCount,
+          palletsCount: data.palletsCount ?? null,
           palletNumber: data.palletNumber || null,
-          packerCount: data.packerCount || 4,
+          packerCount: data.packerCount ?? null,
           packerNotes: data.packerNotes || null,
           responsiblePerson: data.responsiblePerson || BOX_PALLET_SPEC.defaultResponsiblePerson,
           supervisorId: req.user.id,
@@ -1524,7 +1576,7 @@ router.post("/packaging", inventoryMutation("onion", async (req, res, prisma) =>
     await writeAudit(prisma, req, { entityType: "OnionPackaging", entityId: result.packaging.id, action: "KREIRANJE", description: "Kreiranje: pakovanje luka", oldValues: null, newValues: result.packaging });
     res.status(201).json({
       ...result,
-      message: `Uspešno spakovano ${data.packageCount} džakova (${data.palletsCount} paleta / ${totalWeightKg.toLocaleString("sr-RS")} kg) na pakerici (${data.packerCount || 4} pakera).`,
+      message: `Uspešno spakovano ${data.packageCount} džakova (${totalWeightKg.toLocaleString("sr-RS")} kg).`,
     });
   } catch (error) {
     console.error("Greška pri pakovanju luka:", error);
@@ -1581,10 +1633,6 @@ router.put("/packaging/:id", inventoryMutation("onion", async (req, res, prisma)
     const newAvailableCount = newPackageCount - shippedCountAlready;
     const newAvailableWeightKg = Number((newAvailableCount * newUnitWeightKg).toFixed(2));
     const weightDiffKg = newAvailableWeightKg - existing.availableWeightKg;
-    const massChanged = newTotalWeightKg !== existing.totalWeightKg;
-    const newPalletsCount = massChanged ? newTotalWeightKg / 1000
-      : data.palletsCount !== undefined ? data.palletsCount : existing.palletsCount;
-
     const updated = await prisma.$transaction(async (tx) => {
       const pkg = await tx.onionPackaging.update({
         where: { id },
@@ -1595,7 +1643,7 @@ router.put("/packaging/:id", inventoryMutation("onion", async (req, res, prisma)
           totalWeightKg: newTotalWeightKg,
           availableCount: newAvailableCount,
           availableWeightKg: newAvailableWeightKg,
-          palletsCount: newPalletsCount,
+          ...(data.palletsCount !== undefined && { palletsCount: data.palletsCount }),
           ...(data.palletNumber !== undefined && {
             palletNumber: data.palletNumber || null,
           }),
@@ -1932,10 +1980,9 @@ router.get("/waste", async (req, res) => {
       }),
       prisma.onionSorting.aggregate({
         where: {
-          wasteQuantityKg: { gt: 0 },
           ...(lotId && lotId !== "ALL" ? { lotId: String(lotId) } : {}),
         },
-        _sum: { wasteQuantityKg: true },
+        _sum: { wasteQuantityKg: true, plevaKg: true },
       }),
       prisma.onionWaste.count({ where }),
       prisma.onionWaste.findMany({
@@ -1961,6 +2008,7 @@ router.get("/waste", async (req, res) => {
       PROKLIJAO: 0,
       PRLJAVSTINA_ZEMLJA: 0,
       OSTALO: 0,
+      PLEVA: sortingWasteSum._sum.plevaKg || 0,
       SORTIRANJE_SKART: sortingWasteSum._sum.wasteQuantityKg || 0,
     };
 
@@ -2239,7 +2287,7 @@ router.get("/traceability/:lotQuery", async (req, res) => {
         createdAt: sr.createdAt,
         time: sr.createdAt || sr.date,
         quantityKg: sr.inputQuantityKg,
-        details: `I klasa: ${sr.qualityQuantityKg.toLocaleString("sr-RS")} kg | Sitan luk: ${sr.smallQuantityKg.toLocaleString("sr-RS")} kg | Otpad/Kalo: ${sr.wasteQuantityKg.toLocaleString("sr-RS")} kg (${sr.wastePercentage}%)`,
+        details: `I klasa: ${sr.qualityQuantityKg.toLocaleString("sr-RS")} kg | Sitan luk: ${sr.smallQuantityKg.toLocaleString("sr-RS")} kg | Otpad/Kalo: ${sr.wasteQuantityKg.toLocaleString("sr-RS")} kg (${sr.wastePercentage}%) | Pleva: ${sr.plevaKg.toLocaleString("sr-RS")} kg`,
         supervisor: sr.supervisor?.name || "Bojan Ćorović",
         notes: sr.notes,
       });
@@ -2265,7 +2313,7 @@ router.get("/traceability/:lotQuery", async (req, res) => {
         createdAt: pk.createdAt,
         time: pk.createdAt || pk.date,
         quantityKg: pk.totalWeightKg,
-        details: `${typeLabel} — ${pk.packageCount} kom x ${pk.unitWeightKg} kg (${pk.palletsCount || (pk.totalWeightKg / 1000).toFixed(1)} paleta)${pk.palletNumber ? ` | Paleta: ${pk.palletNumber}` : ""} | Zadužen: ${pk.responsiblePerson || "Bojan Ćorović"}`,
+        details: `${typeLabel} — ${pk.packageCount} kom x ${pk.unitWeightKg} kg${pk.palletsCount != null ? ` | Broj paleta: ${pk.palletsCount}` : ""}${pk.palletNumber ? ` | Paleta: ${pk.palletNumber}` : ""} | Zadužen: ${pk.responsiblePerson || "Bojan Ćorović"}`,
         supervisor: pk.responsiblePerson || pk.supervisor?.name || "Bojan Ćorović",
         notes: pk.notes,
       });

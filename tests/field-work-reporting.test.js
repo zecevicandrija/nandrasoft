@@ -11,6 +11,38 @@ test("reporting filters validate calendar dates, ordering and bounded pagination
     assert.equal(reportingQuery.safeParse(query).success, false);
   }
   assert.equal(reportingQuery.parse({}).limit, 50);
+  assert.equal(reportingQuery.parse({ includeBreakdown: "false" }).includeBreakdown, "false");
+});
+
+test("fieldWorkStats skips breakdown and missing-assignment subqueries when disabled", async () => {
+  let groupByCalls = 0;
+  let capturedSql = "";
+  const tx = {
+    async $executeRaw() { return 0; },
+    async $queryRaw(strings, ...values) {
+      capturedSql = Prisma.sql(strings, ...values).text;
+      return ["today", "week", "month", "current", "all"].map((name) => ({
+        name, count: 2, area: 3.456, hours: 4.54, missing: 0,
+      }));
+    },
+    fieldWork: {
+      async groupBy() { groupByCalls++; return []; },
+    },
+  };
+  const db = {
+    async $transaction(callback) { return callback(tx); },
+  };
+  const result = await fieldWorkStats(
+    db,
+    reportingQuery.parse({ includeBreakdown: "false" }),
+    "w1",
+    new Date("2026-10-30T12:00:00Z"),
+    { includeBreakdown: false, includeMissingWarnings: false },
+  );
+  assert.equal(groupByCalls, 0);
+  assert.equal(capturedSql.includes("NOT EXISTS"), false);
+  assert.deepEqual(result.workTypesBreakdown, []);
+  assert.deepEqual(result.all, { count: 2, areaDoneHa: 3.46, workHours: 4.5, unassignedWarnings: 0 });
 });
 
 test("PostgreSQL reporting handles calendar days, permissions, pagination and 10,000 works/assignments", { skip: process.env.TEST_ASSIGNMENT_DB !== "1", timeout: 30000 }, async (t) => {
@@ -51,15 +83,15 @@ test("PostgreSQL reporting handles calendar days, permissions, pagination and 10
     // Temporary tables shadow business tables only within this connection.
     await client.query(`CREATE TEMP TABLE field_work (id text PRIMARY KEY, date timestamp NOT NULL, "machineId" text NOT NULL,
       "workerId" text NOT NULL, "workTypeId" text NOT NULL DEFAULT 'type', "areaDoneHa" float8, "workHours" float8, status text NOT NULL DEFAULT 'ZAVRSENO');
-      CREATE TEMP TABLE machine_assignment ("machineId" text NOT NULL, "assignedAt" timestamp NOT NULL);
+      CREATE TEMP TABLE machine_assignment ("machineId" text NOT NULL, "assignedAt" timestamp NOT NULL, "workerId" text DEFAULT 'w1', "fieldWorkId" text, "voidedAt" timestamp);
       CREATE INDEX reporting_test_assignment_idx ON machine_assignment ("machineId", "assignedAt");
       INSERT INTO pg_temp.field_work (id,date,"machineId","workerId","areaDoneHa","workHours",status) VALUES
       ('a','2026-10-30 11:00','a','w1',1,1,'ZAVRSENO'), ('b','2026-10-30 22:30','b','w1',2,2,'ZAVRSENO'),
       ('dst','2026-10-24 22:15','c','w1',3,3,'ZAVRSENO'), ('midnight','2026-10-25 23:00','d','w1',4,4,'ZAVRSENO'),
       ('old','2024-01-01 12:00','a','w1',5,5,'ZAVRSENO'), ('cancelled','2026-10-30 12:00','x','w1',999,999,'STORNO'),
       ('other','2026-10-30 12:00','a','w2',6,6,'ZAVRSENO'), ('f','2026-10-30 12:00','f','w1',7,NULL,'ZAVRSENO'), ('g','2026-10-30 12:00','g','w1',8,8,'ZAVRSENO');
-      INSERT INTO pg_temp.machine_assignment VALUES ('a','2026-10-29 23:30'), ('a','2026-10-30 10:00'),
-      ('b','2026-10-30 23:30'), ('c','2026-10-25 22:30'), ('d','2026-10-25 22:59');`);
+      INSERT INTO pg_temp.machine_assignment ("machineId", "assignedAt") VALUES ('a','2026-10-29 23:30'), ('a','2026-10-30 10:00'),
+      ('b','2026-10-30 23:30'), ('c','2026-10-25 22:30'), ('d','2026-10-25 22:59'); INSERT INTO pg_temp.machine_assignment ("machineId", "assignedAt", "workerId") VALUES ('a','2026-10-30 10:00','w2');`);
     await t.test("aggregates exclude storno and do not multiply works by duplicate assignments", async () => {
       const result = await fieldWorkStats(db, filters(), null, now);
       assert.deepEqual(result.today, { count: 5, areaDoneHa: 24, workHours: 17, unassignedWarnings: 3 });
@@ -89,7 +121,7 @@ test("PostgreSQL reporting handles calendar days, permissions, pagination and 10
       await client.query(`TRUNCATE pg_temp.field_work, pg_temp.machine_assignment;
         INSERT INTO pg_temp.field_work (id,date,"machineId","workerId","areaDoneHa","workHours")
         SELECT n::text, '2026-10-30 12:00'::timestamp, 'm_' || n, 'w1', 1, 1 FROM generate_series(1,10000) n;
-        INSERT INTO pg_temp.machine_assignment SELECT 'm_' || n, '2026-10-30 08:00'::timestamp FROM generate_series(1,10000) n;
+        INSERT INTO pg_temp.machine_assignment ("machineId", "assignedAt") SELECT 'm_' || n, '2026-10-30 08:00'::timestamp FROM generate_series(1,10000) n;
         ANALYZE pg_temp.field_work; ANALYZE pg_temp.machine_assignment;`);
       const before = detailReads;
       const result = await fieldWorkStats(db, filters(), null, now);

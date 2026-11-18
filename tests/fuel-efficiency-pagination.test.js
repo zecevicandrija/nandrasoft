@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import pg from 'pg';
+import { readFile } from 'node:fs/promises';
 import { fuelEfficiencyQuery, fuelEfficiencySql, loadPagedFuelEfficiency } from '../lib/fuelEfficiencyQuery.js';
 
 test('pages are capped at ten and every user filter is parameterized', async () => {
@@ -36,6 +37,9 @@ test('PostgreSQL paginates both tables, filters all summaries and keeps full ass
       INSERT INTO field_work SELECT 'work'||n,'2026-10-01 12:00','ZAVRSENO','m'||n,'w'||(n%2+1),'p'||(n%2+1),'t'||n,1,5 FROM generate_series(1,25) n;
       INSERT INTO machine_assignment SELECT 'a'||n,'m'||n,'w'||(n%2+1),NULL,'RAZDUZENA','2026-10-01 06:00','2026-10-03 18:00',100,80 FROM generate_series(1,25) n;
       INSERT INTO fuel_entry VALUES ('m1','w2','2026-10-02 08:00',5,1000);`);
+    await client.query('ALTER TABLE machine_assignment ADD COLUMN "fieldWorkId" text, ADD COLUMN "voidedAt" timestamp, ADD COLUMN "startHours" float8 DEFAULT 0, ADD COLUMN "endHours" float8, ADD COLUMN "areaDoneHa" float8');
+    const migration = await readFile(new URL('../prisma/migrations/20261109090000_machine_usage/migration.sql', import.meta.url), 'utf8');
+    await client.query(migration.slice(migration.indexOf('CREATE VIEW')).replace('CREATE VIEW', 'CREATE TEMP VIEW'));
     const tx = { async $executeRaw(strings, ...values) { const q = strings.reduce((s, part, i) => s + (i ? '$'+i : '') + part, ''); return client.query(q, values); }, async $queryRaw(sql) { return (await client.query(sql.text, sql.values)).rows; } };
     const db = { async $transaction(fn) { await client.query('BEGIN'); try { const r = await fn(tx); await client.query('COMMIT'); return r; } catch(e) { await client.query('ROLLBACK'); throw e; } } };
     const first = await loadPagedFuelEfficiency(db, {});
@@ -66,13 +70,13 @@ test('PostgreSQL paginates both tables, filters all summaries and keeps full ass
     const negative = await loadPagedFuelEfficiency(db,{ machineId:'m1' });
     assert.equal(negative.summary.totalLiters,0); assert.equal(negative.criticalWorks.length,0);
     await client.query(`UPDATE machine_assignment SET "endFuelLiters"=80 WHERE id='a1';
-      INSERT INTO machine_assignment VALUES ('overlap','m1','w2',NULL,'RAZDUZENA','2026-10-02 06:00','2026-10-03 18:00',100,80)`);
+      INSERT INTO machine_assignment (id, "machineId", "workerId", "parcelId", status, "assignedAt", "returnedAt", "startFuelLiters", "endFuelLiters") VALUES ('overlap','m1','w2',NULL,'RAZDUZENA','2026-10-02 06:00','2026-10-03 18:00',100,80)`);
     const ambiguous = await loadPagedFuelEfficiency(db,{ machineId:'m1' });
     assert.equal(ambiguous.summary.totalLiters,0); assert.equal(ambiguous.summary.uncoveredWorksCount,2);
     assert.equal(ambiguous.criticalWorks.length,0);
     await client.query(`INSERT INTO machine VALUES ('split','Two refills');
       INSERT INTO field_work VALUES ('split-work','2026-10-04 12:00','ZAVRSENO','split','w1','p1','t1',10,5);
-      INSERT INTO machine_assignment VALUES ('split-assignment','split','w1','p1','RAZDUZENA','2026-10-04 06:00','2026-10-04 18:00',100,100);
+      INSERT INTO machine_assignment (id, "machineId", "workerId", "parcelId", status, "assignedAt", "returnedAt", "startFuelLiters", "endFuelLiters") VALUES ('split-assignment','split','w1','p1','RAZDUZENA','2026-10-04 06:00','2026-10-04 18:00',100,100);
       INSERT INTO fuel_entry VALUES ('split','w1','2026-10-04 08:00',40,8000), ('split','w1','2026-10-04 10:00',60,12000)`);
     const multipleRefills = await loadPagedFuelEfficiency(db, { machineId: 'split' });
     assert.equal(multipleRefills.summary.totalLiters,100);

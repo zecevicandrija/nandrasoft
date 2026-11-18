@@ -18,13 +18,19 @@ test("migrate deploy builds the complete schema from empty and preserves existin
   const env = { ...process.env, DATABASE_URL: url.toString() };
   const cli = async (...args) => execute(process.execPath, ["node_modules/prisma/build/index.js", ...args], { env, timeout: 20000 });
   try {
+    // Do not hold a waiting transaction snapshot across CREATE INDEX CONCURRENTLY.
+    const lockDeadline = Date.now() + 45000;
+    while (!(await client.query("SELECT pg_try_advisory_lock(1312902726, 1) AS acquired")).rows[0].acquired) {
+      if (Date.now() > lockDeadline) throw new Error("Timed out waiting for isolated migration tests");
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     await client.query(`CREATE SCHEMA "${schema}"`);
     await cli("migrate", "deploy");
     await cli("migrate", "deploy"); // Repeat deployment is a no-op.
     await cli("migrate", "diff", "--from-config-datasource", "--to-schema", "prisma/schema.prisma", "--exit-code");
     const source = await readFile(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
     const expected = [...source.matchAll(/@@map\("([^"]+)"\)/g)].map((match) => match[1]).sort();
-    const tables = (await client.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name <> '_prisma_migrations'", [schema])).rows.map((row) => row.table_name).sort();
+    const tables = (await client.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'", [schema])).rows.map((row) => row.table_name).sort();
     assert.deepEqual(tables, expected);
     await client.query(`SET search_path TO "${schema}"`);
     const analyticsIndexes = (await client.query(`SELECT i.relname, x.indisvalid, x.indisready,
@@ -83,9 +89,10 @@ test("migrate deploy builds the complete schema from empty and preserves existin
     assert.deepEqual(preserved, [{ id: "custom", name: "Custom chamber", max_boxes: 100, max_capacity_kg: 110000 }]);
   } finally {
     // Drop only the random test-owned schema validated above, never public.
+    try {
     await client.query("ROLLBACK");
     await client.query('SET search_path TO "public"');
     await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
-    await client.end();
+    } finally { await client.end(); }
   }
 });

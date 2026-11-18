@@ -96,6 +96,20 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
   }
   const editStorage = (data) => request("PUT", "/storage/storage", data);
   try {
+    await t.test("160 bags can use two partially filled pallets with no packer count", async () => {
+      reset();
+      state.lot.sortedQualityKg += 1600;
+      const created = await request("POST", "/packaging", { lotId: "lot", packageCount: 160, unitWeightKg: 10, palletsCount: 2 });
+      assert.equal(created.status, 201);
+      assert.equal(created.body.packaging.totalWeightKg, 1600);
+      assert.equal(created.body.packaging.palletsCount, 2);
+      assert.equal(created.body.packaging.packerCount, null);
+      assert.equal((await request("PUT", "/packaging/new-pack", { packageCount: 150, packerCount: 3 })).status, 200);
+      assert.equal(state.packagings.at(-1).palletsCount, 2);
+      assert.equal((await request("PUT", "/packaging/new-pack", { palletsCount: 4, packerCount: null })).status, 200);
+      assert.equal(state.packagings.at(-1).totalWeightKg, 1500);
+      assert.equal(state.packagings.at(-1).packerCount, null);
+    });
     await t.test("the reported 800 to 1000 bags change cannot create another tonne", async () => {
       reset();
       const result = await rejectsWithoutChanges("PUT", "/packaging/five", { packageCount: 1000, palletsCount: 4 });
@@ -105,12 +119,12 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
       reset();
       await rejectsWithoutChanges("PUT", "/packaging/five", { packageCount: 2400 });
     });
-    await t.test("available sorted stock permits exact-limit increases and recalculates stale pallet counts", async () => {
+    await t.test("available sorted stock permits exact-limit increases and preserves the entered physical pallet count", async () => {
       reset(); state.lot.sortedQualityKg = 19000;
       assert.equal((await request("PUT", "/packaging/five", { packageCount: "1000", palletsCount: 4 })).status, 200);
       assert.equal(state.packagings[0].totalWeightKg, 5000);
       assert.equal(state.packagings[0].availableWeightKg, 5000);
-      assert.equal(state.packagings[0].palletsCount, 5);
+      assert.equal(state.packagings[0].palletsCount, 4);
       assert.equal(state.lot.packagedStockKg, 11000);
       assert.equal(state.lot.rawStockKg, 800000);
       await rejectsWithoutChanges("PUT", "/packaging/five", { packageCount: 1001 });
@@ -141,7 +155,7 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
       assert.equal(state.lot.packagedStockKg, 10000);
     });
     await t.test("invalid and forged package fields never change stock", async () => {
-      for (const body of [{ packageCount: -1 }, { packageCount: 1.5 }, { packageCount: null }, { packageCount: "" }, { packageCount: 2147483648 }, { unitWeightKg: 0 }, { unitWeightKg: -5 }, { unitWeightKg: Infinity }, { unitWeightKg: NaN }, { packageType: "INVALID" }, { packerCount: 0 }, { palletsCount: -1 }, { totalWeightKg: 1 }, { lotId: "other" }]) {
+      for (const body of [{ packageCount: -1 }, { packageCount: 1.5 }, { packageCount: null }, { packageCount: "" }, { packageCount: 2147483648 }, { unitWeightKg: 0 }, { unitWeightKg: -5 }, { unitWeightKg: Infinity }, { unitWeightKg: NaN }, { packageType: "INVALID" }, { packerCount: 0 }, { palletsCount: -1 }, { palletsCount: 1.6 }, { totalWeightKg: 1 }, { lotId: "other" }]) {
         reset(); await rejectsWithoutChanges("PUT", "/packaging/five", body);
       }
     });

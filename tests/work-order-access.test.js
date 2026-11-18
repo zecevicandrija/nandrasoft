@@ -35,7 +35,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
     failOrderUpdate = false;
     beforeTransaction = null;
   };
-  const matches = (row, where) => Object.entries(where).every(([key, value]) => row[key] === value);
+  const matches = (row, where) => Object.entries(where).every(([key, value]) => value === null ? row[key] == null : row[key] === value);
   const update = (rows, { where, data }) => {
     const row = rows.find((candidate) => matches(candidate, where));
     if (!row) throw Object.assign(new Error("Stale record"), { code: "P2025" });
@@ -70,6 +70,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
     async update(args) { return update(state.machines, args); },
   };
   prisma.machineAssignment = {
+    async findMany({ where }) { return state.assignments.filter(row => matches(row, where)).map(row => ({ ...row })); },
     async findFirst({ where }) {
       const row = state.assignments.find((row) => matches(row, where));
       return row ? { ...row } : null;
@@ -110,6 +111,13 @@ test("work orders enforce ownership and field-work consistency before mutations"
     const snapshot = structuredClone(state);
     try { return await operations(prisma); } catch (error) { state = snapshot; throw error; }
   };
+  const prepareCompletion = () => {
+    state.orders[0].status = "U_TOKU";
+    if (!state.assignments.some(a => a.workOrderId === "own" && a.status === "ZADUZENA")) {
+      state.assignments.push({ id: "own-assignment", machineId: "machine-a", workerId: "worker-a", parcelId: "parcel-a",
+        workOrderId: "own", status: "ZADUZENA", startHours: 10, assignedAt: new Date() });
+    }
+  };
   const workBody = { workOrderId: "own", machineId: "machine-a", parcelId: "parcel-a", workTypeId: "type-a", areaDoneHa: 1, status: "ZAVRSENO" };
   try {
     await t.test("order photo can be replaced and cleared; field completion also keeps its photo on checkin", async () => {
@@ -125,6 +133,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
       for (const existing of [false, true]) {
         reset(); user.role = "OPERATER";
         if (existing) state.assignments.push({ id: "a", workerId: "worker-a", machineId: "machine-a", workOrderId: "own", parcelId: "parcel-a", startHours: 10, status: "ZADUZENA" });
+      prepareCompletion();
         assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, photoUrl })).status, 201);
         assert.equal(state.works[0].photoUrl, photoUrl);
         assert.equal(state.assignments[0].photoUrl, photoUrl);
@@ -146,6 +155,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
 
     await t.test("manager can add and remove a contractor on recorded work", async () => {
       reset(); user.role = "OPERATER";
+      prepareCompletion();
       assert.equal((await request(fieldRouter, "POST", "/", workBody)).status, 201);
       user.role = "RUKOVODILAC";
       const url = `/${state.works[0].id}`;
@@ -159,13 +169,16 @@ test("work orders enforce ownership and field-work consistency before mutations"
       user.role = "OPERATER";
       reset();
       state.orders[0].contractorId = "contractor-a";
+      prepareCompletion();
       assert.equal((await request(fieldRouter, "POST", "/", workBody)).status, 201);
       assert.equal(state.works[0].contractorId, "contractor-a");
       reset();
       state.orders[0].contractorId = "contractor-a";
+      prepareCompletion();
       assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, contractorId: null })).status, 201);
       assert.equal(state.works[0].contractorId, null);
       reset();
+      prepareCompletion();
       assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, contractorId: "contractor-a" })).status, 201);
       assert.equal(state.works[0].contractorId, "contractor-a");
       reset();
@@ -184,7 +197,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
         assert.equal((await request(ordersRouter, "PATCH", "/other/status", { status: "U_TOKU" })).status, 403);
         assert.deepEqual(state, before);
         assert.equal((await request(ordersRouter, "GET", "/own")).status, 200);
-        assert.equal((await request(ordersRouter, "PATCH", "/own/status", { status: "U_TOKU" })).status, 200);
+        assert.equal((await request(ordersRouter, "PATCH", "/own/status", { status: "U_TOKU" })).status, 409);
       }
     });
 
@@ -216,7 +229,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
         reset(); user.role = role;
         assert.equal((await request(ordersRouter, "GET", "/other")).status, 200);
         assert.equal((await request(ordersRouter, "POST", "/other/accept", { startFuelLiters: 20 })).status, 200);
-        assert.equal((await request(ordersRouter, "PATCH", "/other/status", { status: "ZAVRSEN" })).status, 200);
+        assert.equal((await request(ordersRouter, "PATCH", "/other/status", { status: "ZAVRSEN" })).status, 409);
       }
     });
 
@@ -275,6 +288,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
             state.machines[0].status = "ZADUZENA";
             state.assignments.push({ id: "own-assignment", machineId: "machine-a", workerId: "worker-a", parcelId: "parcel-a", workOrderId: "own", status: "ZADUZENA", startHours: 10 });
           }
+      prepareCompletion();
           const result = await request(fieldRouter, "POST", "/", { ...workBody, endFuelLiters, endHours: 12 });
           assert.equal(result.status, 201, `assigned=${assigned}, fuel=${endFuelLiters}`);
           assert.equal(state.works.length, 1);
@@ -295,6 +309,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
         for (const [endFuelLiters, expected] of [[accepted, 201], [rejected, 400]]) {
           reset();
           state.machines[0].tankCapacityLiters = capacity;
+          prepareCompletion();
           const before = structuredClone(state);
           assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, endFuelLiters })).status, expected);
           if (expected === 400) assert.deepEqual(state, before);
@@ -315,10 +330,11 @@ test("work orders enforce ownership and field-work consistency before mutations"
 
     await t.test("only finished work completes the matching order", async () => {
       reset(); user.role = "OPERATER";
-      assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, status: "U_TOKU" })).status, 201);
+      assert.equal((await request(fieldRouter, "POST", "/", { ...workBody, status: "U_TOKU" })).status, 400);
       assert.equal(state.orders[0].status, "DODELJEN");
       reset();
       state.assignments.push({ id: "own-assignment", machineId: "machine-a", workerId: "worker-a", parcelId: "parcel-a", workOrderId: "own", status: "ZADUZENA", startHours: 10 });
+      prepareCompletion();
       assert.equal((await request(fieldRouter, "POST", "/", workBody)).status, 201);
       assert.equal(state.orders[0].status, "ZAVRSEN");
       assert.equal(state.orders[0].fieldWorkId, state.works[0].id);
@@ -328,7 +344,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
     });
 
     await t.test("failed completion rolls back work and machine changes, and terminal orders are rejected", async () => {
-      reset(); failOrderUpdate = true;
+      reset(); prepareCompletion(); failOrderUpdate = true;
       const before = structuredClone(state);
       assert.equal((await request(fieldRouter, "POST", "/", workBody)).status, 500);
       assert.deepEqual(state, before);
@@ -355,6 +371,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
     await t.test("replaying finished field work returns the original success after the order has already closed", async () => {
       reset(); user.role = "OPERATER";
       const headers = { "idempotency-key": "finish-order-once" };
+      prepareCompletion();
       const first = await request(fieldRouter, "POST", "/", workBody, headers);
       assert.equal(first.status, 201);
       assert.equal(state.orders[0].status, "ZAVRSEN");

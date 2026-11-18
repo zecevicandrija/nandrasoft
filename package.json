@@ -2,6 +2,8 @@
   "name": "nandra-backend",
   "type": "module",
   "scripts": {
+    "db:verify-machine-usage": "node scripts/verify-machine-usage.js",
+    "test:machine-usage": "node --test tests/machine-usage.test.js tests/machine-usage-postgres.test.js tests/work-order-access.test.js",
     "test:materials": "node --test tests/work-materials.test.js tests/work-materials-routes.test.js",
     "test:sentry": "node --test tests/sentry.test.js",
     "test:push": "node --test tests/push-outbox.test.js tests/push-recipient-identity.test.js",

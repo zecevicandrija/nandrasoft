@@ -6,6 +6,76 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Director collaboration is deliberately independent of WorkOrder.
+// Actor names and proposal data are historical snapshots.
+model DirectorMessage {
+  id String @id @default(cuid())
+  authorId String
+  authorName String
+  body String
+  proposalId String?
+  proposalVersion Int?
+  createdAt DateTime @default(now())
+  @@unique([proposalId, proposalVersion])
+  @@index([createdAt, id])
+  @@map("director_message")
+}
+
+model DirectorNotification {
+  id String @id @default(cuid())
+  userId String
+  messageId String?
+  proposalId String?
+  title String
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId, readAt, createdAt])
+  @@map("director_notification")
+}
+
+model WorkOrderProposal {
+  id                   String     @id @default(cuid())
+  authorId             String
+  authorName           String
+  reviewerId           String?
+  status               String     @default("NACRT")
+  version              Int        @default(1)
+  contentVersion       Int        @default(1)
+  data                 Json
+  approvedById         String?
+  approvedByName       String?
+  approvedAt           DateTime?
+  approvedVersion      Int?
+  workOrderId          String?    @unique
+  workOrder            WorkOrder? @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  convertedById        String?
+  convertedByName      String?
+  convertedAt          DateTime?
+  convertedOrderNumber String?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  events               ProposalEvent[]
+  @@index([updatedAt, id])
+  @@index([status, approvedAt(sort: Desc)])
+  @@map("work_order_proposal")
+}
+
+model ProposalEvent {
+  id String @id @default(cuid())
+  proposalId String
+  proposal WorkOrderProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  actorId String
+  actorName String
+  action String
+  version Int
+  contentVersion Int @default(1)
+  body String?
+  snapshot Json?
+  createdAt DateTime @default(now())
+  @@index([proposalId, createdAt, id])
+  @@map("proposal_event")
+}
+
 // Transactional high-water marks shared by every document creation route.
 model DocumentCounter {
   prefix    String @id
@@ -500,6 +570,7 @@ model FieldWork {
   
   // Faza 3: Veza sa radnim nalogom i sipanim gorivom
   workOrder    WorkOrder?
+  machineAssignments MachineAssignment[]
   fuelEntries  FuelEntry[]
 
   // Audit trag (Ko je uneo zapis)
@@ -510,10 +581,13 @@ model FieldWork {
   updatedAt    DateTime    @updatedAt
 
   @@index([date])
+  @@index([date(sort: Desc), createdAt(sort: Desc)])
+  @@index([status, date(sort: Desc), createdAt(sort: Desc)])
   @@index([parcelId, date])
   @@index([workerId, date])
   @@index([machineId, date])
   @@index([attachmentId, date])
+  @@index([workTypeId, date])
   @@map("field_work")
 }
 
@@ -521,6 +595,7 @@ enum AssignmentStatus {
   ZADUZENA
   RAZDUZENA
   VRACENA_SA_KVAROM
+  PONISTENA
 }
 
 model MachineAssignment {
@@ -555,6 +630,14 @@ model MachineAssignment {
   // Povezanost sa radnim nalogom (kada radnik zadužuje mašinu preko naloga)
   workOrderId     String?
   workOrder       WorkOrder?       @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  fieldWorkId     String?
+  fieldWork       FieldWork?       @relation(fields: [fieldWorkId], references: [id], onDelete: Restrict)
+  usageGroupId    String?
+  areaDoneHa      Float?
+  voidedAt        DateTime?
+  correctionReason String?
+  replacesId     String?
+  machineStateBefore Json?
   
   createdById     String
   createdBy       User             @relation(fields: [createdById], references: [id])
@@ -566,7 +649,14 @@ model MachineAssignment {
   // by migration 20261030120000_one_active_machine_assignment (custom SQL).
   @@index([machineId, status])
   @@index([machineId, assignedAt])
+  @@index([status, assignedAt(sort: Desc)])
+  @@index([workerId, status, assignedAt(sort: Desc)])
+  @@index([workerId, assignedAt(sort: Desc)])
+  @@index([assignedAt(sort: Desc)])
   @@index([workOrderId, status])
+  @@index([workOrderId, assignedAt(sort: Desc)])
+  @@index([fieldWorkId, status])
+  @@index([usageGroupId])
   @@map("machine_assignment")
 }
 
@@ -593,6 +683,7 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([userId])
   @@index([createdAt])
+  @@index([action, createdAt(sort: Desc)])
   @@map("audit_log")
 }
 
@@ -659,6 +750,9 @@ model WorkOrder {
   maintenanceId   String?      @unique
   maintenance     MaintenanceIssue? @relation(fields: [maintenanceId], references: [id])
 
+  // Povezivanje sa predlogom direktora iz koga je nalog nastao
+  proposal        WorkOrderProposal?
+
   // Ko je izdao nalog (Rukovodilac ili Direktor)
   issuedById      String
   issuedBy        User         @relation("IssuedWorkOrders", fields: [issuedById], references: [id])
@@ -667,7 +761,11 @@ model WorkOrder {
   updatedAt       DateTime     @updatedAt
 
   @@index([orderDate, status])
+  @@index([orderDate(sort: Desc), createdAt(sort: Desc)])
+  @@index([status, orderDate(sort: Desc), createdAt(sort: Desc)])
   @@index([workerId, orderDate])
+  @@index([workerId, status, orderDate(sort: Desc), createdAt(sort: Desc)])
+  @@index([orderType, orderDate(sort: Desc), createdAt(sort: Desc)])
   @@map("work_order")
 }
 
@@ -717,6 +815,7 @@ model FuelEntry {
   @@index([date])
   @@index([gasStation])
   @@index([workerId, date])
+  @@index([fieldWorkId])
   @@map("fuel_entry")
 }
 
@@ -817,7 +916,12 @@ model MaintenanceIssue {
   @@index([machineId, status])
   @@index([parcelId, status])
   @@index([machineId, dateReported])
+  @@index([reportedById, dateReported])
+  @@index([dateReported])
+  @@index([parcelId, dateReported])
   @@index([status])
+  @@index([status, dateReported(sort: Desc), createdAt(sort: Desc)])
+  @@index([status, repairedAt(sort: Desc)])
   @@map("maintenance_issue")
 }
 
@@ -854,6 +958,9 @@ model TollEntry {
   @@index([machineId, date])
   @@index([workerId, date])
   @@index([date])
+  @@index([date(sort: Desc), createdAt(sort: Desc)])
+  @@index([createdById])
+  @@index([paymentMethod])
   @@map("toll_entry")
 }
 
@@ -877,6 +984,7 @@ model TollTopUp {
 
   @@index([machineId, date])
   @@index([date])
+  @@index([date(sort: Desc), createdAt(sort: Desc)])
   @@map("toll_top_up")
 }
 
@@ -1230,6 +1338,9 @@ model OnionSorting {
   
   inputQuantityKg     Float     // Koliko sirovog luka je ubačeno na liniju
   
+  packaging           OnionPackaging?
+  plevaKg             Float     @default(0)
+
   // Izlazne frakcije
   qualityQuantityKg   Float     // I Klasa (Kvalitetan, krupan luk za pakovanje)
   smallQuantityKg     Float     @default(0) // II Klasa (Sitan luk / Arpadžik / Industrija)
@@ -1250,6 +1361,8 @@ model OnionSorting {
 
 // 5. Pakovanje
 model OnionPackaging {
+  sortingId           String?           @unique
+  sorting             OnionSorting?     @relation(fields: [sortingId], references: [id], onDelete: SetNull)
   id                  String            @id @default(cuid())
   date                DateTime          @default(now())
   
@@ -1264,9 +1377,10 @@ model OnionPackaging {
   availableCount      Int               // Preostalo neshipped komada
   availableWeightKg   Float             // Preostalo neshipped kg
   
-  palletsCount        Float?            // Broj paleta (npr. 1 paleta = 100 džakova x 10kg ili 200 džakova x 5kg)
+  palletsCount         Int?              @map("physicalPalletsCount")
+  legacyPalletEstimate Float?            @map("palletsCount")
   palletNumber        String?           // Broj palete / oznaka lokacije gotove robe
-  packerCount         Int               @default(4) // Broj radnika/žena na pakerici (default 4, izmenljivo)
+  packerCount         Int?
   packerNotes         String?           // Napomena za pakericu / postavu
   responsiblePerson   String?           @default("Bojan Ćorović") // Zadužen za ulaz, izlaz i pakovanje luka
   

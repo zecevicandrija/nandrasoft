@@ -81,6 +81,7 @@ test("fuel deltas and measured machine states coordinate across inventory domain
         async update({ data }) { assertMachineLock(); state.updates.push(copy(data)); return patch(state.machine, data); },
       },
       machineAssignment: {
+        async findMany({ where }) { return Object.entries(where).every(([key, value]) => value === null ? state.assignment[key] == null : state.assignment[key] === value) ? [copy(state.assignment)] : []; },
         async findUnique(args) { return relation(state.assignment, args); },
         async findFirst({ where }) { return Object.entries(where).every(([key, value]) => state.assignment[key] === value) ? copy(state.assignment) : null; },
         async create({ data }) { state.assignment = { id: "new", ...data }; return copy(state.assignment); },

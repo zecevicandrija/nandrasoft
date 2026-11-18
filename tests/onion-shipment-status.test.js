@@ -74,6 +74,28 @@ test("individual onion deliveries remain complete while LOT stock is processed i
     state.packagings.push({ id: "pack", lotId: "lot", packageCount: 800, unitWeightKg: 5, totalWeightKg: 4000, availableCount: 800, availableWeightKg: 4000 });
   };
   try {
+    await t.test("combined sorting and packing balances chaff and keeps unused class I available", async () => {
+      reset();
+      const sorting = { inputQuantityKg: 1000, qualityQuantityKg: 800, smallQuantityKg: 120, wasteQuantityKg: 50, plevaKg: 30 };
+      const submit = (packageCount, fractions = sorting) => request("POST", "/packaging", {
+        lotId: "lot", unitWeightKg: 10, packageCount, sorting: fractions,
+      });
+      const before = copy(state);
+      assert.equal((await submit(81)).status, 400);
+      assert.deepEqual(state, before);
+      assert.equal((await submit(70, { ...sorting, plevaKg: 31 })).status, 400);
+      assert.deepEqual(state, before);
+      assert.equal((await submit(70)).status, 201);
+      assert.equal(state.packagings[0].sortingId, state.sortings[0].id);
+      assert.equal(state.lot.rawStockKg, 4000);
+      assert.equal(state.lot.totalWasteKg, 80);
+      assert.equal(state.sortings[0].wasteQuantityKg, 50);
+      assert.equal(state.lot.sortedQualityKg - state.lot.packagedStockKg, 100);
+      assert.match((await trace()).body.timeline.find(e => e.stage === "SORTIRANJE").details, /Pleva: 30 kg/);
+      assert.equal((await pack(100)).status, 201);
+      assert.equal(state.sortings.length, 1);
+      assert.equal(state.packagings[1].sortingId, null);
+    });
     await t.test("5000 kg can be sorted, packaged and shipped first as 4000 kg then as 1000 kg", async () => {
       reset();
       assert.equal((await sort(4000)).status, 201);

@@ -1,6 +1,8 @@
 import { machineMutation, hasOpenMaintenance, syncMachineStatus } from "../lib/machineAvailability.js";
 import { fuelSnapshotError, measuredFuelData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker, isManager as isManagerUser } from "../lib/workerIdentity.js";
+import { machineSnapshot } from "../lib/machineUsageService.js";
+import { assertCorrectionAccess } from "../lib/workOrderStatusService.js";
 import { photoUrlSchema } from "../lib/photoUrl.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -14,35 +16,101 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireWorkerIdentity);
 
+// Pomoćna funkcija za izolaciju podataka operatera (radnika)
+function getOperatorFilter(worker) {
+  return { workerId: worker.id };
+}
+
+const assignmentListInclude = {
+  machine: {
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      brandModel: true,
+      regNumber: true,
+      tankCapacityLiters: true,
+      currentHours: true,
+      currentFuelLiters: true,
+      status: true,
+      updatedAt: true,
+    },
+  },
+  worker: {
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      role: true,
+    },
+  },
+  parcel: {
+    select: {
+      id: true,
+      code: true,
+      name: true,
+    },
+  },
+  createdBy: {
+    select: { id: true, name: true, role: true },
+  },
+};
+
+async function fetchPaginatedAssignments(where, pageQuery, limitQuery) {
+  const currentPage = Math.max(1, Number(pageQuery) || 1);
+  const take = Math.min(Math.max(1, Number(limitQuery) || 25), 100);
+  const skip = (currentPage - 1) * take;
+
+  const [total, assignments] = await Promise.all([
+    prisma.machineAssignment.count({ where }),
+    prisma.machineAssignment.findMany({
+      where,
+      include: assignmentListInclude,
+      orderBy: { assignedAt: "desc" },
+      skip,
+      take,
+    }),
+  ]);
+
+  return {
+    total,
+    page: currentPage,
+    totalPages: Math.ceil(total / take),
+    assignments,
+  };
+}
+
 // ==========================================
 // 1. STATISTIKA ZADUŽIVANJA
 // ==========================================
 router.get("/stats", async (req, res) => {
   try {
-    const [activeAssignments, freeMachines, brokenMachines, totalToday] = await Promise.all([
-      prisma.machineAssignment.count({
-        where: { status: "ZADUZENA" },
-      }),
-      prisma.machine.count({
-        where: { status: "SLOBODNA", isActive: true },
-      }),
-      prisma.machine.count({
-        where: { status: "U_KVARU", isActive: true },
-      }),
-      prisma.machineAssignment.count({
-        where: {
-          assignedAt: {
-            gte: new Date(new Date().setHours(0, 0, 0, 0)),
-          },
-        },
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [assignmentStatsRows, machineStatusGroups] = await Promise.all([
+      prisma.$queryRaw`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'ZADUZENA')::int AS "activeAssignments",
+          COUNT(*) FILTER (WHERE "voidedAt" IS NULL AND "assignedAt" >= ${startOfToday})::int AS "totalToday"
+        FROM "machine_assignment"
+      `,
+      prisma.machine.groupBy({
+        by: ["status"],
+        where: { isActive: true, status: { in: ["SLOBODNA", "U_KVARU"] } },
+        _count: { _all: true },
       }),
     ]);
 
+    const assignmentStats = assignmentStatsRows[0] || { activeAssignments: 0, totalToday: 0 };
+    const freeMachines = machineStatusGroups.find((g) => g.status === "SLOBODNA")?._count._all ?? 0;
+    const brokenMachines = machineStatusGroups.find((g) => g.status === "U_KVARU")?._count._all ?? 0;
+
     res.json({
-      activeAssignments,
+      activeAssignments: assignmentStats.activeAssignments,
       freeMachines,
       brokenMachines,
-      totalToday,
+      totalToday: assignmentStats.totalToday,
     });
   } catch (error) {
     console.error("Greška pri dohvatanju statistike zaduživanja:", error);
@@ -59,47 +127,15 @@ router.get("/active", async (req, res) => {
     const where = { status: "ZADUZENA" };
 
     if (!isManagerUser(req.user)) {
-      const opFilter = getOperatorFilter(req.worker);
-      where.AND = [opFilter];
+      where.AND = [getOperatorFilter(req.worker)];
     }
 
-    const take = Math.min(Number(limit) || 25, 100);
-    const skip = ((Number(page) || 1) - 1) * take;
-
-    const [total, active] = await Promise.all([
-      prisma.machineAssignment.count({ where }),
-      prisma.machineAssignment.findMany({
-        where,
-        include: {
-          machine: true,
-          worker: true,
-          parcel: true,
-          createdBy: {
-            select: { id: true, name: true, role: true },
-          },
-        },
-        orderBy: { assignedAt: "desc" },
-        skip,
-        take,
-      }),
-    ]);
-
-    res.json({
-      total,
-      page: Number(page) || 1,
-      totalPages: Math.ceil(total / take),
-      assignments: active,
-    });
+    res.json(await fetchPaginatedAssignments(where, page, limit));
   } catch (error) {
     console.error("Greška pri dohvatanju aktivnih zaduženja:", error);
     res.status(500).json({ error: "Greška na serveru." });
   }
 });
-
-// Pomoćna funkcija za izolaciju podataka operatera (radnika)
-function getOperatorFilter(worker) {
-  return { workerId: worker.id };
-}
 
 // ==========================================
 // 3. SVA ZADUŽENJA SA FILTERIMA (ISTORIJAT)
@@ -126,38 +162,11 @@ router.get("/", async (req, res) => {
 
     // Izolacija podataka: Radnici/operateri vide isključivo sopstvena zaduženja
     if (!isManagerUser(req.user)) {
-      const opFilter = getOperatorFilter(req.worker);
       where.AND = where.AND || [];
-      where.AND.push(opFilter);
+      where.AND.push(getOperatorFilter(req.worker));
     }
 
-    const take = Math.min(Number(limit) || 25, 100);
-    const skip = ((Number(page) || 1) - 1) * take;
-
-    const [total, assignments] = await Promise.all([
-      prisma.machineAssignment.count({ where }),
-      prisma.machineAssignment.findMany({
-        where,
-        include: {
-          machine: true,
-          worker: true,
-          parcel: true,
-          createdBy: {
-            select: { id: true, name: true, role: true },
-          },
-        },
-        orderBy: { assignedAt: "desc" },
-        skip,
-        take,
-      }),
-    ]);
-
-    res.json({
-      total,
-      page: Number(page) || 1,
-      totalPages: Math.ceil(total / take),
-      assignments,
-    });
+    res.json(await fetchPaginatedAssignments(where, page, limit));
   } catch (error) {
     console.error("Greška pri dohvatanju zaduženja:", error);
     res.status(500).json({ error: "Greška na serveru." });
@@ -266,6 +275,7 @@ router.post("/checkout", machineMutation(async (req, res, prisma) => {
         data: {
           machineId,
           workerId: finalWorkerId,
+          machineStateBefore: machineSnapshot(machine),
           parcelId: parcelId || null,
           startFuelLevel: calculatedFuelLevel,
           startFuelLiters: calculatedFuelLiters,
@@ -687,6 +697,13 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
     if (!existing) {
       return res.status(404).json({ error: "Zaduženje nije pronađeno." });
     }
+    assertCorrectionAccess(req, existing, existing.assignedAt);
+    if (existing.voidedAt) return res.status(409).json({ error: "Poništeno zaduženje ostaje u istoriji i ne može se menjati." });
+    if ((req.body.machineId && req.body.machineId !== existing.machineId) ||
+        (req.body.status && req.body.status !== existing.status) ||
+        (req.body.parcelId !== undefined && req.body.parcelId !== existing.parcelId && (existing.workOrderId || existing.fieldWorkId))) {
+      return res.status(409).json({ error: "Koristite postupak korekcije/zamene mašine. Povezanu parcelu i status ne možete direktno menjati." });
+    }
 
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
     const isOperator = req.user.role === "OPERATER";
@@ -701,20 +718,6 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
 
       if (!isOwnAssignment) {
         return res.status(403).json({ error: "Možete menjati isključivo sopstvena zaduženja." });
-      }
-
-      // Dozvoljeno samo do kraja dana u kojem je zaduženje evidentirano
-      const now = new Date();
-      const recordDate = new Date(existing.assignedAt);
-      const isSameDay =
-        now.getFullYear() === recordDate.getFullYear() &&
-        now.getMonth() === recordDate.getMonth() &&
-        now.getDate() === recordDate.getDate();
-
-      if (!isSameDay) {
-        return res.status(403).json({
-          error: "Istekao je rok za izmenu. Zaduženje možete izmeniti samo do kraja dana u kojem je zabeleženo.",
-        });
       }
 
       if (req.body.workerId && req.body.workerId !== existing.workerId) {
@@ -884,6 +887,7 @@ router.put("/:id", machineMutation(async (req, res, prisma) => {
       assignment: updated,
     });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("Greška pri ažuriranju zaduženja:", error);
     res.status(500).json({ error: "Greška na serveru pri ažuriranju zaduženja." });
   }

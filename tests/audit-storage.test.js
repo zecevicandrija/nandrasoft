@@ -77,6 +77,48 @@ test("audit list omits snapshots, detail supports legacy records, all routes req
   } finally { prisma.auditLog = original; session.mock.restore(); }
 });
 
+test("audit list ignores whitespace search, clamps pagination, and /storage caches within TTL", async () => {
+  const session = mock.method(auth.api, "getSession", async () => ({ user: { id: "actor", role: "DIREKTOR", isActive: true }, session: {} }));
+  const originalAuditLog = prisma.auditLog;
+  const originalQueryRaw = prisma.$queryRaw;
+  const seenFindManyArgs = [];
+  let storageQueries = 0;
+
+  prisma.auditLog = {
+    async count({ where }) { assert.equal(where.OR, undefined); return 0; },
+    async findMany(args) { seenFindManyArgs.push(args); return []; },
+  };
+  prisma.$queryRaw = async () => {
+    storageQueries += 1;
+    return [{ databaseBytes: "1000", auditBytes: "200", receiptBytes: "100" }];
+  };
+
+  const request = (url, query = {}) => new Promise((resolve, reject) => router.handle(
+    { method: "GET", url, query, headers: {} },
+    { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { resolve({ status: this.statusCode, body }); } },
+    (error) => reject(error || new Error("Unhandled request"))
+  ));
+
+  try {
+    const resList = await request("/", { search: "   ", page: "-3", limit: "-10" });
+    assert.equal(resList.status, 200);
+    assert.equal(resList.body.page, 1);
+    assert.equal(seenFindManyArgs[0].skip, 0);
+    assert.equal(seenFindManyArgs[0].take, 1);
+    assert.equal(seenFindManyArgs[0].where.OR, undefined);
+
+    const firstStorage = await request("/storage");
+    const secondStorage = await request("/storage");
+    assert.equal(firstStorage.status, 200);
+    assert.equal(secondStorage.status, 200);
+    assert.equal(storageQueries, 1);
+  } finally {
+    prisma.auditLog = originalAuditLog;
+    prisma.$queryRaw = originalQueryRaw;
+    session.mock.restore();
+  }
+});
+
 test("real Prisma transaction compacts once and rolls back audit records", { skip: process.env.TEST_ASSIGNMENT_DB !== "1" }, async () => {
   const id = `audit-test-${randomUUID()}`;
   const rollback = new Error("intentional rollback");

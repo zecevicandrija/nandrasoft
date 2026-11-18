@@ -32,7 +32,7 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
     value && typeof value === "object" ? (value.in ? value.in.includes(row[key]) : value.startsWith ? row[key]?.startsWith(value.startsWith) : false) : row[key] === value);
   const related = (row, model) => row ? structuredClone({ ...row, machine: state.machine,
     ...(model === "issues" ? { workOrder: state.orders.find((order) => order.maintenanceId === row.id) || null }
-      : model === "orders" ? { worker: { id: "w", name: "Worker" } } : {}) }) : null;
+      : model === "orders" ? { worker: { id: "w", name: "Worker" }, maintenance: state.issues.find((issue) => issue.id === row.maintenanceId) || null } : {}) }) : null;
   const delegate = (model) => ({
     async findUnique({ where }) { assert.equal(locked, true); return related(state[model].find((row) => matches(row, where)), model); },
     async findFirst({ where }) { assert.equal(locked, true); return related(state[model].find((row) => matches(row, where)), model); },
@@ -48,6 +48,21 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
       const row = state[model].find((row) => matches(row, where));
       if (!row) throw Object.assign(new Error("Stale record"), { code: "P2025" });
       Object.assign(row, data); return related(row, model);
+    },
+    async updateMany({ where, data }) {
+      assert.equal(locked, true);
+      let count = 0;
+      for (const row of state[model]) {
+        if (matches(row, where)) { Object.assign(row, data); count++; }
+      }
+      return { count };
+    },
+    async delete({ where }) {
+      assert.equal(locked, true);
+      const idx = state[model].findIndex((row) => matches(row, where));
+      if (idx === -1) throw Object.assign(new Error("Missing record"), { code: "P2025" });
+      const [removed] = state[model].splice(idx, 1);
+      return related(removed, model);
     },
   });
   prisma.machine = {
@@ -296,6 +311,106 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
       // 5. POST /issues/:id/reopen on non-resolved issue returns 400
       const invalidReopen = await request(maintenance, "POST", "/issues/open-issue/reopen", {});
       assert.equal(invalidReopen.status, 400);
+    });
+
+    await t.test("work-order REMONT_SERVIS persists and updates serviceType, priority, and photo on MaintenanceIssue", async () => {
+      const photoUrl = `https://${process.env.BUNNY_PULL_ZONE_HOSTNAME || 'nandra.b-cdn.net'}/fotografije/2026/11/foto_12345678-1234-1234-1234-123456789abc.jpg`;
+      reset();
+      const created = await request(orders, "POST", "/", {
+        workerId: "w",
+        machineId: "m",
+        orderType: "REMONT_SERVIS",
+        serviceType: "GENERALNI_REMONT",
+        priority: "KRITICNA",
+        orderDate: "2026-11-18",
+        instructions: "Generalni remont menjača i zamena ulja",
+        photoUrl,
+      });
+      assert.equal(created.status, 201);
+      assert.equal(state.orders.length, 1);
+      assert.equal(state.issues.length, 1);
+      assert.equal(state.issues[0].serviceType, "GENERALNI_REMONT");
+      assert.equal(state.issues[0].priority, "KRITICNA");
+      assert.equal(state.issues[0].photoUrl, photoUrl);
+      assert.equal(state.machine.status, "SERVIS");
+
+      const orderId = state.orders[0].id;
+      const updated = await request(orders, "PUT", `/${orderId}`, {
+        serviceType: "KVAR_NJIVA",
+        priority: "VISOKA",
+        instructions: "Hitna intervencija na hidraulici",
+      });
+      assert.equal(updated.status, 200);
+      assert.equal(state.issues[0].serviceType, "KVAR_NJIVA");
+      assert.equal(state.issues[0].priority, "VISOKA");
+      assert.equal(state.issues[0].description, "Hitna intervencija na hidraulici");
+      assert.equal(state.machine.status, "U_KVARU");
+    });
+
+    await t.test("deleting a REMONT_SERVIS order cleans up its uncompleted issue and frees the machine, and issuer is recorded as reporter", async () => {
+      const origWorkerFind = prisma.worker.findUnique;
+      prisma.worker.findUnique = async ({ where }) => {
+        if (where.userId === "manager") return { id: "manager-worker", isActive: true };
+        return { id: where.id || "w", isActive: true };
+      };
+      try {
+        reset();
+        const created = await request(orders, "POST", "/", {
+          workerId: "w",
+          machineId: "m",
+          orderType: "REMONT_SERVIS",
+          serviceType: "REDOVAN_SERVIS",
+          priority: "VISOKA",
+          orderDate: "2026-11-18",
+          instructions: "Test remont nalog",
+        });
+        assert.equal(created.status, 201);
+        assert.equal(state.issues[0].reportedById, "manager-worker");
+        assert.equal(state.issues[0].mechanicId, "w");
+        assert.equal(state.machine.status, "SERVIS");
+
+        const deleted = await request(orders, "DELETE", `/${state.orders[0].id}`, {});
+        assert.equal(deleted.status, 200);
+        assert.equal(state.orders.length, 0);
+        assert.equal(state.issues.length, 0);
+        assert.equal(state.machine.status, "SLOBODNA");
+
+        // Resolved maintenance issue prevents permanent deletion
+        reset();
+        addIssue("resolved-issue", "REDOVAN_SERVIS");
+        state.issues[0].status = "POPRAVLJENO";
+        addOrder("done-order", "REMONT_SERVIS", "resolved-issue");
+        const blocked = await request(orders, "DELETE", "/done-order", {});
+        assert.equal(blocked.status, 409);
+        assert.equal(state.orders.length, 1);
+        assert.equal(state.issues.length, 1);
+
+        // Manager without a linked Worker record can cancel an orphaned issue and permanently delete it
+        prisma.worker.findUnique = async () => null;
+        reset();
+        addIssue("orphan-issue", "REDOVAN_SERVIS");
+        state.machine.status = "SERVIS";
+        assert.equal((await request(maintenance, "DELETE", "/issues/orphan-issue", {})).status, 409);
+        const cancelled = await request(maintenance, "PUT", "/issues/orphan-issue/status", { status: "OTKAZAN" });
+        assert.equal(cancelled.status, 200);
+        assert.equal(state.issues[0].status, "OTKAZAN");
+        assert.equal(state.machine.status, "SLOBODNA");
+        assert.equal((await request(maintenance, "DELETE", "/issues/orphan-issue", {})).status, 200);
+        assert.equal(state.issues.length, 0);
+
+        // Deleting a cancelled issue with a linked WorkOrder deletes both
+        reset();
+        addIssue("linked-issue", "REDOVAN_SERVIS");
+        state.issues[0].status = "OTKAZAN";
+        addOrder("linked-order", "REMONT_SERVIS", "linked-issue");
+        state.orders[0].status = "OTKAZAN";
+        assert.equal((await request(maintenance, "DELETE", "/issues/linked-issue", {})).status, 200);
+        assert.equal(state.issues.length, 0);
+        assert.equal(state.orders.length, 0);
+        assert.equal(state.machine.status, "SLOBODNA");
+      } finally {
+        prisma.worker.findUnique = origWorkerFind;
+      }
     });
   } finally {
     session.mock.restore(); logging.mock.restore();

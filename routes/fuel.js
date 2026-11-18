@@ -1,5 +1,5 @@
 import { validateFuelFieldWork } from "../lib/fuelFieldWork.js";
-import { money, rate, multiplyMoney, divideRate } from "../lib/money.js";
+import { money, rate, addMoney, multiplyMoney, divideRate } from "../lib/money.js";
 import { inventoryMutation } from "../lib/inventoryTransaction.js";
 import { fuelDeltaData } from "../lib/machineFuel.js";
 import { requireWorkerIdentity, getRequestWorker } from "../lib/workerIdentity.js";
@@ -91,23 +91,31 @@ router.get("/stats", async (req, res) => {
       return res.status(403).json({ error: "Nemate pristup statistici cisterne." });
     }
 
-    // 1. Ukupno primljeno u cisternu
-    const totalSupplies = await prisma.fuelSupply.aggregate({
-      _sum: {
-        liters: true,
-        totalCost: true,
-      },
-      _count: { id: true },
-    });
+    const now = new Date();
+    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    // Svi agregati su nezavisni: pokrećemo ih paralelno u jednom krugu upita,
+    // a mesečni zbir računamo iz groupBy po izvoru bez dodatnog aggregate upita.
+    const [totalSupplies, totalDispensedFromCisterna, monthBySource] = await Promise.all([
+      prisma.fuelSupply.aggregate({
+        _sum: {
+          liters: true,
+          totalCost: true,
+        },
+      }),
+      prisma.fuelEntry.aggregate({
+        where: { fuelSource: "CISTERNA" },
+        _sum: { liters: true },
+      }),
+      prisma.fuelEntry.groupBy({
+        by: ["fuelSource"],
+        where: { date: { gte: firstDayOfMonth } },
+        _sum: { liters: true, totalCost: true },
+      }),
+    ]);
 
     const totalSuppliedLiters = totalSupplies._sum.liters || 0;
     const totalSuppliedCost = totalSupplies._sum.totalCost || 0;
-
-    // 2. Ukupno istočeno iz cisterne
-    const totalDispensedFromCisterna = await prisma.fuelEntry.aggregate({
-      where: { fuelSource: "CISTERNA" },
-      _sum: { liters: true },
-    });
     const dispensedCisternaLiters = totalDispensedFromCisterna._sum.liters || 0;
 
     // Trenutno stanje cisterne
@@ -115,33 +123,24 @@ router.get("/stats", async (req, res) => {
     const tankFillPercentage = Math.min(100, Math.round((currentTankLiters / CISTERNA_KAPACITET_LITARA) * 100));
 
     // Ponderisana prosečna nabavna cena po litru u cisterni
-    const avgCostPerLiter = totalSuppliedLiters > 0 
+    const avgCostPerLiter = totalSuppliedLiters > 0
       ? divideRate(totalSuppliedCost, totalSuppliedLiters)
       : 171.66; // Fallback referentna cena iz cenovnika
-
-    // 3. Ukupno točeno ovog meseca (svi izvori)
-    const now = new Date();
-    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    const [monthDispensed, monthBySource] = await Promise.all([
-      prisma.fuelEntry.aggregate({
-        where: { date: { gte: firstDayOfMonth } },
-        _sum: { liters: true, totalCost: true },
-      }),
-      prisma.fuelEntry.groupBy({
-        by: ["fuelSource"],
-        where: { date: { gte: firstDayOfMonth } },
-        _sum: { liters: true },
-      }),
-    ]);
 
     const sourceBreakdown = {
       CISTERNA: 0,
       PUMPA: 0,
       KANISTER: 0,
     };
+    let monthTotalLiters = 0;
+    let monthTotalCost = 0;
     monthBySource.forEach((item) => {
-      sourceBreakdown[item.fuelSource] = item._sum.liters || 0;
+      const liters = item._sum.liters || 0;
+      sourceBreakdown[item.fuelSource] = liters;
+      monthTotalLiters += liters;
+      if (item._sum.totalCost != null) {
+        monthTotalCost = addMoney(monthTotalCost, item._sum.totalCost);
+      }
     });
 
     const responseData = {
@@ -160,10 +159,10 @@ router.get("/stats", async (req, res) => {
         }),
       },
       monthStats: {
-        totalLiters: Number((monthDispensed._sum.liters || 0).toFixed(1)),
+        totalLiters: Number(monthTotalLiters.toFixed(1)),
         bySource: sourceBreakdown,
         ...(isManager && {
-          totalCostRSD: Math.round(monthDispensed._sum.totalCost || 0),
+          totalCostRSD: Math.round(monthTotalCost),
         }),
       },
     };
@@ -178,6 +177,19 @@ router.get("/stats", async (req, res) => {
 // ==========================================
 // 1.1 STANJE MAŠINA (KAPACITET, NIVO GORIVA, POSLEDNJE PUNJENJE)
 // ==========================================
+const matchesFuelLevelFilter = (m, fuelLevel) => {
+  const capacity = m.tankCapacityLiters || 0;
+  const fuel = m.currentFuelLiters || 0;
+  const isNoTank = capacity <= 0 || m.type === "PRIKLJUCAK" || m.fuelType === "BEZ_GORIVA";
+  const pct = capacity > 0 ? (fuel / capacity) * 100 : 0;
+
+  if (fuelLevel === "LOW") return !isNoTank && pct < 20;
+  if (fuelLevel === "EMPTY") return !isNoTank && fuel <= 0;
+  if (fuelLevel === "HIGH") return !isNoTank && pct >= 80;
+  if (fuelLevel === "NO_FUEL") return isNoTank;
+  return true;
+};
+
 router.get("/machine-states", async (req, res) => {
   try {
     const isManager = ["DIREKTOR", "RUKOVODILAC"].includes(req.user.role);
@@ -185,10 +197,121 @@ router.get("/machine-states", async (req, res) => {
       return res.status(403).json({ error: "Samo direktor i rukovodilac mogu videti stanje mašina." });
     }
 
-    const machines = await prisma.machine.findMany({
+    const pageNum = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const type = typeof req.query.type === "string" ? req.query.type.trim() : "";
+    const fuelLevel = typeof req.query.fuelLevel === "string" ? req.query.fuelLevel.trim() : "";
+
+    const where = { isActive: true };
+    if (type) {
+      where.type = type;
+    }
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { brandModel: { contains: search, mode: "insensitive" } },
+        { regNumber: { contains: search, mode: "insensitive" } },
+      ];
+    }
+
+    const hasNarrowingFilter = Boolean(type || search);
+    const skip = (pageNum - 1) * limitNum;
+
+    const summaryQuery = prisma.machine.findMany({
       where: { isActive: true },
       orderBy: [{ type: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        type: true,
+        tankCapacityLiters: true,
+        currentFuelLiters: true,
+        fuelType: true,
+      },
     });
+
+    let allActiveForSummary;
+    let machines = [];
+    let totalCount = 0;
+
+    if (fuelLevel) {
+      let candidates;
+      if (hasNarrowingFilter) {
+        [allActiveForSummary, candidates] = await Promise.all([
+          summaryQuery,
+          prisma.machine.findMany({
+            where,
+            orderBy: [{ type: "asc" }, { name: "asc" }],
+            select: {
+              id: true,
+              type: true,
+              tankCapacityLiters: true,
+              currentFuelLiters: true,
+              fuelType: true,
+            },
+          }),
+        ]);
+      } else {
+        allActiveForSummary = await summaryQuery;
+        candidates = allActiveForSummary;
+      }
+
+      const matchingIds = candidates
+        .filter((m) => matchesFuelLevelFilter(m, fuelLevel))
+        .map((m) => m.id);
+      totalCount = matchingIds.length;
+      const pageIds = matchingIds.slice(skip, skip + limitNum);
+      if (pageIds.length > 0) {
+        machines = await prisma.machine.findMany({
+          where: { id: { in: pageIds } },
+          orderBy: [{ type: "asc" }, { name: "asc" }],
+        });
+      }
+    } else if (hasNarrowingFilter) {
+      [allActiveForSummary, machines, totalCount] = await Promise.all([
+        summaryQuery,
+        prisma.machine.findMany({
+          where,
+          skip,
+          take: limitNum,
+          orderBy: [{ type: "asc" }, { name: "asc" }],
+        }),
+        prisma.machine.count({ where }),
+      ]);
+    } else {
+      [allActiveForSummary, machines] = await Promise.all([
+        summaryQuery,
+        prisma.machine.findMany({
+          where,
+          skip,
+          take: limitNum,
+          orderBy: [{ type: "asc" }, { name: "asc" }],
+        }),
+      ]);
+      totalCount = allActiveForSummary.length;
+    }
+
+    let totalFuel = 0;
+    let lowFuelCount = 0;
+    let activeWithTank = 0;
+    for (const m of allActiveForSummary) {
+      const capacity = m.tankCapacityLiters || 0;
+      const fuel = m.currentFuelLiters || 0;
+      totalFuel += fuel;
+      if (capacity > 0 && m.type !== "PRIKLJUCAK" && m.fuelType !== "BEZ_GORIVA") {
+        activeWithTank += 1;
+        if ((fuel / capacity) * 100 < 20) {
+          lowFuelCount += 1;
+        }
+      }
+    }
+
+    const summary = {
+      totalMachines: allActiveForSummary.length,
+      totalFuel: Math.round(totalFuel),
+      activeWithTank,
+      lowFuelCount,
+    };
 
     const machineIds = machines.map((m) => m.id);
     const lastFuelEntries = machineIds.length > 0
@@ -222,7 +345,16 @@ router.get("/machine-states", async (req, res) => {
       };
     });
 
-    res.json({ machines: machineStates });
+    res.json({
+      machines: machineStates,
+      pagination: {
+        total: totalCount,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.max(1, Math.ceil(totalCount / limitNum)),
+      },
+      summary,
+    });
   } catch (error) {
     console.error("Greška pri dohvatanju stanja mašina:", error);
     res.status(500).json({ error: "Greška pri učitavanju stanja mašina." });
