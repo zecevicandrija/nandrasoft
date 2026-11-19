@@ -8,6 +8,10 @@ import maintenance from "../routes/maintenance.js";
 import fieldWork from "../routes/fieldWork.js";
 import masterData from "../routes/masterData.js";
 import { machineMutation } from "../lib/machineAvailability.js";
+import {
+  backfillLegacyRemontOrders,
+  previewLegacyRemontBackfill,
+} from "../lib/remontBackfill.js";
 
 function request(router, method, url, body) {
   body = { expectedMachineUpdatedAt: "2026-11-01T00:00:00.000Z", ...body };
@@ -28,15 +32,27 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
       issues: [], orders: [], assignments: [], audit: [], counters: {} };
     tail = Promise.resolve(); locked = false; failAudit = false; failOrder = false;
   };
-  const matches = (row, where) => Object.entries(where).every(([key, value]) =>
-    value && typeof value === "object" ? (value.in ? value.in.includes(row[key]) : value.startsWith ? row[key]?.startsWith(value.startsWith) : false) : row[key] === value);
+  const matches = (row, where = {}) => Object.entries(where).every(([key, value]) => {
+    if (key === "AND") return value.every((cond) => matches(row, cond));
+    if (key === "OR") return value.some((cond) => matches(row, cond));
+    if (value === null) return row[key] == null;
+    if (value && typeof value === "object") {
+      if (value.in) return value.in.includes(row[key]);
+      if (value.startsWith) return row[key]?.startsWith(value.startsWith);
+      if (value.gte instanceof Date) return row[key] instanceof Date && row[key].getTime() >= value.gte.getTime();
+      if ("not" in value) return value.not === null ? row[key] != null : row[key] !== value.not;
+      return false;
+    }
+    return row[key] === value;
+  });
   const related = (row, model) => row ? structuredClone({ ...row, machine: state.machine,
     ...(model === "issues" ? { workOrder: state.orders.find((order) => order.maintenanceId === row.id) || null }
       : model === "orders" ? { worker: { id: "w", name: "Worker" }, maintenance: state.issues.find((issue) => issue.id === row.maintenanceId) || null } : {}) }) : null;
   const delegate = (model) => ({
     async findUnique({ where }) { assert.equal(locked, true); return related(state[model].find((row) => matches(row, where)), model); },
     async findFirst({ where }) { assert.equal(locked, true); return related(state[model].find((row) => matches(row, where)), model); },
-    async findMany({ where }) { assert.equal(locked, true); return state[model].filter((row) => matches(row, where)).map((row) => related(row, model)); },
+    async findMany({ where } = {}) { return state[model].filter((row) => matches(row, where)).map((row) => related(row, model)); },
+    async count({ where } = {}) { return state[model].filter((row) => matches(row, where)).length; },
     async create({ data }) {
       assert.equal(locked, true);
       if (model === "orders" && failOrder) throw new Error("Order creation failed");
@@ -411,6 +427,223 @@ test("workshop and checkout lifecycle preserve machine availability", async (t) 
       } finally {
         prisma.worker.findUnique = origWorkerFind;
       }
+    });
+
+    await t.test("GET /issues scopes Tab 1 to direct reports and KVAR_NJIVA, keeping planned REMONT_SERVIS orders in Tab 2", async () => {
+      const origFindMany = prisma.maintenanceIssue.findMany;
+      const origCount = prisma.maintenanceIssue.count;
+      let capturedWhere = null;
+      prisma.maintenanceIssue.findMany = async ({ where }) => { capturedWhere = where; return []; };
+      prisma.maintenanceIssue.count = async () => 0;
+      try {
+        const res = await request(maintenance, "GET", "/issues", {});
+        assert.equal(res.status, 200);
+        assert.deepEqual(capturedWhere, {
+          AND: [
+            { OR: [{ workOrder: { is: null } }, { serviceType: "KVAR_NJIVA" }] },
+          ],
+        });
+      } finally {
+        prisma.maintenanceIssue.findMany = origFindMany;
+        prisma.maintenanceIssue.count = origCount;
+      }
+    });
+
+    await t.test("workshop and general work-order creation produce identical machine statuses for KVAR_NJIVA and REDOVAN_SERVIS", async () => {
+      for (const [serviceType, expectedStatus] of [
+        ["KVAR_NJIVA", "U_KVARU"],
+        ["REDOVAN_SERVIS", "SERVIS"],
+        ["GENERALNI_REMONT", "SERVIS"],
+      ]) {
+        reset();
+        const fromWorkshop = await request(maintenance, "POST", "/remont-order", {
+          machineId: "m",
+          workerId: "w",
+          orderDate: "2026-11-19",
+          serviceType,
+          priority: "VISOKA",
+          instructions: `Workshop ${serviceType}`,
+        });
+        assert.equal(fromWorkshop.status, 201);
+        assert.equal(state.machine.status, expectedStatus);
+        assert.equal(fromWorkshop.body.workOrder.machine.status, expectedStatus);
+        assert.equal(state.issues[0].serviceType, serviceType);
+
+        reset();
+        const fromOrders = await request(orders, "POST", "/", {
+          machineId: "m",
+          workerId: "w",
+          orderType: "REMONT_SERVIS",
+          orderDate: "2026-11-19",
+          serviceType,
+          priority: "VISOKA",
+          instructions: `Orders ${serviceType}`,
+        });
+        assert.equal(fromOrders.status, 201);
+        assert.equal(state.machine.status, expectedStatus);
+        assert.equal(fromOrders.body.workOrder.machine.status, expectedStatus);
+        assert.equal(state.issues[0].serviceType, serviceType);
+      }
+    });
+
+    await t.test("two concurrent interventions keep U_KVARU while an open KVAR_NJIVA exists and resolve to the right remaining status", async () => {
+      // KVAR_NJIVA issued first, then REDOVAN_SERVIS from either entry point must NOT downgrade U_KVARU to SERVIS
+      for (const issueSecond of [
+        () => request(maintenance, "POST", "/remont-order", { machineId: "m", workerId: "w", orderDate: "2026-11-19", serviceType: "REDOVAN_SERVIS", instructions: "Redovan servis" }),
+        () => request(orders, "POST", "/", { machineId: "m", workerId: "w", orderType: "REMONT_SERVIS", orderDate: "2026-11-19", serviceType: "REDOVAN_SERVIS", instructions: "Redovan servis" }),
+        () => request(maintenance, "POST", "/issues", { machineId: "m", serviceType: "REDOVAN_SERVIS", title: "Direktan servis" }),
+      ]) {
+        reset();
+        const breakdown = await request(maintenance, "POST", "/remont-order", {
+          machineId: "m", workerId: "w", orderDate: "2026-11-19", serviceType: "KVAR_NJIVA", instructions: "Kvar na njivi",
+        });
+        assert.equal(breakdown.status, 201);
+        assert.equal(state.machine.status, "U_KVARU");
+
+        const service = await issueSecond();
+        assert.equal(service.status, 201);
+        assert.equal(state.machine.status, "U_KVARU", "adding a regular service must not downgrade an open breakdown");
+
+        const breakdownIssueId = state.issues[0].id;
+        const serviceIssueId = state.issues[1].id;
+
+        // Resolving the regular service first leaves the open KVAR_NJIVA -> stays U_KVARU
+        assert.equal((await resolve(serviceIssueId)).status, 200);
+        assert.equal(state.machine.status, "U_KVARU");
+
+        // Reopening the regular service while KVAR_NJIVA is still open must also keep U_KVARU
+        assert.equal((await request(maintenance, "POST", `/issues/${serviceIssueId}/reopen`, {})).status, 200);
+        assert.equal(state.machine.status, "U_KVARU");
+
+        // Resolving the breakdown while regular service is active transitions to SERVIS
+        assert.equal((await resolve(breakdownIssueId)).status, 200);
+        assert.equal(state.machine.status, "SERVIS");
+
+        // Resolving the remaining service frees the machine
+        assert.equal((await resolve(serviceIssueId)).status, 200);
+        assert.equal(state.machine.status, "SLOBODNA");
+      }
+    });
+
+    await t.test("GET /remont-orders is strictly read-only even with unlinked legacy orders", async () => {
+      reset();
+      state.orders.push({
+        id: "legacy-open",
+        orderNumber: "RN-2025-0001",
+        orderType: "REMONT_SERVIS",
+        status: "DODELJEN",
+        priority: "HITNO",
+        workerId: "w",
+        machineId: "m",
+        maintenanceId: null,
+        instructions: "Stari nalog bez servisa",
+        orderDate: new Date("2025-10-01T00:00:00.000Z"),
+        updatedAt: new Date("2025-10-01T00:00:00.000Z"),
+      });
+      const before = structuredClone(state);
+
+      const first = await request(maintenance, "GET", "/remont-orders", {});
+      assert.equal(first.status, 200);
+      assert.equal(first.body.orders.length, 1);
+      assert.equal(first.body.orders[0].maintenance, null);
+      assert.deepEqual(state, before, "first GET must not create issues or mutate machine status");
+
+      const second = await request(maintenance, "GET", "/remont-orders", {});
+      assert.equal(second.status, 200);
+      assert.deepEqual(state, before, "repeated GET must remain strictly read-only");
+    });
+
+    await t.test("legacy remont backfill previews counts, applies once with proper status mapping, and is idempotent", async () => {
+      reset();
+      state.orders.push(
+        {
+          id: "legacy-active",
+          orderNumber: "RN-2025-0010",
+          orderType: "REMONT_SERVIS",
+          status: "DODELJEN",
+          priority: "KRITICNO",
+          workerId: "w",
+          machineId: "m",
+          maintenanceId: null,
+          instructions: "Aktivni stari remont",
+          orderDate: new Date("2025-10-10T00:00:00.000Z"),
+          updatedAt: new Date("2025-10-10T00:00:00.000Z"),
+        },
+        {
+          id: "legacy-done",
+          orderNumber: "RN-2025-0011",
+          orderType: "REMONT_SERVIS",
+          status: "ZAVRSEN",
+          priority: "NORMALNO",
+          workerId: "w",
+          machineId: "m",
+          maintenanceId: null,
+          instructions: "Zavrseni stari remont",
+          orderDate: new Date("2025-09-01T00:00:00.000Z"),
+          updatedAt: new Date("2025-09-02T00:00:00.000Z"),
+        },
+        {
+          id: "legacy-cancelled",
+          orderNumber: "RN-2025-0012",
+          orderType: "REMONT_SERVIS",
+          status: "OTKAZAN",
+          priority: "HITNO",
+          workerId: "w",
+          machineId: "m",
+          maintenanceId: null,
+          instructions: "Otkazani stari remont",
+          orderDate: new Date("2025-08-01T00:00:00.000Z"),
+          updatedAt: new Date("2025-08-02T00:00:00.000Z"),
+        },
+        {
+          id: "legacy-no-machine",
+          orderNumber: "RN-2025-0013",
+          orderType: "REMONT_SERVIS",
+          status: "DODELJEN",
+          priority: "NORMALNO",
+          workerId: "w",
+          machineId: null,
+          maintenanceId: null,
+          instructions: "Stari nalog bez masine",
+          orderDate: new Date("2025-07-01T00:00:00.000Z"),
+          updatedAt: new Date("2025-07-01T00:00:00.000Z"),
+        }
+      );
+
+      const snapshotBeforePreview = structuredClone(state);
+      const preview = await previewLegacyRemontBackfill(prisma);
+      assert.equal(preview.dryRun, true);
+      assert.equal(preview.totalUnlinked, 4);
+      assert.equal(preview.eligibleOrders, 3);
+      assert.equal(preview.skippedWithoutMachine, 1);
+      assert.deepEqual(preview.byStatus, { active: 1, completed: 1, cancelled: 1 });
+      assert.deepEqual(state, snapshotBeforePreview, "preview must be read-only");
+
+      const applied = await backfillLegacyRemontOrders(prisma);
+      assert.equal(applied.dryRun, false);
+      assert.equal(applied.createdIssues, 3);
+      assert.equal(applied.machinesSynced, 1);
+      assert.equal(applied.skippedWithoutMachine, 1);
+      assert.equal(state.issues.length, 3);
+
+      const activeIssue = state.issues.find((i) => i.id === state.orders[0].maintenanceId);
+      const doneIssue = state.issues.find((i) => i.id === state.orders[1].maintenanceId);
+      const cancelledIssue = state.issues.find((i) => i.id === state.orders[2].maintenanceId);
+      assert.equal(activeIssue.status, "OTVOREN");
+      assert.equal(activeIssue.priority, "KRITICNA");
+      assert.equal(doneIssue.status, "POPRAVLJENO");
+      assert.equal(cancelledIssue.status, "OTKAZAN");
+      assert.equal(state.orders[3].maintenanceId, null);
+      assert.equal(state.machine.status, "SERVIS");
+
+      // Second run must be a complete no-op
+      const snapshotAfterFirst = structuredClone(state);
+      const secondRun = await backfillLegacyRemontOrders(prisma);
+      assert.equal(secondRun.createdIssues, 0);
+      assert.equal(secondRun.machinesSynced, 0);
+      assert.equal(secondRun.eligibleOrders, 0);
+      assert.equal(secondRun.skippedWithoutMachine, 1);
+      assert.deepEqual(state, snapshotAfterFirst);
     });
   } finally {
     session.mock.restore(); logging.mock.restore();

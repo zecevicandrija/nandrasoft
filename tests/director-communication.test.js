@@ -328,7 +328,9 @@ test('POST /proposals/:id/convert validates preconditions and converts approved 
       },
     },
     worker: {
-      findUnique: async ({ where }) => (where.id === 'worker-1' ? { id: 'worker-1', name: 'Pera Operater', isActive: true } : null),
+      findUnique: async ({ where }) => where.id === 'warehouse-worker'
+        ? { id: where.id, type: 'STALNI', isActive: true, user: { role: 'MAGACIN', isActive: true } }
+        : where.id === 'worker-1' ? { id: where.id, name: 'Pera Operater', isActive: true } : null,
     },
     machine: {
       findUnique: async ({ where }) => (where.id === 'machine-1' ? { id: 'machine-1', name: 'John Deere 6155M', isActive: true, updatedAt: new Date() } : null),
@@ -343,6 +345,7 @@ test('POST /proposals/:id/convert validates preconditions and converts approved 
     contractor: {
       findUnique: async () => null,
     },
+    onionLot: { findUnique: async ({ where }) => where.id === 'lot-1' ? { id: where.id } : null },
     maintenanceIssue: {
       create: async ({ data }) => { maintenanceCreates.push(data); return { id: 'maint-1', ...data }; },
     },
@@ -433,11 +436,31 @@ test('POST /proposals/:id/convert validates preconditions and converts approved 
     assert.equal(maintenanceCreates.length, 1);
     assert.equal(maintenanceCreates[0].serviceType, 'GENERALNI_REMONT');
     assert.equal(maintenanceCreates[0].priority, 'KRITICNA');
+    assert.match(maintenanceCreates[0].title, /^Radni nalog RN-\d{4}-0007: Oranje$/);
+    assert.equal(maintenanceCreates[0].description, 'Zamena filtera i generalni remont');
     assert.equal(serviceResult.data.workOrder.parcelId, null);
     assert.equal(serviceResult.data.workOrder.attachmentId, null);
     assert.equal(serviceResult.data.workOrder.workTypeId, null);
     assert.equal(serviceResult.data.workOrder.plannedAreaHa, null);
     assert.equal(machineUpdates.some(u => u.status === 'SERVIS'), true);
+
+    const packingPlan = {
+      entryMode: 'both',
+      sortingForm: { inputQuantityKg: '110', qualityQuantityKg: '100', smallQuantityKg: '8', wasteQuantityKg: '1', plevaKg: '1' },
+      packagingForm: { date: payload.orderDate, lotId: 'lot-1', packageType: 'DZAK_10KG', unitWeightKg: '10',
+        packageCount: '10', palletsCount: '1', palletNumber: 'P01', packerCount: '2', responsiblePerson: 'Pera',
+        packerNotes: 'Prva smena', notes: '' },
+    };
+    currentProposal = { ...currentProposal, id: 'prop-packing', version: 1, workOrderId: null, convertedOrderNumber: null,
+      data: proposalSchema.parse({ ...payload, orderType: 'PAKOVANJE', packingPlan }) };
+    const packingResult = await request('POST', '/proposals/prop-packing/convert', { version: 1, workerId: 'warehouse-worker' });
+    assert.equal(packingResult.status, 201);
+    assert.deepEqual(packingResult.data.workOrder.packingPlan, packingPlan);
+    assert.equal(packingResult.data.workOrder.orderType, 'PAKOVANJE');
+    assert.equal(packingResult.data.workOrder.status, 'DODELJEN');
+    assert.equal(packingResult.data.proposal.workOrderId, packingResult.data.workOrder.id);
+    assert.deepEqual(events.at(-1).snapshot.packingPlan, packingPlan);
+    assert.equal(notifications.at(-1).proposalId, 'prop-packing');
   } finally {
     prisma.$transaction = originalTransaction;
     authMock.mock.restore();
@@ -485,5 +508,51 @@ test('GET /proposals defaults to 10 items per page and passes skip/take from req
   } finally {
     prisma.workOrderProposal = originalProposal;
     authMock.mock.restore();
+  }
+});
+
+test('directors can delete any unconverted proposal, including approved proposals, only at the confirmed version', async () => {
+  const original = prisma.$transaction;
+  const session = mock.method(auth.api, 'getSession', async () => ({ user: director, session: {} }));
+  const cleanup = [];
+  let row;
+  prisma.$transaction = async fn => fn({
+    workOrderProposal: {
+      deleteMany: async ({ where }) => {
+        if (!row || !Object.entries(where).every(([key, value]) => row[key] === value)) return { count: 0 };
+        row = null;
+        return { count: 1 };
+      },
+      findUnique: async () => row,
+    },
+    directorMessage: { updateMany: async args => cleanup.push(args) },
+    directorNotification: { deleteMany: async args => cleanup.push(args) },
+  });
+  const pending = { id: 'p', version: 4, workOrderId: null, convertedAt: null, convertedOrderNumber: null };
+  const remove = version => request('DELETE', '/proposals/p', { version });
+  try {
+    for (const status of ['NACRT', 'NA_PREGLEDU', 'VRACEN_NA_DORADU', 'ODOBREN', 'OTKAZAN']) {
+      row = { ...pending, status };
+      cleanup.length = 0;
+      assert.equal((await remove(3)).status, 409);
+      assert.equal(cleanup.length, 0);
+      assert.equal((await remove(4)).status, 200);
+      assert.equal(row, null);
+      assert.deepEqual(cleanup, [
+        { where: { proposalId: 'p' }, data: { proposalId: null, proposalVersion: null } },
+        { where: { proposalId: 'p' } },
+      ]);
+      assert.equal((await remove(4)).status, 200);
+    }
+    cleanup.length = 0;
+    for (const conversion of [{ workOrderId: 'wo' }, { convertedAt: new Date() }, { convertedOrderNumber: 'RN-1' }]) {
+      row = { ...pending, ...conversion };
+      assert.equal((await remove(4)).status, 409);
+      assert.ok(row);
+    }
+    assert.equal(cleanup.length, 0);
+  } finally {
+    prisma.$transaction = original;
+    session.mock.restore();
   }
 });

@@ -3,6 +3,7 @@ import { test, mock } from 'node:test';
 import { prisma } from '../lib/prisma.js';
 import { auth } from '../routes/auth.js';
 import onion from '../routes/onion.js';
+import fuel from '../routes/fuel.js';
 import fertilizer from '../routes/fertilizer.js';
 import tolls from '../routes/tolls.js';
 import { mutationIdentity } from '../lib/mutationReceipt.js';
@@ -21,8 +22,8 @@ test('critical stock and ENP routes commit each keyed submission exactly once', 
   let userId = 'manager';
   const reset = () => {
     failure = null; userId = 'manager';
-    state = { receipts: [], shipments: [], movements: [], entries: [], topUps: [], audit: [], counters: {},
-      lot: { id: 'lot', rawStockKg: 0, sortedQualityKg: 1000, sortedSmallKg: 0, packagedStockKg: 1000, shippedKg: 0 },
+    state = { supplies: [], arrivals: [], newPackages: [], receipts: [], shipments: [], movements: [], entries: [], topUps: [], audit: [], counters: {},
+      lot: { id: 'lot', initialQuantityKg: 0, rawStockKg: 0, sortedQualityKg: 1000, sortedSmallKg: 0, packagedStockKg: 1000, shippedKg: 0 },
       packaging: { id: 'pack', lotId: 'lot', totalWeightKg: 1000, availableCount: 100, availableWeightKg: 1000, unitWeightKg: 10 },
       product: { id: 'product', name: 'Fertilizer', currentStock: 100, unit: 'KG', minStockWarning: 10, defaultPricePerUnit: 5 },
       machine: { id: 'machine', name: 'Truck', enpTagBalance: 1000, enpTagNumber: 'TAG' } };
@@ -57,12 +58,15 @@ test('critical stock and ENP routes commit each keyed submission exactly once', 
         }
         return 1;
       },
+      fuelSupply: { async create({ data }) { return create(state.supplies, data); } },
+      onionHarvestArrival: { async create({ data }) { return create(state.arrivals, data); } },
       onionPackaging: {
+        async create({ data }) { return create(state.newPackages, data); },
         async aggregate() { return copy({ _sum: { totalWeightKg: state.packaging.totalWeightKg, availableWeightKg: state.packaging.availableWeightKg } }); },
         async findUnique() { return copy({ ...state.packaging, lot: state.lot }); },
         async update({ data }) { return update(state.packaging, data); },
       },
-      onionLot: { async update({ data }) { return update(state.lot, data); } },
+      onionLot: { async findUnique() { return copy({ ...state.lot, packagings: state.newPackages }); }, async update({ data }) { return update(state.lot, data); } },
       onionShipment: { async create({ data }) { return { ...create(state.shipments, data), buyer: { id: 'buyer', name: 'Buyer' } }; } },
       partner: { async findUnique() { return { id: 'buyer', name: 'Buyer' }; } },
       fertilizerProduct: { async findUnique() { return copy(state.product); }, async update({ data }) { return update(state.product, data); } },
@@ -86,6 +90,14 @@ test('critical stock and ENP routes commit each keyed submission exactly once', 
       check() { assert.equal(state.entries.length,1); assert.equal(state.machine.enpTagBalance,930); } },
     { name: 'ENP top-up', router: tolls, path: '/top-up', body: { machineId: 'machine', amount: 100 },
       check() { assert.equal(state.topUps.length,1); assert.equal(state.machine.enpTagBalance,1100); } },
+    { name: 'fertilizer receipt', router: fertilizer, path: '/receive', body: { productId: 'product', quantity: 20, receiptNumber: 'INV-1' },
+      check(count = 1) { assert.equal(state.movements.length, count); assert.equal(state.product.currentStock, 100 + 20 * count); } },
+    { name: 'fuel supply', router: fuel, path: '/supplies', body: { liters: 500, pricePerLiter: 185, receiptNumber: 'INV-1' },
+      check(count = 1) { assert.equal(state.supplies.length, count); assert.equal(state.supplies.reduce((sum, row) => sum + row.liters, 0), 500 * count); } },
+    { name: 'existing LOT arrival', router: onion, path: '/harvest', body: { existingLotId: 'lot', parcelId: 'parcel', quantityKg: 1100 },
+      check(count = 1) { assert.equal(state.arrivals.length, count); assert.equal(state.lot.initialQuantityKg, 1100 * count); assert.equal(state.lot.rawStockKg, 1100 * count); } },
+    { name: 'standalone packaging', router: onion, path: '/packaging', body: { lotId: 'lot', packageCount: 5, unitWeightKg: 10 },
+      check(count = 1) { assert.equal(state.newPackages.length, count); assert.equal(state.lot.packagedStockKg, 1000 + 50 * count); } },
   ];
   try {
     for (const scenario of scenarios) {
@@ -111,6 +123,19 @@ test('critical stock and ENP routes commit each keyed submission exactly once', 
           scenario.check(); assert.equal(state.receipts.length,1); assert.equal(state.audit.length,1);
         });
       }
+    }
+    for (const scenario of scenarios.slice(4)) {
+      await t.test(`${scenario.name}: separate keys book two identical deliveries or operations`, async () => {
+        reset();
+        const first = await request(scenario.router, scenario.path, scenario.body, 'first-delivery');
+        const second = await request(scenario.router, scenario.path, scenario.body, 'second-delivery');
+        assert.equal(first.status, 201);
+        assert.equal(second.status, 201);
+        assert.notDeepEqual(first.body, second.body);
+        scenario.check(2);
+        assert.equal(state.receipts.length, 2);
+        assert.equal(state.audit.length, 2);
+      });
     }
     await t.test('a confirmed issue or dispatch replays even after its first execution exhausts stock', async () => {
       for (const scenario of scenarios.slice(0,2)) {

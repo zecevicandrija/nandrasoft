@@ -257,7 +257,7 @@ router.get("/", async (req, res) => {
 // ==========================================
 const fieldWorkSchema = z.object({
   date: z.string().optional(),
-  shift: z.enum(["PRVA", "DRUGA", "TRECA"]).default("PRVA"),
+  shift: z.enum(["PRVA", "DRUGA", "TRECA"]).optional(),
   contractorId: optionalContractorId,
   materials: materialsSchema.optional(),
   parcelId: z.string().min(1, "Parcela je obavezna"),
@@ -491,10 +491,11 @@ router.post("/", machineMutation(async (req, res, prisma) => {
       await validateContractor(tx, parsed.data.contractorId === undefined ? linkedOrder?.contractorId : parsed.data.contractorId);
       const materialRows = await prepareMaterials(tx, workTypeId, parsed.data.materials ?? linkedOrder?.materials,
         linkedOrder?.materials ?? []);
+      const finalShift = shift ?? linkedOrder?.shift ?? "PRVA";
       const work = await tx.fieldWork.create({
         data: {
           date: date ? new Date(date) : new Date(),
-          shift,
+          shift: finalShift,
           parcelId,
           contractorId: parsed.data.contractorId === undefined ? linkedOrder?.contractorId ?? null : parsed.data.contractorId,
           machineId,
@@ -533,7 +534,7 @@ router.post("/", machineMutation(async (req, res, prisma) => {
       message: `Uspešno evidentiran rad na parceli "${parcel.name}".`,
       work: {
         ...work,
-        workOrderId: parsed.data.workOrderId || null,
+        workOrderId: linkedOrder?.id || parsed.data.workOrderId || null,
         isMachineUnassigned: true,
       },
     });

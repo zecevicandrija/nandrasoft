@@ -1,3 +1,5 @@
+import { notify } from "../lib/directorNotifications.js";
+import { canReceivePackingOrder, validatePackingOrder } from "../lib/packingWorkOrders.js";
 import { Router } from 'express';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
@@ -41,19 +43,14 @@ const named = { id: true, name: true };
 const parcel = { select: { ...named, code: true } };
 const machine = { select: { ...named, type: true } };
 const actor = user => ({ actorId: user.id, actorName: user.name });
-async function notify(db, user, title, target, recipientIds) {
-  const recipients = await db.user.findMany({ where: { role: 'DIREKTOR', isActive: true,
-    id: { not: user.id, ...(recipientIds ? { in: recipientIds } : {}) } }, select: { id: true } });
-  // Enforce the recipient rule at the write boundary as well as in the query.
-  const otherDirectors = recipients.filter(recipient => recipient.id !== user.id);
-  if (otherDirectors.length) await db.directorNotification.createMany({ data: otherDirectors.map(recipient => ({ userId: recipient.id, title, ...target })) });
-}
 async function checkedData(db, input) {
   const isRemont = input.orderType === 'REMONT_SERVIS';
-  const normalized = isRemont
+  const isPacking = input.orderType === 'PAKOVANJE';
+  const normalized = isRemont || isPacking
     ? {
         ...input,
-        serviceType: input.serviceType || 'REDOVAN_SERVIS',
+        serviceType: isRemont ? input.serviceType || 'REDOVAN_SERVIS' : null,
+        ...(isPacking && { machineId: null, orderDate: input.packingPlan.packagingForm.date }),
         attachmentId: null,
         parcelId: null,
         workTypeId: null,
@@ -77,6 +74,10 @@ async function checkedData(db, input) {
   }
 
   const labels = {};
+  if (isPacking) {
+    const lot = await validatePackingOrder(db, input);
+    labels.lotNumber = lot.lotNumber;
+  }
   for (const [key, model] of [['workerId', 'worker'], ['machineId', 'machine'], ['attachmentId', 'machine'], ['parcelId', 'parcel'], ['workTypeId', 'workType']]) {
     if (!normalized[key]) continue;
     const item = await db[model].findFirst({ where: { id: normalized[key], isActive: true }, select: { ...named, ...(model === 'machine' ? { type: true } : {}) } });
@@ -115,7 +116,7 @@ router.get('/catalog', handle(async (_req, res) => {
   const [workersRaw, machines, parcels, workTypes, directors] = await Promise.all([
     prisma.worker.findMany({
       where: { isActive: true },
-      select: { ...named, role: true, type: true, user: { select: { role: true } } },
+      select: { ...named, isActive: true, role: true, type: true, user: { select: { role: true, isActive: true } } },
       orderBy: { name: 'asc' },
     }),
     prisma.machine.findMany({ where: { isActive: true }, select: { ...named, type: true, brandModel: true, status: true }, orderBy: { name: 'asc' } }),
@@ -130,6 +131,7 @@ router.get('/catalog', handle(async (_req, res) => {
   const workers = workersRaw.map(({ user, ...worker }) => ({
     ...worker,
     role: user?.role || worker.role || (worker.type === 'SEZONAC' ? 'SEZONAC' : 'OPERATER'),
+    canReceivePackingOrder: canReceivePackingOrder({ ...worker, user }),
   }));
   res.json({ workers, machines, parcels, workTypes, directors });
 }));
@@ -566,7 +568,7 @@ router.get('/proposals', handle(async (req, res) => {
   const status = typeof req.query.status === 'string' && req.query.status.trim() ? req.query.status.trim() : null;
   const converted = typeof req.query.converted === 'string' ? req.query.converted.trim() : null;
   const orderType =
-    typeof req.query.orderType === 'string' && ['RAD_NJIVA', 'REMONT_SERVIS'].includes(req.query.orderType.trim())
+    typeof req.query.orderType === 'string' && ['RAD_NJIVA', 'REMONT_SERVIS', 'PAKOVANJE'].includes(req.query.orderType.trim())
       ? req.query.orderType.trim()
       : null;
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
@@ -611,6 +613,7 @@ router.get('/proposals', handle(async (req, res) => {
       OR COALESCE("convertedOrderNumber", '') ILIKE ${pattern}
       OR COALESCE(data->>'title', '') ILIKE ${pattern}
       OR COALESCE(data->>'orderDate', '') ILIKE ${pattern}
+      OR COALESCE(data->'labels'->>'lotNumber', '') ILIKE ${pattern}
       OR COALESCE(data->'labels'->>'workerId', '') ILIKE ${pattern}
       OR COALESCE(data->'labels'->>'parcelId', '') ILIKE ${pattern}
       OR COALESCE(data->'labels'->>'machineId', '') ILIKE ${pattern}
@@ -673,6 +676,29 @@ router.post('/proposals', handle(async (req, res) => {
       events: { create: { ...actor(req.user), action: 'create', version: 1, snapshot: data } } } });
   });
   res.status(201).json(item);
+}));
+router.delete('/proposals/:id', handle(async (req, res) => {
+  const { version } = z.object({ version: z.number().int().positive() }).strict().parse(req.body);
+  const id = req.params.id;
+  await prisma.$transaction(async db => {
+    // The conversion claims this same row. Recheck eligibility in the delete itself.
+    const deleted = await db.workOrderProposal.deleteMany({
+      where: { id, version, workOrderId: null, convertedAt: null, convertedOrderNumber: null },
+    });
+    if (!deleted.count) {
+      const current = await db.workOrderProposal.findUnique({ where: { id }, select: {
+        workOrderId: true, convertedAt: true, convertedOrderNumber: true,
+      } });
+      if (!current) return;
+      if (current.workOrderId || current.convertedAt || current.convertedOrderNumber) {
+        throw communicationError(409, 'Predlog je već pretvoren u radni nalog i ne može se obrisati.');
+      }
+      throw communicationError(409, 'Predlog je u međuvremenu izmenjen. Pregledajte novu verziju pre brisanja.');
+    }
+    await db.directorMessage.updateMany({ where: { proposalId: id }, data: { proposalId: null, proposalVersion: null } });
+    await db.directorNotification.deleteMany({ where: { proposalId: id } });
+  });
+  res.json({ ok: true });
 }));
 router.patch('/proposals/:id', handle(async (req, res) => {
   const input = changeSchema.parse(req.body);

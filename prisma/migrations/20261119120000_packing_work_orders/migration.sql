@@ -1,0 +1,2 @@
+ALTER TYPE "OrderType" ADD VALUE 'PAKOVANJE';
+ALTER TABLE "work_order" ADD COLUMN "packingPlan" JSONB;

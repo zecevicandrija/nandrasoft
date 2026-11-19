@@ -20,7 +20,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
   let state;
   let failOrderUpdate = false;
   let beforeTransaction = null;
-  const originals = Object.fromEntries(["workType", "contractor", "maintenanceIssue", "$queryRaw", "$executeRaw", "worker", "workOrder", "machine", "machineAssignment", "fieldWork", "parcel", "auditLog", "$transaction"].map((key) => [key, prisma[key]]));
+  const originals = Object.fromEntries(["workType", "contractor", "maintenanceIssue", "onionLot", "$queryRaw", "$executeRaw", "worker", "workOrder", "machine", "machineAssignment", "fieldWork", "parcel", "auditLog", "$transaction"].map((key) => [key, prisma[key]]));
   const sessionMock = mock.method(auth.api, "getSession", async () => ({ user, session: {} }));
   const logMock = mock.method(console, "error", () => {});
   const reset = () => {
@@ -35,7 +35,8 @@ test("work orders enforce ownership and field-work consistency before mutations"
     failOrderUpdate = false;
     beforeTransaction = null;
   };
-  const matches = (row, where) => Object.entries(where).every(([key, value]) => value === null ? row[key] == null : row[key] === value);
+  const matches = (row, where) => Object.entries(where).every(([key, value]) =>
+    value === null ? row[key] == null : value instanceof Date && row[key] instanceof Date ? row[key].getTime() === value.getTime() : row[key] === value);
   const update = (rows, { where, data }) => {
     const row = rows.find((candidate) => matches(candidate, where));
     if (!row) throw Object.assign(new Error("Stale record"), { code: "P2025" });
@@ -44,7 +45,7 @@ test("work orders enforce ownership and field-work consistency before mutations"
   };
   prisma.$queryRaw = async (strings, userId, key) => state.receipts.filter((row) => row.userId === userId && row.key === key);
   prisma.$executeRaw = async (strings, ...values) => {
-    if (strings.join("").includes("INSERT INTO")) {
+    if (strings.join("").includes('INSERT INTO "mutation_receipt"')) {
       const [userId, key, route, fingerprint, statusCode, response] = values;
       state.receipts.push({ userId, key, route, fingerprint, statusCode, response: JSON.parse(response) });
     }
@@ -52,8 +53,18 @@ test("work orders enforce ownership and field-work consistency before mutations"
   };
   prisma.maintenanceIssue = { async findFirst() { return null; }, async findMany() { return []; } };
   prisma.worker = { async findUnique({ where }) {
-    return { id: where.id || "worker-a", userId: "user-a", isActive: true };
+    return { id: where.id || "worker-a", userId: "user-a", isActive: true, type: "STALNI", user: { role: "MAGACIN", isActive: true } };
   } };
+  prisma.onionLot = {
+    async findUnique({ where }) {
+      return where.id === "lot-1" ? {
+        id: "lot-1",
+        lotNumber: "LOT-20261119-P01-01",
+        rawStockKg: 5000,
+        storageEntries: [{ chamberId: "ch-1", locationOrChamber: "Komora 1", currentQuantityKg: 5000 }],
+      } : null;
+    },
+  };
   prisma.workOrder = {
     async findFirst() { return null; },
     async findUnique({ where }) {
@@ -390,6 +401,109 @@ test("work orders enforce ownership and field-work consistency before mutations"
       assert.deepEqual(JSON.parse(JSON.stringify(await request(assignmentsRouter, "POST", "/checkin", body, headers))), JSON.parse(JSON.stringify(first)));
       assert.equal(state.assignments[0].status, "RAZDUZENA");
       assert.equal(state.receipts.length, 1);
+    });
+    await t.test("concurrent packing plan edits preserve the first saved change and reject stale snapshots with 409", async () => {
+      reset();
+      user.role = "RUKOVODILAC";
+      const makePlan = (packageCount, qualityQuantityKg, inputQuantityKg) => ({
+        entryMode: "both",
+        sortingForm: { inputQuantityKg, qualityQuantityKg, smallQuantityKg: "80", wasteQuantityKg: "15", plevaKg: "5" },
+        packagingForm: {
+          date: "2026-11-20",
+          lotId: "lot-1",
+          sourceKey: "id:ch-1",
+          sourceName: "Komora 1",
+          packageType: "DZAK_10KG",
+          unitWeightKg: "10",
+          palletsCount: "1",
+          packageCount,
+          palletNumber: "P-1",
+          packerCount: "4",
+          packerNotes: "",
+          responsiblePerson: "Bojan Ćorović",
+          notes: "",
+        },
+      });
+      const initialUpdatedAt = new Date("2026-11-19T08:00:00.000Z");
+      const initialPlan = makePlan("100", "1000", "1100");
+      state.orders.push({
+        id: "packing-order",
+        orderNumber: "RN-2026-0099",
+        orderType: "PAKOVANJE",
+        status: "DODELJEN",
+        workerId: "worker-a",
+        orderDate: new Date("2026-11-20T00:00:00.000Z"),
+        packingPlan: initialPlan,
+        updatedAt: initialUpdatedAt,
+      });
+
+      const firstOpenedVersion = initialUpdatedAt.toISOString();
+      const firstEditPlan = makePlan("150", "1500", "1600");
+      const firstRes = await request(ordersRouter, "PUT", "/packing-order", {
+        orderType: "PAKOVANJE",
+        workerId: "worker-a",
+        orderUpdatedAt: firstOpenedVersion,
+        packingPlan: firstEditPlan,
+      });
+      assert.equal(firstRes.status, 200);
+      assert.equal(state.orders[2].packingPlan.packagingForm.packageCount, "150");
+      assert.ok(state.orders[2].updatedAt.getTime() > initialUpdatedAt.getTime());
+
+      // Second manager opened the order earlier and submits a worker change with the stale plan
+      const staleRes = await request(ordersRouter, "PUT", "/packing-order", {
+        orderType: "PAKOVANJE",
+        workerId: "worker-b",
+        orderUpdatedAt: firstOpenedVersion,
+        packingPlan: initialPlan,
+      });
+      assert.equal(staleRes.status, 409);
+      assert.equal(state.orders[2].packingPlan.packagingForm.packageCount, "150");
+      assert.equal(state.orders[2].workerId, "worker-a");
+      assert.equal(staleRes.data.workOrder.packingPlan.packagingForm.packageCount, "150");
+
+      // Missing version on a packing order edit is also rejected with 409
+      const missingVersionRes = await request(ordersRouter, "PUT", "/packing-order", {
+        orderType: "PAKOVANJE",
+        workerId: "worker-b",
+        packingPlan: initialPlan,
+      });
+      assert.equal(missingVersionRes.status, 409);
+      assert.equal(state.orders[2].workerId, "worker-a");
+
+      // Second manager reloads the current plan and saves the worker change on top of it
+      const reloaded = await request(ordersRouter, "GET", "/packing-order");
+      assert.equal(reloaded.status, 200);
+      const secondRes = await request(ordersRouter, "PUT", "/packing-order", {
+        orderType: "PAKOVANJE",
+        workerId: "worker-b",
+        orderUpdatedAt: reloaded.data.workOrder.updatedAt.toISOString(),
+        packingPlan: reloaded.data.workOrder.packingPlan,
+      });
+      assert.equal(secondRes.status, 200);
+      assert.equal(state.orders[2].packingPlan.packagingForm.packageCount, "150");
+      assert.equal(state.orders[2].workerId, "worker-b");
+    });
+
+    await t.test("field-work completion preserves work-order shift when omitted and honors explicit shift", async () => {
+      for (const orderShift of ["DRUGA", "TRECA"]) {
+        reset();
+        user.role = "OPERATER";
+        state.orders[0].shift = orderShift;
+        prepareCompletion();
+        const omittedRes = await request(fieldRouter, "POST", "/", { ...workBody });
+        assert.equal(omittedRes.status, 201);
+        assert.equal(state.works[0].shift, orderShift);
+        assert.equal(omittedRes.data.work.shift, orderShift);
+        assert.equal(state.orders[0].status, "ZAVRSEN");
+
+        reset();
+        user.role = "OPERATER";
+        state.orders[0].shift = orderShift;
+        prepareCompletion();
+        const explicitRes = await request(fieldRouter, "POST", "/", { ...workBody, shift: "PRVA" });
+        assert.equal(explicitRes.status, 201);
+        assert.equal(state.works[0].shift, "PRVA");
+      }
     });
   } finally {
     sessionMock.mock.restore(); logMock.mock.restore();

@@ -873,7 +873,7 @@ router.post("/receive", requireWarehouseAccess, inventoryMutation("fertilizer", 
     console.error("Greška pri prijemu đubriva:", error);
     res.status(500).json({ error: "Greška na serveru prilikom prijema robe u magacin." });
   }
-}));
+}, { idempotent: true }));
 
 // ==========================================
 // 6. IZDAVANJE ĐUBRIVA NA NJIVU / POVRAT / OTPIS

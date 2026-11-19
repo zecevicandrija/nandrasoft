@@ -20,7 +20,10 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
   const reset = () => {
     failAudit = false;
     state = {
-      lot: { id: "lot", lotNumber: "LOT-20261029-P01-01", rawStockKg: 800000, initialQuantityKg: 820000, sortedQualityKg: 18000, packagedStockKg: 10000, shippedKg: 8000 },
+      order: { id: "order", orderNumber: "RN-1", orderType: "PAKOVANJE", status: "DODELJEN", updatedAt: new Date("2026-11-19T12:00:00Z"),
+        packingPlan: { entryMode: "packaging", packagingForm: { lotId: "lot" } } },
+      messages: [], notices: [], sortings: [], proposal: { workOrderId: "order", version: 1 },
+      lot: { id: "lot", lotNumber: "LOT-20261029-P01-01", status: "U_OBRADI", rawStockKg: 800000, initialQuantityKg: 820000, sortedQualityKg: 18000, sortedSmallKg: 0, totalWasteKg: 0, sortedWasteKg: 0, packagedStockKg: 10000, shippedKg: 8000 },
       packagings: [
         { id: "five", lotId: "lot", packageType: "DZAK_5KG", unitWeightKg: 5, packageCount: 800, totalWeightKg: 4000, availableCount: 800, availableWeightKg: 4000, palletsCount: 4, packerCount: 4 },
         { id: "ten", lotId: "lot", packageType: "DZAK_10KG", unitWeightKg: 10, packageCount: 1400, totalWeightKg: 14000, availableCount: 600, availableWeightKg: 6000, palletsCount: 14, packerCount: 4 },
@@ -39,6 +42,7 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
       if (value && typeof value === "object") {
         if ("not" in value) return row[key] !== value.not;
         if ("gt" in value) return row[key] > value.gt;
+        if ("lte" in value) return row[key] <= value.lte;
         if ("equals" in value) return row[key]?.toLowerCase() === value.equals.toLowerCase();
       }
       return row[key] === value;
@@ -57,11 +61,23 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
     const before = copy(state);
     const tx = {
       async $executeRaw(strings) { if (strings.join("").includes("pg_advisory_xact_lock")) locked = true; return 1; },
+      directorMessage: { async create({ data }) { state.messages.push(data); return { id: "message" }; } },
+      directorNotification: { async createMany({ data }) { state.notices.push(...data); } },
+      user: { async findMany() { return [{ id: "another-director" }]; } },
+      workOrderProposal: { async updateMany({ data }) { update(state.proposal, data); } },
+      workOrder: { async findUnique() { return read(state.order); }, async updateMany({ where, data }) {
+        const order = state.order;
+        if (where.id !== order.id || (where.orderType && where.orderType !== order.orderType) || !(where.status.in ?? [where.status]).includes(order.status) ||
+            where.updatedAt.getTime() !== order.updatedAt.getTime()) return { count: 0 };
+        update(order, data);
+        return { count: 1 };
+      } },
       onionLot: {
-        async findUnique() { return read({ ...state.lot, packagings: state.packagings, storageEntries: state.storages.filter((row) => row.lotId === "lot") }); },
+        async findUnique({ where }) { return where.id === "planned" ? read({ lotNumber: "LOT-A" }) : read({ ...state.lot, packagings: state.packagings, storageEntries: state.storages.filter((row) => row.lotId === "lot") }); },
         async update({ data }) { return update(state.lot, data); },
       },
       onionPackaging: {
+        async delete({ where }) { state.packagings = state.packagings.filter(p => p.id !== where.id); },
         async findUnique({ where }) {
           const row = state.packagings.find((row) => row.id === where.id);
           return read(row ? { ...row, lot: { ...state.lot, packagings: state.packagings }, shipmentItems: state.shipmentItems.filter((item) => item.packagingId === row.id) } : null);
@@ -75,13 +91,23 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
         async update({ where, data }) { return update(state.storages.find((row) => row.id === where.id), data); },
         async create({ data }) { const row = { id: `storage-${state.storages.length}`, ...data }; state.storages.push(row); return read(row); },
       },
+      onionSorting: {
+        async create({ data }) { const row = { ...data, id: "new-sort" }; state.sortings.push(row); return read(row); },
+        async findUnique({ where }) { const row = state.sortings.find(s => s.id === where.id); return read(row ? { ...row, packaging: state.packagings.find(p => p.sortingId === row.id) } : null); },
+        async delete({ where }) { state.sortings = state.sortings.filter(s => s.id !== where.id); },
+      },
       onionChamber: {
         async findUnique({ where }) { return read(state.chambers.find((row) => row.id === where.id) || null); },
         async findFirst({ where }) { return read(state.chambers.find((row) => matches(row, where)) || null); },
       },
       parcel: { async findUnique() { return read({ id: "parcel", code: "P01" }); } },
       onionHarvestArrival: { async create({ data }) { const row = { id: "arrival", ...data }; state.arrivals.push(row); return read(row); } },
-      auditLog: { async create({ data }) { if (failAudit) throw new Error("Audit failed"); state.audit.push(copy(data)); return data; } },
+      auditLog: { async findFirst({ where }) {
+        return read(state.audit.find(event => event.entityType === where.entityType &&
+          (!where.entityId || event.entityId === where.entityId) && (!where.description || event.description === where.description) &&
+          (!where.newValues || event.newValues?.entryId === where.newValues.equals)));
+      },
+        async create({ data }) { if (failAudit) throw new Error("Audit failed"); state.audit.push(copy(data)); return data; } },
     };
     try { return await callback(tx); }
     catch (error) { state = before; throw error; }
@@ -96,6 +122,114 @@ test("onion stock edits preserve source quantities, shipments and chamber limits
   }
   const editStorage = (data) => request("PUT", "/storage/storage", data);
   try {
+    await t.test("a warehouse confirmation completes its order exactly once and rolls back a stale or invalid entry", async () => {
+      reset();
+      const body = { lotId: "lot", packageCount: 10, unitWeightKg: 10, workOrderId: "order", orderUpdatedAt: state.order.updatedAt.toISOString() };
+      await rejectsWithoutChanges("POST", "/packaging", body);
+      state.lot.sortedQualityKg += 1000;
+      await rejectsWithoutChanges("POST", "/packaging", { ...body, orderUpdatedAt: "2026-11-18T12:00:00.000Z" });
+      const results = await Promise.all([request("POST", "/packaging", body), request("POST", "/packaging", body)]);
+      assert.deepEqual(results.map(result => result.status).sort(), [201, 400]);
+      assert.equal(state.order.status, "ZAVRSEN");
+      assert.equal(state.packagings.length, 3);
+      assert.equal(state.lot.packagedStockKg, 10100);
+      assert.equal(state.order.packingPlan.execution.lotNumber, state.lot.lotNumber);
+      assert.equal(state.messages.length, 0);
+    });
+    await t.test("a changed LOT or operation records the actual entry and notifies directors once", async () => {
+      for (const [lotId, entryMode] of [["planned", "packaging"], ["lot", "both"]]) {
+        reset();
+        state.order.packingPlan = { entryMode, packagingForm: { lotId } };
+        state.lot.sortedQualityKg += 1000;
+        const body = { lotId: "lot", packageCount: 10, unitWeightKg: 10, workOrderId: "order", orderUpdatedAt: state.order.updatedAt.toISOString() };
+        assert.equal((await request("POST", "/packaging", body)).status, 201);
+        await rejectsWithoutChanges("POST", "/packaging", body);
+        const plan = state.order.packingPlan;
+        assert.equal(plan.packagingForm.lotId, lotId);
+        assert.equal(plan.execution.lotNumber, state.lot.lotNumber);
+        assert.equal(plan.execution.entryMode, "packaging");
+        assert.equal(state.messages.length, 1);
+        assert.ok(state.messages[0].body.includes(lotId === "planned" ? "LOT-A" : "sortiranje i pakovanje"));
+        assert.deepEqual(state.notices.map(n => [n.userId, n.messageId]), [["another-director", "message"]]);
+      }
+    });
+    await t.test("warehouse reversal restores the LOT and chamber for each mode and preserves the selected order outcome", async () => {
+      for (const mode of ["sorting", "both", "packaging"]) {
+        reset();
+        state.order.packingPlan.entryMode = mode;
+        state.lot.sortedQualityKg += 100;
+        const before = copy(state.lot);
+        const updatedAt = state.order.updatedAt.toISOString();
+        const sort = { inputQuantityKg: 120, qualityQuantityKg: 100, smallQuantityKg: 10, wasteQuantityKg: 8, plevaKg: 2 };
+        const body = { lotId: "lot", workOrderId: "order", orderUpdatedAt: updatedAt, packageCount: 10, unitWeightKg: 10 };
+        const made = mode === "sorting" ? await request("POST", "/sorting", { ...body, ...sort }) :
+          await request("POST", "/packaging", { ...body, sorting: mode === "both" ? sort : undefined });
+        assert.equal(made.status, 201, JSON.stringify(made.body));
+        const reversal = { updatedAt, reason: "Pogrešan unos", action: mode === "both" ? "cancel" : "reopen" };
+        const url = "/work-orders/order/reverse";
+        if (mode === "sorting") {
+          state.lot.sortedQualityKg -= 101;
+          await rejectsWithoutChanges("POST", url, reversal, 409);
+          state.lot.sortedQualityKg += 101;
+        } else {
+          state.shipmentItems.push({ packagingId: "new-pack", shipment: { dispatchNumber: "OTP-123" } });
+          const blocked = await rejectsWithoutChanges("POST", url, reversal, 409);
+          assert.match(blocked.body.error, /OTP-123/);
+          state.shipmentItems.pop();
+          const linked = await rejectsWithoutChanges("DELETE", "/packaging/new-pack", {}, 409);
+          assert.equal(linked.body.order.id, "order");
+        }
+        failAudit = true;
+        await rejectsWithoutChanges("POST", url, reversal, 500);
+        failAudit = false;
+        const result = await request("POST", url, reversal);
+        assert.equal(result.status, 200, JSON.stringify(result.body));
+        assert.deepEqual(state.lot, before);
+        assert.equal(state.storages[0].currentQuantityKg, 800000);
+        assert.equal(state.packagings.length, 2);
+        assert.equal(state.sortings.length, 0);
+        assert.equal(state.order.status, mode === "both" ? "OTKAZAN" : "DODELJEN");
+        assert.equal(state.proposal.workOrderId, mode === "both" ? null : "order");
+        assert.equal(state.audit.at(-1).context.reason, reversal.reason);
+        await rejectsWithoutChanges("POST", url, reversal, 409);
+      }
+    });
+    await t.test("legacy cancellation restores 4000 kg over the chamber weight limit only with an unambiguous source", async () => {
+      reset();
+      state.lot.rawStockKg = 792000;
+      state.lot.initialQuantityKg = 800000;
+      Object.assign(state.storages[0], { quantityKg: 800000, currentQuantityKg: 792000, createdAt: new Date("2026-10-29") });
+      state.order.status = "ZAVRSEN";
+      state.order.packingPlan.entryMode = "both";
+      state.sortings.push({ id: "legacy-sort", lotId: "lot", createdAt: new Date("2026-11-19"), inputQuantityKg: 4000,
+        qualityQuantityKg: 3500, smallQuantityKg: 200, wasteQuantityKg: 250, plevaKg: 50 });
+      state.lot.sortedSmallKg = 200;
+      state.lot.sortedWasteKg = state.lot.totalWasteKg = 300;
+      state.packagings[0].sortingId = "legacy-sort";
+      state.audit.push({ entityType: "WorkOrder", entityId: "order", description: "Radni nalog završen potvrdom unosa u magacinu", newValues: { entryId: "five" } });
+      const url = "/work-orders/order/reverse";
+      const input = { action: "cancel", reason: "Pogrešan unos", updatedAt: state.order.updatedAt.toISOString() };
+      state.storages.push({ ...state.storages[0], id: "another" });
+      await rejectsWithoutChanges("POST", url, input, 409);
+      state.storages.pop();
+      const result = await request("POST", url, input);
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(state.storages[0].currentQuantityKg, 796000);
+      assert.equal(state.lot.rawStockKg, 796000);
+      assert.equal(state.order.status, "OTKAZAN");
+      assert.equal(state.chambers[0].maxCapacityKg, 792000);
+    });
+    await t.test("selected chamber groups its storage rows and cannot consume raw stock from another chamber", async () => {
+      reset();
+      state.storages.push(...[60, 80].map((currentQuantityKg, i) => ({ ...state.storages[0],
+        id: "ch2-row-" + i, chamberId: "other-ch", locationOrChamber: "Komora 2", currentQuantityKg })));
+      const body = { lotId: "lot", sourceKey: "id:other-ch", inputQuantityKg: 150, qualityQuantityKg: 150 };
+      await rejectsWithoutChanges("POST", "/sorting", body);
+      const result = await request("POST", "/sorting", { ...body, inputQuantityKg: 100, qualityQuantityKg: 100 });
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      assert.deepEqual(state.storages.map(row => row.currentQuantityKg), [800000, 0, 40]);
+      assert.deepEqual(result.body.storageDeductions, [{ id: "ch2-row-0", kg: 60 }, { id: "ch2-row-1", kg: 40 }]);
+    });
     await t.test("160 bags can use two partially filled pallets with no packer count", async () => {
       reset();
       state.lot.sortedQualityKg += 1600;

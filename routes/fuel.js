@@ -1111,13 +1111,8 @@ router.get("/supplies", async (req, res) => {
   }
 });
 
-router.post("/supplies", inventoryMutation("fuel", async (req, res, prisma) => {
+router.post("/supplies", requireManager, inventoryMutation("fuel", async (req, res, prisma) => {
   try {
-    // Samo Rukovodilac ili Direktor mogu uneti prijem cisterne
-    if (!["DIREKTOR", "RUKOVODILAC"].includes(req.user.role)) {
-      return res.status(403).json({ error: "Nemate ovlašćenje za prijem goriva u cisternu. Prijem cisterne mogu uneti isključivo direktor i rukovodilac." });
-    }
-
     const parsed = createFuelSupplySchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({
@@ -1176,7 +1171,7 @@ router.post("/supplies", inventoryMutation("fuel", async (req, res, prisma) => {
     console.error("Greška pri unosu prijema cisterne:", error);
     res.status(500).json({ error: "Greška na serveru pri evidentiranju prijema goriva." });
   }
-}));
+}, { idempotent: true }));
 
 router.delete("/supplies/:id", requireManager, inventoryMutation("fuel", async (req, res, prisma) => {
   try {

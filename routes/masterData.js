@@ -1,3 +1,4 @@
+import { canReceivePackingOrder } from "../lib/packingWorkOrders.js";
 import { materialKindSchema } from "../lib/workMaterials.js";
 import { writeAudit } from "../lib/audit.js";
 import { contractorSchema } from "../lib/contractors.js";
@@ -313,7 +314,7 @@ router.get("/workers", async (req, res) => {
       orderBy: [{ type: "asc" }, { name: "asc" }],
       ...(canViewPrivateDetails ? {
         include: {
-          user: { select: { id: true, email: true, role: true } },
+          user: { select: { id: true, email: true, role: true, isActive: true } },
         },
       } : {
         // Fetch only lookup fields; the linked role is used internally as a fallback.
@@ -337,6 +338,7 @@ router.get("/workers", async (req, res) => {
       return {
         ...w,
         role: effectiveRole,
+        canReceivePackingOrder: canReceivePackingOrder(w),
       };
     });
 

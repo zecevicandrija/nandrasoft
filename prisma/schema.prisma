@@ -695,6 +695,7 @@ enum OrderType {
   RAD_NJIVA       // Rad na parceli (oranje, prskanje, setva...)
   REMONT_SERVIS   // Radionica, remont, popravka, zamena ulja
   OSTALO          // Magacinski rad, manipulacija robom, transport
+  PAKOVANJE
 }
 
 enum OrderStatus {
@@ -706,6 +707,7 @@ enum OrderStatus {
 }
 
 model WorkOrder {
+  packingPlan     Json?
   materials       WorkMaterial[]
   contractorId String?
   contractor   Contractor? @relation(fields: [contractorId], references: [id], onDelete: Restrict)

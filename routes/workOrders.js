@@ -1,3 +1,4 @@
+import { requirePackingWorker, validatePackingOrder } from "../lib/packingWorkOrders.js";
 import { materialsInclude, prepareMaterials } from "../lib/workMaterials.js";
 import { createWorkOrderSchema, orderStatusEnum, createWorkOrderRecord, REMONT_PRIORITY_MAP } from "../lib/workOrderCreate.js";
 import { assertOrderTransition, assertGenericOrderEdit } from "../lib/workOrderStatusService.js";
@@ -20,7 +21,7 @@ router.use(requireAuth);
 router.use(requireWorkerIdentity);
 
 const ORDER_STATUSES = ["PLANIRAN", "DODELJEN", "U_TOKU", "ZAVRSEN", "OTKAZAN"];
-const ORDER_TYPES = ["RAD_NJIVA", "REMONT_SERVIS", "OSTALO"];
+const ORDER_TYPES = ["RAD_NJIVA", "REMONT_SERVIS", "PAKOVANJE", "OSTALO"];
 const ACTIVE_ORDER_STATUSES = ["PLANIRAN", "DODELJEN", "U_TOKU"];
 
 const orderRelationSelect = {
@@ -342,6 +343,7 @@ router.post("/:id/accept", machineMutation(async (req, res, prisma) => {
     if (!["PLANIRAN", "DODELJEN"].includes(order.status)) {
       return res.status(400).json({ error: `Nalog je već u statusu ${order.status}.` });
     }
+    if (order.orderType === "PAKOVANJE") return res.status(409).json({ error: "Prihvatite nalog u magacinu." });
     assertOrderTransition(order, "U_TOKU", "accept");
 
     const { startFuelLiters, startHours, notes } = parsed.data;
@@ -349,7 +351,7 @@ router.post("/:id/accept", machineMutation(async (req, res, prisma) => {
     // Workshop acceptance never creates an operator checkout or changes fuel/hours.
     if (order.orderType === "REMONT_SERVIS") {
       if (!order.machineId || !order.maintenanceId) {
-        return res.status(409).json({ error: "Servisni nalog nema povezanu mašinu i zapis servisa. Otvorite nalog u radionici." });
+        return res.status(409).json({ error: "Servisni nalog nema povezanu mašinu i zapis servisa. Potrebna je dopuna starih naloga ili izmena naloga." });
       }
       const issue = await prisma.maintenanceIssue.findUnique({ where: { id: order.maintenanceId } });
       if (!issue || !["OTVOREN", "U_RADU", "CEKA_DELOVE"].includes(issue.status)) {
@@ -547,6 +549,9 @@ router.patch("/:id/status", machineMutation(async (req, res, prisma) => {
     }
 
     // Samo rukovodilac/direktor može otkazati ili ponovo aktivirati nalog
+    if (order.orderType === "PAKOVANJE" && (order.status === "ZAVRSEN" || order.packingPlan?.cancelledAfterReversal)) {
+      return res.status(409).json({ error: "Za završen nalog poništite potvrdu u magacinu. Za otkazan storno nalog izdajte novi nalog." });
+    }
     {
       const operation = status === "OTKAZAN" ? "cancel" : order.status === "OTKAZAN" ? "reactivate" : "generic";
       assertOrderTransition(order, status, operation);
@@ -720,6 +725,36 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
       }
     }
     const dataToUpdate = {};
+    let expectedOrderUpdatedAt;
+    if (existing.orderType === "PAKOVANJE" || parsed.data.orderType === "PAKOVANJE") {
+      if ((parsed.data.orderType && parsed.data.orderType !== existing.orderType) || !["PLANIRAN", "DODELJEN"].includes(existing.status)) {
+        return res.status(409).json({ error: "Možete izmeniti samo otvoren nalog za pakovanje i zadržati njegov tip." });
+      }
+      const rawOrderUpdatedAt = req.body.orderUpdatedAt ?? req.body.updatedAt;
+      const hasValidOrderUpdatedAt =
+        (typeof rawOrderUpdatedAt === "string" && z.iso.datetime().safeParse(rawOrderUpdatedAt).success) ||
+        (rawOrderUpdatedAt instanceof Date && !Number.isNaN(rawOrderUpdatedAt.getTime()));
+      expectedOrderUpdatedAt = hasValidOrderUpdatedAt ? new Date(rawOrderUpdatedAt) : null;
+      const currentOrderUpdatedAt = existing.updatedAt ? new Date(existing.updatedAt).getTime() : NaN;
+      if (!expectedOrderUpdatedAt || expectedOrderUpdatedAt.getTime() !== currentOrderUpdatedAt) {
+        return res.status(409).json({
+          error: "Plan pakovanja je u međuvremenu izmenjen. Učitajte aktuelni plan i pokušajte ponovo.",
+          workOrder: existing,
+        });
+      }
+      if (parsed.data.workerId !== undefined) {
+        requirePackingWorker(await prisma.worker.findUnique({
+          where: { id: parsed.data.workerId },
+          include: { user: { select: { role: true, isActive: true } } },
+        }));
+      }
+      if (parsed.data.packingPlan) {
+        await validatePackingOrder(prisma, parsed.data);
+        dataToUpdate.packingPlan = parsed.data.packingPlan;
+        parsed.data.orderDate = parsed.data.packingPlan.packagingForm.date;
+      }
+      dataToUpdate.updatedAt = new Date(Math.max(Date.now(), expectedOrderUpdatedAt.getTime() + 1));
+    }
     if ((parsed.data.orderType ?? existing.orderType) !== "RAD_NJIVA") dataToUpdate.contractorId = null;
     else if (parsed.data.contractorId !== undefined) {
       await validateContractor(prisma, parsed.data.contractorId);
@@ -772,7 +807,7 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
     }
 
     const updated = await prisma.workOrder.update({
-      where: { id },
+      where: { id, ...(existing.orderType === "PAKOVANJE" && { updatedAt: expectedOrderUpdatedAt }) },
       data: dataToUpdate,
       include: {
         worker: true,
@@ -813,6 +848,9 @@ router.put("/:id", requireManager, machineMutation(async (req, res, prisma) => {
 
     res.json({ workOrder: updated });
   } catch (error) {
+    if (error.code === "P2025") {
+      return res.status(409).json({ error: "Plan pakovanja je u međuvremenu izmenjen. Učitajte aktuelni plan i pokušajte ponovo." });
+    }
     if (error.status) return res.status(error.status).json({ error: error.message });
     console.error("Greška pri izmeni radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
@@ -838,6 +876,9 @@ router.delete("/:id", requireManager, machineMutation(async (req, res, prisma) =
     }
 
     // 1. Ako postoji povezivanje sa zaduženjem mašine, razdužujemo/otkačinjemo nalog
+    if (existing.orderType === "PAKOVANJE" && (existing.status === "ZAVRSEN" || existing.packingPlan?.cancelledAfterReversal)) {
+      return res.status(409).json({ error: "Nalog sa istorijom knjiženja ne može se obrisati. Za završeni nalog koristite Poništi potvrdu u magacinu." });
+    }
     if (existing.fieldWorkId || await prisma.machineAssignment.findFirst({ where: { workOrderId: existing.id } })) {
       return res.status(409).json({ error: "Nalog sa istorijom rada ili zaduženja ne može se trajno obrisati. Koristite otkazivanje ili korekciju." });
     }
@@ -851,7 +892,7 @@ router.delete("/:id", requireManager, machineMutation(async (req, res, prisma) =
 
     // 2. Trajno brisanje naloga (i povezanog nezavršenog servisnog zapisa ako postoji)
     await prisma.workOrder.delete({
-      where: { id: req.params.id },
+      where: { id: req.params.id, ...(existing.orderType === "PAKOVANJE" && { updatedAt: existing.updatedAt }) },
     });
 
     if (existing.maintenanceId) {
