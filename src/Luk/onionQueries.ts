@@ -1,8 +1,19 @@
 import type { QueryClient } from '@tanstack/react-query';
 
-export type TabKey = 'dovoz' | 'skladiste' | 'pakovanje' | 'isporuka' | 'otpis' | 'sledljivost';
+export type TabKey = 'nalozi' | 'dovoz' | 'skladiste' | 'pakovanje' | 'isporuka' | 'otpis' | 'sledljivost';
+
+export const ONION_TABS: readonly TabKey[] = [
+  'nalozi',
+  'dovoz',
+  'skladiste',
+  'pakovanje',
+  'isporuka',
+  'otpis',
+  'sledljivost',
+];
 
 const tabQueries: Record<TabKey, readonly string[]> = {
+  nalozi: ['onion-orders'],
   dovoz: ['onion-harvest', 'onion-lots'],
   skladiste: ['onion-storage'],
   pakovanje: ['onion-packaging'],
@@ -11,8 +22,27 @@ const tabQueries: Record<TabKey, readonly string[]> = {
   sledljivost: ['onion-traceability'],
 };
 
+export function parseOnionTab(value: string | null | undefined): TabKey {
+  return ONION_TABS.includes(value as TabKey) ? (value as TabKey) : 'nalozi';
+}
+
 export function onionQueryEnabled(family: string, tab: TabKey) {
   return tabQueries[tab].includes(family);
+}
+
+export function onionTabRequiresSharedData(tab: TabKey) {
+  return tab !== 'nalozi';
+}
+
+export function onionSharedQueryEnabled(
+  family: 'onion-lookup' | 'onion-dashboard',
+  tab: TabKey,
+  needsExecutionLookup = false
+) {
+  if (tab === 'nalozi') {
+    return family === 'onion-lookup' ? needsExecutionLookup : false;
+  }
+  return true;
 }
 
 const stockQueries = ['onion-lookup', 'onion-dashboard', 'onion-lots', 'onion-traceability'];
@@ -41,7 +71,10 @@ export function invalidateOnionMutation(client: QueryClient, mutation: keyof typ
 }
 
 export function refreshOnionTab(client: QueryClient, tab: TabKey) {
-  return Promise.all(['onion-lookup', 'onion-dashboard', ...tabQueries[tab]].map((family) =>
+  const families = tab === 'nalozi'
+    ? [...tabQueries[tab]]
+    : ['onion-lookup', 'onion-dashboard', ...tabQueries[tab]];
+  return Promise.all(families.map((family) =>
     client.invalidateQueries({ queryKey: [family] })
   ));
 }

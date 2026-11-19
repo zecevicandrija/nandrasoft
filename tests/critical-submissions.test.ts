@@ -7,6 +7,10 @@ const memory = (): SubmissionStorage => {
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: key => { values.delete(key); } };
 };
 const cases = [
+  ['fertilizer-receive', '/api/fertilizer/receive', { productId: 'product', quantity: 20, receiptNumber: 'INV-1' }],
+  ['fuel-supply', '/api/fuel/supplies', { liters: 500, pricePerLiter: 185, receiptNumber: 'INV-1' }],
+  ['onion-harvest', '/api/onion/harvest', { existingLotId: 'lot', parcelId: 'parcel', quantityKg: 1100 }],
+  ['onion-packaging', '/api/onion/packaging', { lotId: 'lot', packageCount: 5, unitWeightKg: 10 }],
   ['onion-shipment', '/api/onion/shipment', { packagingId: 'pack', buyerId: 'buyer', packageCount: 10, date: '2026-11-01' }],
   ['fertilizer-issue', '/api/fertilizer/issue', { productId: 'product', quantity: 250, movementType: 'IZDAVANJE_NJIVA', parcelId: 'parcel', receivedWorkerId: 'worker' }],
   ['toll-entry', '/api/tolls', { machineId: 'truck', amount: 1200, paymentMethod: 'ENP_TAG' }],

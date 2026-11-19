@@ -1,6 +1,8 @@
+import type { PackingPlan } from '../../Luk/PackingFields';
 import type { MaterialKind, WorkMaterial } from '../../lib/workMaterials';
 
 export type Named = {
+  canReceivePackingOrder?: boolean;
   id: string;
   name: string;
   type?: string;
@@ -20,6 +22,7 @@ export type ProposalMaterialPayload = {
 };
 
 export type ProposalLabels = {
+  lotNumber?: string;
   workerId?: string;
   machineId?: string;
   attachmentId?: string;
@@ -32,6 +35,7 @@ export type ProposalLabels = {
 
 export type ProposalData = {
   title: string;
+  packingPlan?: PackingPlan;
   orderDate: string;
   orderType: string;
   serviceType?: string | null;
@@ -225,6 +229,7 @@ export const actionLabels: Record<string, string> = {
 };
 
 export const orderTypeLabels: Record<string, string> = {
+  PAKOVANJE: 'Pakovanje',
   RAD_NJIVA: 'Rad na njivi',
   REMONT_SERVIS: 'Remont / servis',
   OSTALO: 'Ostalo',

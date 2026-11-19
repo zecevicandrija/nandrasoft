@@ -93,6 +93,12 @@ const SERVICE_TYPE_OPTIONS: CustomSelectOption[] = [
   { value: 'KVAR_NJIVA', label: 'Vanredni kvar sa terena/njive', badge: 'KVAR', badgeType: 'danger' },
 ];
 
+const SERVICE_TYPE_LABELS: Record<string, string> = {
+  REDOVAN_SERVIS: 'Redovan servis (zamena ulja/filtera)',
+  GENERALNI_REMONT: 'Generalni remont mehanizacije',
+  KVAR_NJIVA: 'Vanredni kvar sa terena/njive',
+};
+
 const toLubricantSelectOption = (opt: string): CustomSelectOption => ({
   value: opt,
   label: opt,
@@ -544,6 +550,7 @@ const RadionicaKvarovi: React.FC = () => {
         setIsRemontModalOpen(false);
         setRemontInstructions('');
         setRemontPhoto(null);
+        setActiveTab('nalozi');
         refreshStats();
         refreshIssues(1);
         refreshRemontOrders(1);
@@ -1287,9 +1294,11 @@ const RadionicaKvarovi: React.FC = () => {
                       </div>
 
                       <div className={styles.cardBody}>
-                        <div className={styles.issueTitle}>Instrukcije rukovodioca:</div>
+                        <div className={styles.issueTitle}>
+                          {order.maintenance?.title || 'Instrukcije rukovodioca:'}
+                        </div>
                         <div className={styles.issueDesc}>
-                          {order.instructions || 'Redovan periodični servis i kontrola ispravnosti.'}
+                          {order.maintenance?.description || order.instructions || 'Redovan periodični servis i kontrola ispravnosti.'}
                           <PhotoAttachment url={order.photoUrl} label="Fotografija uz nalog" />
                         </div>
 
@@ -1298,6 +1307,15 @@ const RadionicaKvarovi: React.FC = () => {
                             <User size={14} />
                             <span>Izdao nalog: {order.issuedBy?.name || 'Rukovodilac'}</span>
                           </div>
+                          {order.maintenance?.serviceType && (
+                            <div className={styles.reporterItem}>
+                              <Wrench size={14} />
+                              <span>
+                                Tip servisa:{' '}
+                                {SERVICE_TYPE_LABELS[order.maintenance.serviceType] || order.maintenance.serviceType}
+                              </span>
+                            </div>
+                          )}
                           {order.maintenance && (
                             <div className={styles.reporterItem}>
                               <AlertCircle size={14} />
@@ -1323,14 +1341,19 @@ const RadionicaKvarovi: React.FC = () => {
                         </div>
 
                         <div className={styles.actionButtons}>
-                          {!isDone && (
+                          {!isDone && !order.maintenance && (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                              Stari nalog bez povezanog servisa — potrebna dopuna naloga
+                            </span>
+                          )}
+
+                          {!isDone && order.maintenance && (
                             <>
-                              {(!order.maintenance || order.maintenance.status === 'OTVOREN') && (
+                              {order.maintenance.status === 'OTVOREN' && (
                                 <>
                                   <button
                                     className={styles.btnActionTake}
                                     onClick={() =>
-                                      order.maintenance &&
                                       handleUpdateStatus(order.maintenance.id, 'U_RADU')
                                     }
                                   >
@@ -1340,7 +1363,6 @@ const RadionicaKvarovi: React.FC = () => {
                                   <button
                                     className={styles.btnActionWait}
                                     onClick={() =>
-                                      order.maintenance &&
                                       handleUpdateStatus(order.maintenance.id, 'CEKA_DELOVE')
                                     }
                                   >
@@ -1349,7 +1371,7 @@ const RadionicaKvarovi: React.FC = () => {
                                   </button>
                                   <button
                                     className={styles.btnActionResolve}
-                                    onClick={() => handleOpenResolveModal(order.maintenance || order)}
+                                    onClick={() => handleOpenResolveModal(order.maintenance)}
                                   >
                                     <CheckCircle2 size={14} />
                                     <span>Završi remont i oslobodi mašinu</span>

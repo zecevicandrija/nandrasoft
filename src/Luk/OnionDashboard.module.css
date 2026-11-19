@@ -524,6 +524,15 @@
   border-radius: 11px;
 }
 
+@media (any-hover: hover) and (any-pointer: fine) {
+  .packagingScroller :is(td, th) { cursor: grab; }
+  .packagingScroller[data-dragging] {
+    cursor: grabbing;
+    user-select: none;
+  }
+  .packagingScroller[data-dragging] * { cursor: grabbing; }
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -1555,6 +1564,72 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0.65rem;
+}
+
+.reversalCard { max-width: 520px; }
+
+.orderActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.reversalDescription {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text-secondary, var(--text-primary));
+}
+
+.reversalOutcomes {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.reversalOutcomes legend {
+  margin-bottom: 0.4rem;
+  padding: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.reversalChoices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.reversalChoices label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 46px;
+  padding: 0.55rem 0.8rem;
+  box-sizing: border-box;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.reversalChoices input { margin: 0; accent-color: #15803d; }
+.reversalChoices label:has(:checked) {
+  border-color: #16a34a;
+  background: rgba(22, 163, 74, 0.08);
+  font-weight: 600;
+}
+.reversalChoices label:focus-within { outline: 2px solid #16a34a; outline-offset: 2px; }
+.reversalCard textarea { font-family: inherit; }
+
+@media (max-width: 480px) {
+  .reversalChoices { grid-template-columns: 1fr; }
+  .reversalCard .modalFooter { flex-wrap: wrap; }
+  .reversalCard .modalFooter button { flex: 1 1 auto; justify-content: center; }
 }
 
 .entryModal {

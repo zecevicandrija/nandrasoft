@@ -1,3 +1,4 @@
+import { entryModeOptions, packageTypeOptions, sortingFields } from '../../Luk/PackingFields';
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -32,6 +33,7 @@ import {
   Sprout,
   ThumbsUp,
   Tractor,
+  Trash2,
   User,
   UserCheck,
   Users,
@@ -165,6 +167,7 @@ function actionBadgeClass(action: string): string {
 
 const ProposalSummary = memo(function ProposalSummary({ data }: { data: ProposalData }) {
   const isRemont = data.orderType === 'REMONT_SERVIS';
+  const plan = data.packingPlan;
   const tiles = isRemont
     ? [
         {
@@ -224,6 +227,21 @@ const ProposalSummary = memo(function ProposalSummary({ data }: { data: Proposal
           value: data.labels?.workerId || 'Nije određeno',
           icon: <User size={13} />,
         },
+        ...(plan ? [
+          ...(plan.packagingForm.sourceName ? [{ key: 'chamber', label: 'Komora', value: plan.packagingForm.sourceName, icon: <Layers size={13} /> }] : []),
+          { key: 'lot', label: 'LOT', value: data.labels?.lotNumber || plan.packagingForm.lotId, icon: <Layers size={13} /> },
+          { key: 'mode', label: 'Vrsta unosa', value: entryModeOptions.find(item => item.value === plan.entryMode)?.label, icon: <ClipboardList size={13} /> },
+          ...(plan.entryMode === 'packaging' ? [] : sortingFields.map(([key, label]) => ({
+            key, label, value: `${Number(plan.sortingForm[key]).toLocaleString('sr-RS')} kg`, icon: <Layers size={13} />,
+          }))),
+          ...(plan.entryMode === 'sorting' ? [] : [
+            ['Pakovanje', packageTypeOptions.find(item => item.value === plan.packagingForm.packageType)?.label || plan.packagingForm.packageType],
+            ['Broj i masa pakovanja', `${plan.packagingForm.packageCount} × ${plan.packagingForm.unitWeightKg} kg`],
+            ['Broj paleta', plan.packagingForm.palletsCount], ['Oznaka palete', plan.packagingForm.palletNumber],
+            ['Broj pakera', plan.packagingForm.packerCount], ['Zaduženo lice', plan.packagingForm.responsiblePerson],
+            ['Napomena za pakericu', plan.packagingForm.packerNotes], ['Napomena', plan.packagingForm.notes],
+          ].filter(([, value]) => value).map(([label, value]) => ({ key: label, label, value, icon: <ClipboardList size={13} /> }))),
+        ] : [
         {
           key: 'machineId',
           label: 'Mašina',
@@ -264,6 +282,7 @@ const ProposalSummary = memo(function ProposalSummary({ data }: { data: Proposal
           value: data.plannedAreaHa ? `${data.plannedAreaHa.toLocaleString('sr-RS')} ha` : 'Nije određena',
           icon: <Ruler size={13} />,
         },
+        ]),
       ];
 
   const structuredMaterialsText = data.labels?.workMaterials?.length
@@ -285,7 +304,7 @@ const ProposalSummary = memo(function ProposalSummary({ data }: { data: Proposal
         ))}
       </div>
 
-      {!isRemont && (
+      {!isRemont && !plan && (
         <div className={styles.textBoxBlock}>
           <span className={styles.textBoxLabel}>Materijali i količine</span>
           <p className={styles.textBoxBody}>{combinedMaterials || 'Nisu navedeni'}</p>
@@ -1292,6 +1311,7 @@ const PROPOSAL_ORDER_TYPE_FILTER_OPTIONS: CustomSelectOption[] = [
   { value: '', label: 'Svi tipovi rada' },
   { value: 'RAD_NJIVA', label: 'Rad na njivi' },
   { value: 'REMONT_SERVIS', label: 'Remont / servis' },
+  { value: 'PAKOVANJE', label: 'Pakovanje' },
 ];
 
 export default function Komunikacija() {
@@ -1311,6 +1331,29 @@ type MutationVars = {
   onSuccessCache?: (result: unknown) => void;
   onConflict?: () => void;
 };
+
+function DeleteProposalAction({ proposal, busy, onDelete }: {
+  proposal: Proposal;
+  busy: boolean;
+  onDelete: (proposal: Proposal) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  if (proposal.workOrderId || proposal.convertedAt || proposal.convertedOrderNumber) return null;
+  if (confirming) return (
+    <div className={styles.confirmCancelBox} role="group" aria-label="Potvrda brisanja predloga">
+      <span>Trajno obrisati predlog „{proposal.data.title}” i njegovu istoriju?</span>
+      <div className={styles.detailActions}>
+        <button type="button" className={styles.btnSecondary} disabled={busy} onClick={() => setConfirming(false)}>Odustani</button>
+        <button type="button" className={styles.btnDanger} disabled={busy} onClick={() => onDelete(proposal)}>Potvrdi brisanje</button>
+      </div>
+    </div>
+  );
+  return (
+    <button type="button" className={styles.btnDanger} disabled={busy} onClick={() => setConfirming(true)}>
+      <Trash2 size={15} /> Obriši predlog
+    </button>
+  );
+}
 
 function CommunicationContent() {
   const { data: session } = useSession();
@@ -1660,6 +1703,30 @@ function CommunicationContent() {
     [client, userId]
   );
 
+  const deleteProposal = (target: Proposal) => {
+    run({
+      path: `/proposals/${target.id}`,
+      method: 'DELETE',
+      body: { version: target.version },
+      onConflict: () => invalidateProposalCluster(target.id),
+      onSuccessCache: () => {
+        client.removeQueries({ queryKey: commKeys.proposal(userId, target.id) });
+        client.removeQueries({ queryKey: commKeys.proposalEvents(userId, target.id) });
+        for (const key of [commKeys.proposals(userId), commKeys.approvedProposals(userId),
+          commKeys.notices(userId), commKeys.messages(userId), ['communication', userId, 'message']]) {
+          void client.invalidateQueries({ queryKey: key });
+        }
+      },
+    }, () => {
+      setParams(current => {
+        if (current.get('predlog') !== target.id) return current;
+        const next = new URLSearchParams(current);
+        next.delete('predlog');
+        return next;
+      }, { replace: true });
+    }, 'Predlog je obrisan.');
+  };
+
   const executeConvertProposal = useCallback(
     async (
       target: Proposal,
@@ -1682,6 +1749,7 @@ function CommunicationContent() {
         void client.invalidateQueries({ queryKey: commKeys.notices(userId) });
         void client.invalidateQueries({ queryKey: commKeys.overview(userId) });
         void client.invalidateQueries({ queryKey: ['operational'] });
+        if (target.data.orderType === 'PAKOVANJE') void client.invalidateQueries({ queryKey: ['onion-orders'] });
         setConvertingProposal(null);
         showToast(`Radni nalog #${result.workOrder.orderNumber} je uspešno kreiran.`, 'success');
       } catch (err) {
@@ -1713,7 +1781,9 @@ function CommunicationContent() {
         item.data.orderType === 'RAD_NJIVA' &&
         !hasProposalMaterials &&
         (catalogMissingForOperation || Boolean(workType?.materialRequired));
-      if (forceModal || !item.data.workerId || needsMaterialPicker) {
+      const needsPackingWorker = item.data.orderType === 'PAKOVANJE' &&
+        !catalog.data?.workers.some(worker => worker.id === item.data.workerId && worker.canReceivePackingOrder);
+      if (forceModal || !item.data.workerId || needsMaterialPicker || needsPackingWorker) {
         setConvertError(null);
         setConvertingProposal(item);
         return;
@@ -1947,7 +2017,9 @@ function CommunicationContent() {
           item.data.orderType === 'RAD_NJIVA' &&
           !hasProposalMaterials &&
           Boolean(workType?.materialRequired);
-        if (item.data.workerId && !needsMat) readyDirect++;
+        const workerEligible = item.data.orderType !== 'PAKOVANJE' ||
+          catalog.data?.workers.some(worker => worker.id === item.data.workerId && worker.canReceivePackingOrder);
+        if (item.data.workerId && workerEligible && !needsMat) readyDirect++;
       }
     }
     return {
@@ -1956,7 +2028,7 @@ function CommunicationContent() {
       converted,
       readyDirect,
     };
-  }, [approvedProposals.data, catalog.data?.workTypes, pendingApprovedCount]);
+  }, [approvedProposals.data, catalog.data, pendingApprovedCount]);
 
   const proposalPageStats = useMemo(() => {
     const list = proposals.data?.items || [];
@@ -2570,12 +2642,12 @@ function CommunicationContent() {
                         <span>{item.authorName}</span>
                         <span>·</span>
                         <span>{formatDateShort(item.data.orderDate)}</span>
-                        {(item.data.labels?.parcelId ||
+                        {(item.data.labels?.lotNumber || item.data.labels?.parcelId ||
                           (item.data.orderType === 'REMONT_SERVIS' && item.data.labels?.machineId)) && (
                           <>
                             <span>·</span>
                             <span>
-                              {item.data.labels?.parcelId || item.data.labels?.machineId}
+                              {item.data.labels?.lotNumber || item.data.labels?.parcelId || item.data.labels?.machineId}
                             </span>
                           </>
                         )}
@@ -2688,9 +2760,9 @@ function CommunicationContent() {
                         </div>
                       </div>
 
-                      {current.status !== 'OTKAZAN' && !current.workOrderId && !editing && (
+                      {!current.workOrderId && !editing && (
                         <div className={styles.detailActions}>
-                          <button
+                          {current.status !== 'OTKAZAN' && <button
                             type="button"
                             className={styles.btnSecondary}
                             disabled={mutation.isPending}
@@ -2701,9 +2773,9 @@ function CommunicationContent() {
                           >
                             <Pencil size={15} />
                             <span>Izmeni predlog</span>
-                          </button>
+                          </button>}
 
-                          {userId === current.authorId && !confirmCancel && (
+                          {current.status !== 'OTKAZAN' && userId === current.authorId && !confirmCancel && (
                             <button
                               type="button"
                               className={styles.btnDanger}
@@ -2714,6 +2786,8 @@ function CommunicationContent() {
                               <span>Povuci predlog</span>
                             </button>
                           )}
+                          <DeleteProposalAction key={`${current.id}-${current.version}`} proposal={current}
+                            busy={mutation.isPending || convertSaving} onDelete={deleteProposal} />
                         </div>
                       )}
                     </div>
@@ -3182,6 +3256,8 @@ function CommunicationContent() {
                             <Pencil size={15} />
                             <span>Dopuni i pretvori</span>
                           </button>
+                          <DeleteProposalAction key={`${item.id}-${item.version}`} proposal={item}
+                            busy={mutation.isPending || convertSaving} onDelete={deleteProposal} />
                         </>
                       )}
 

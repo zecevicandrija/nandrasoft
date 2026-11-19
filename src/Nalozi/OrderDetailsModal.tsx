@@ -7,6 +7,7 @@ import {
   Clock,
   User,
   Tractor,
+  Package,
   Wrench,
   MapPin,
   Handshake,
@@ -22,6 +23,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { materialLabels, materialUnits } from '../lib/workMaterials';
+import { PackingExecution, entryModeOptions, packageTypeOptions, sortingFields } from '../Luk/PackingFields';
 import { SERVICE_TYPE_LABELS, type WorkOrder } from './RadniNaloziDashboard';
 import styles from './OrderDetailsModal.module.css';
 
@@ -30,6 +32,7 @@ interface OrderDetailsModalProps {
   onClose: () => void;
   onEdit?: (order: WorkOrder) => void;
   canEdit?: boolean;
+  plannedLotNumber?: string;
 }
 
 const materialDoseFormatter = new Intl.NumberFormat('sr-Latn-RS', { maximumFractionDigits: 12 });
@@ -50,6 +53,7 @@ const statusLabels: Record<string, string> = {
 
 const typeLabels: Record<string, string> = {
   RAD_NJIVA: 'Rad na njivi',
+  PAKOVANJE: 'Pakovanje',
   REMONT_SERVIS: 'Remont / Servis',
   OSTALO: 'Ostalo',
 };
@@ -59,6 +63,7 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onClose,
   onEdit,
   canEdit = false,
+  plannedLotNumber,
 }) => {
   const [lightboxImage, setLightboxImage] = useState<{ url: string; label: string } | null>(null);
 
@@ -107,6 +112,25 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   };
 
   const isRemont = order.orderType === 'REMONT_SERVIS';
+  const plan = order.packingPlan;
+  const packingRows = plan ? [
+    ['Planirani LOT', plan.execution?.plannedLotNumber || plannedLotNumber || plan.packagingForm.lotId],
+    ['Komora', plan.packagingForm.sourceName],
+    ['Vrsta rada', entryModeOptions.find(option => option.value === plan.entryMode)?.label],
+    ['Prioritet', ({ NORMALNO: 'Normalno', HITNO: 'Hitno', KRITICNO: 'Kritično' } as Record<string, string>)[order.priority] || order.priority],
+    ['Poslednja izmena', formatDateTime(order.updatedAt)],
+    ...(plan.entryMode === 'packaging' ? [] : sortingFields.map(([key, label]) => [
+      label, plan.sortingForm[key] && `${Number(plan.sortingForm[key]).toLocaleString('sr-RS')} kg`,
+    ])),
+    ...(plan.entryMode === 'sorting' ? [] : [
+      ['Vrsta pakovanja', packageTypeOptions.find(option => option.value === plan.packagingForm.packageType)?.label || plan.packagingForm.packageType],
+      ['Broj pakovanja', plan.packagingForm.packageCount], ['Masa po pakovanju', plan.packagingForm.unitWeightKg && `${plan.packagingForm.unitWeightKg} kg`],
+      ['Broj paleta', plan.packagingForm.palletsCount], ['Oznaka palete', plan.packagingForm.palletNumber],
+      ['Broj pakera', plan.packagingForm.packerCount], ['Zaduženo lice', plan.packagingForm.responsiblePerson],
+      ['Napomena za pakericu', plan.packagingForm.packerNotes],
+    ]),
+    ['Napomena', plan.packagingForm.notes],
+  ].filter(([, value]) => value) : [];
   const hasOrderPhoto = Boolean(order.photoUrl);
   const hasFieldWorkPhoto = Boolean(order.fieldWork?.photoUrl);
   const totalPhotos = (hasOrderPhoto ? 1 : 0) + (hasFieldWorkPhoto ? 1 : 0);
@@ -159,7 +183,7 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
               {/* Type */}
               <span className={styles.metaPill}>
-                {isRemont ? <Wrench size={13} /> : <Tractor size={13} />}
+                {plan ? <Package size={13} /> : isRemont ? <Wrench size={13} /> : <Tractor size={13} />}
                 <span>{typeLabels[order.orderType] || order.orderType}</span>
               </span>
 
@@ -177,6 +201,14 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
 
             {/* FOTOGRAFIJE SEKCIJA */}
+            {plan && <section className={styles.section}>
+              <div className={styles.sectionHeader}><h4 className={styles.sectionTitle}><Package size={18} />Plan pakovanja</h4></div>
+              <div className={styles.infoGrid}>
+                {packingRows.map(([label, value]) => <div key={label} className={styles.infoCard}>
+                  <div className={styles.infoContent}><span className={styles.infoLabel}>{label}</span><span className={styles.infoValue}>{value}</span></div>
+                </div>)}
+              </div>
+            </section>}
             <div className={styles.section}>
               <div className={styles.sectionHeader}>
                 <h4 className={styles.sectionTitle}>
@@ -307,6 +339,7 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
               <div className={styles.infoGrid}>
                 {/* Radnik */}
+                {order.packingPlan?.execution && <div className={styles.infoCard}><PackingExecution plan={order.packingPlan} /></div>}
                 <div className={styles.infoCard}>
                   <div className={styles.infoIconWrapper}>
                     <User size={18} />

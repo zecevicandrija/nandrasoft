@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import SubmissionRecovery from '../components/SubmissionRecovery';
+import { useDurableSubmission } from '../lib/useDurableSubmission';
+import React, { useRef, useState } from 'react';
 import {
   X,
   Truck,
@@ -16,6 +18,7 @@ interface Partner {
 }
 
 interface PrijemCisterneModalProps {
+  userId?: string;
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
@@ -24,9 +27,10 @@ interface PrijemCisterneModalProps {
   tankCapacity: number;
 }
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
+  userId,
   isOpen,
   onClose,
   onSuccess,
@@ -48,6 +52,9 @@ export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const supplyDraft = useDurableSubmission('fuel-supply', userId, {}, () => {});
+  const supplyDraftSending = useRef(false);
+
   if (!isOpen) return null;
 
   const parsedLiters = Number(liters) || 0;
@@ -57,52 +64,46 @@ export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
   const freeSpaceInTank = Math.max(0, tankCapacity - currentTankLiters);
   const willExceedTank = parsedLiters > freeSpaceInTank;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
+    if (supplyDraftSending.current || replay !== Boolean(supplyDraft.pending)) return;
     setError('');
 
-    if (!parsedLiters || parsedLiters <= 0) {
+    if (!replay && (!parsedLiters || parsedLiters <= 0)) {
       setError('Količina goriva mora biti veća od 0 litara.');
       return;
     }
-    if (!parsedPrice || parsedPrice <= 0) {
+    if (!replay && (!parsedPrice || parsedPrice <= 0)) {
       setError('Cena po litru mora biti veća od 0 dinara.');
       return;
     }
 
+    supplyDraftSending.current = true;
     setLoading(true);
 
     try {
       const selectedPartner = partners.find((p) => p.id === supplierId);
       const supplierName = selectedPartner ? selectedPartner.name : customSupplierName || 'Dobavljač goriva';
 
-      const res = await fetch(`${API}/fuel/supplies`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          liters: parsedLiters,
-          pricePerLiter: parsedPrice,
-          fuelType,
-          supplierId: supplierId || null,
-          supplierName,
-          receiptNumber: receiptNumber || null,
-          notes: notes || null,
-          date: date ? new Date(date).toISOString() : new Date().toISOString(),
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Neuspešan unos prijema goriva.');
-      }
-
+      const payload = supplyDraft.pending?.payload ?? {
+        liters: parsedLiters,
+        pricePerLiter: parsedPrice,
+        fuelType,
+        supplierId: supplierId || null,
+        supplierName,
+        receiptNumber: receiptNumber || null,
+        notes: notes || null,
+        date: date ? new Date(date).toISOString() : new Date().toISOString(),
+      };
+      await supplyDraft.request(`${API}/fuel/supplies`, payload);
+      supplyDraft.clear();
       onSuccess();
       onClose();
     } catch (err: any) {
       console.error('Greška pri prijemu cisterne:', err);
       setError(err.message || 'Greška na serveru pri unosu cisterne.');
     } finally {
+      supplyDraftSending.current = false;
       setLoading(false);
     }
   };
@@ -126,6 +127,8 @@ export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className={styles.modalForm}>
+                <SubmissionRecovery pending={!!supplyDraft.pending} busy={loading} error={supplyDraft.storageError}
+                  onRetry={() => void handleSubmit(undefined, true)} />
           {error && (
             <div className={styles.errorBanner}>
               <AlertTriangle size={18} />
@@ -311,7 +314,7 @@ export const PrijemCisterneModal: React.FC<PrijemCisterneModalProps> = ({
             <button
               type="submit"
               className={`${styles.submitBtn} ${styles.submitSupplyBtn}`}
-              disabled={loading}
+              disabled={loading || !!supplyDraft.pending}
             >
               {loading ? (
                 <>

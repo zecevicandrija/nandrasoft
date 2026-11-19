@@ -1,6 +1,12 @@
-import { fetchFuelEfficiency, fetchFuelExport, fuelFilterParams } from './fuelEfficiencyQueries';
+import { fetchFuelEfficiency, fuelFilterParams } from './fuelEfficiencyQueries';
 import { FuelEfficiency } from './FuelEfficiency';
 import { fuelOperationRows, fuelCriticalRows, fuelHeaders, criticalFuelHeaders } from './fuelEfficiencyReport';
+import {
+  AnalyticsExportError,
+  calculateExportOperatingCosts,
+  exportAnalyticsExcel,
+  loadPdfExportData,
+} from './analyticsExport';
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
@@ -173,6 +179,7 @@ export const AnalitikaDashboard: React.FC = () => {
   // Export loading stanja
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // Funkcija za promenu brzog perioda
   const handlePresetChange = (newPreset: PresetType) => {
@@ -477,11 +484,15 @@ export const AnalitikaDashboard: React.FC = () => {
   const handleExportPdf = async () => {
     try {
       setExportingPdf(true);
-      const overviewResult = await refetchOverview();
-      if (overviewResult.error) throw overviewResult.error;
-      const exportOverview = overviewResult.data;
-      const exportOperatingCosts = ['totalFuelCost', 'totalMaintenanceCost', 'totalTollCost', 'totalFertilizerCost', 'totalSeasonalWages']
-        .reduce((sum, key) => sum + (exportOverview?.[key] || 0), 0);
+      setExportError(null);
+      const { overview: exportOverview, machines: exportMachinesRes, workers: exportWorkersRes, fuelExport } =
+        await loadPdfExportData({
+          apiBase: API,
+          queryParams,
+          searchTerm,
+          fuelFilters,
+        });
+      const exportOperatingCosts = calculateExportOperatingCosts(exportOverview);
       const [{ jsPDF }, { autoTable }] = await Promise.all([
         import('jspdf'), import('jspdf-autotable'),
       ]);
@@ -490,16 +501,6 @@ export const AnalitikaDashboard: React.FC = () => {
 
       const periodText = dateFrom && dateTo ? `${dateFrom} do ${dateTo}` : 'Celokupan period';
       const generatedAt = new Date().toLocaleString('sr-RS');
-
-      // Povlačenje svih stavki sa servera za celovit PDF
-      const exportParams = new URLSearchParams(queryParams);
-      exportParams.set('all', 'true');
-      if (searchTerm.trim()) exportParams.set('search', searchTerm.trim());
-
-      const [exportMachinesRes, exportWorkersRes] = await Promise.all([
-        fetch(`${API}/analytics/machines?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
-        fetch(`${API}/analytics/workers?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
-      ]);
 
       // Zaglavlje
       doc.setFillColor(15, 23, 42);
@@ -520,13 +521,13 @@ export const AnalitikaDashboard: React.FC = () => {
 
       const kpiRows = [
         [
-          `Uradeno: ${(exportOverview?.totalHaDone || 0).toFixed(1)} ha (${exportOverview?.totalFieldWorks || 0} radova)`,
-          `Gorivo: ${(exportOverview?.totalFuelLiters || 0).toLocaleString('sr-RS')} L (${(exportOverview?.totalFuelCost || 0).toLocaleString('sr-RS')} RSD)`,
-          `Odrzavanje: ${(exportOverview?.totalMaintenanceCost || 0).toLocaleString('sr-RS')} RSD (Delovi: ${(exportOverview?.maintenancePartsCost || 0).toLocaleString('sr-RS')} RSD)`,
+          `Uradeno: ${(exportOverview.totalHaDone || 0).toFixed(1)} ha (${exportOverview.totalFieldWorks || 0} radova)`,
+          `Gorivo: ${(exportOverview.totalFuelLiters || 0).toLocaleString('sr-RS')} L (${(exportOverview.totalFuelCost || 0).toLocaleString('sr-RS')} RSD)`,
+          `Odrzavanje: ${(exportOverview.totalMaintenanceCost || 0).toLocaleString('sr-RS')} RSD (Delovi: ${(exportOverview.maintenancePartsCost || 0).toLocaleString('sr-RS')} RSD)`,
         ],
         [
-          `Putarine / ENP: ${(exportOverview?.totalTollCost || 0).toLocaleString('sr-RS')} RSD`,
-          `Sezonci: ${(exportOverview?.totalSeasonalHours || 0).toFixed(1)} h (${(exportOverview?.totalSeasonalWages || 0).toLocaleString('sr-RS')} RSD dnevnica)`,
+          `Putarine / ENP: ${(exportOverview.totalTollCost || 0).toLocaleString('sr-RS')} RSD`,
+          `Sezonci: ${(exportOverview.totalSeasonalHours || 0).toFixed(1)} h (${(exportOverview.totalSeasonalWages || 0).toLocaleString('sr-RS')} RSD dnevnica)`,
           `UKUPNI OPERATIVNI TROSKOVI: ${exportOperatingCosts.toLocaleString('sr-RS')} RSD`,
         ],
       ];
@@ -549,7 +550,7 @@ export const AnalitikaDashboard: React.FC = () => {
       doc.setTextColor(15, 23, 42);
       doc.text('2. ANALITIKA MEHANIZACIJE (RAD, POTROSNJA, POPRAVKE, TROSKOVI)', 14, lastY);
 
-      const machineTableRows = (exportMachinesRes?.machines || []).map((m: any, idx: number) => [
+      const machineTableRows = exportMachinesRes.machines.map((m, idx) => [
         idx + 1,
         m.machine.name,
         m.machine.type,
@@ -557,7 +558,7 @@ export const AnalitikaDashboard: React.FC = () => {
         `${(m.fieldWork.totalWorkHours || 0).toFixed(1)} h`,
         `${(m.fuel.totalLiters || 0).toLocaleString('sr-RS')} L`,
         `${(m.maintenance.totalCost || 0).toLocaleString('sr-RS')} RSD`,
-        `${m.maintenance.count} popravki (${(m.maintenance.downtimeHours || 0).toFixed(1)}h zastoja)`,
+        `${m.maintenance.count || 0} popravki (${(m.maintenance.downtimeHours || 0).toFixed(1)}h zastoja)`,
         `${(m.tolls.totalCost || 0).toLocaleString('sr-RS')} RSD`,
         `${(m.totalCostMachine || 0).toLocaleString('sr-RS')} RSD`,
       ]);
@@ -590,7 +591,7 @@ export const AnalitikaDashboard: React.FC = () => {
       doc.setTextColor(15, 23, 42);
       doc.text('3. ANALITIKA UCINKA RADNIKA', 14, 15);
 
-      const workerTableRows = (exportWorkersRes?.workers || []).map((w: any, idx: number) => {
+      const workerTableRows = exportWorkersRes.workers.map((w, idx) => {
         const eff =
           w.fieldWork.totalWorkHours && w.fieldWork.totalHa
             ? (w.fieldWork.totalHa / w.fieldWork.totalWorkHours).toFixed(2)
@@ -633,7 +634,6 @@ export const AnalitikaDashboard: React.FC = () => {
         styles: { fontSize: 7.5, cellPadding: 2, font: 'Roboto' },
       });
 
-      const fuelExport = await fetchFuelExport(fuelFilters);
       doc.addPage();
       doc.text('Efikasnost goriva i normativi', 14, 18);
       doc.setFontSize(9);
@@ -647,7 +647,11 @@ export const AnalitikaDashboard: React.FC = () => {
       doc.save(`Nandra_Direktorski_Izvestaj_${dateFrom || 'sve'}_${dateTo || 'sve'}.pdf`);
     } catch (err) {
       console.error('Greška pri izradi PDF izveštaja:', err);
-      alert('Došlo je do greške pri izradi PDF izveštaja.');
+      const message =
+        err instanceof AnalyticsExportError
+          ? err.message
+          : 'Došlo je do greške pri izradi PDF izveštaja.';
+      setExportError(message);
     } finally {
       setExportingPdf(false);
     }
@@ -659,183 +663,23 @@ export const AnalitikaDashboard: React.FC = () => {
   const handleExportExcel = async () => {
     try {
       setExportingExcel(true);
-      const overviewResult = await refetchOverview();
-      if (overviewResult.error) throw overviewResult.error;
-      const exportOverview = overviewResult.data;
-      const exportOperatingCosts = ['totalFuelCost', 'totalMaintenanceCost', 'totalTollCost', 'totalFertilizerCost', 'totalSeasonalWages']
-        .reduce((sum, key) => sum + (exportOverview?.[key] || 0), 0);
-      const XLSX = await import('xlsx');
-      const wb = XLSX.utils.book_new();
-
-      const exportParams = new URLSearchParams(queryParams);
-      exportParams.set('all', 'true');
-      if (searchTerm.trim()) exportParams.set('search', searchTerm.trim());
-
-      const [exportMachinesRes, exportWorkersRes, exportParcelsRes, exportFinancialRes, exportWorksRes] = await Promise.all([
-        fetch(`${API}/analytics/machines?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
-        fetch(`${API}/analytics/workers?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
-        fetch(`${API}/analytics/parcels?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
-        fetch(`${API}/analytics/financial?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
-        fetch(`${API}/analytics/works?${exportParams.toString()}`, { credentials: 'include' }).then((r) => r.json()),
-      ]);
-
-      // Sheet 1: Pregled
-      const overviewRows = [
-        { Metrika: 'Period izveštaja', Vrednost: `${dateFrom || 'Sve'} do ${dateTo || 'Sve'}` },
-        { Metrika: 'Ukupno urađeno hektara', Vrednost: exportOverview?.totalHaDone || 0 },
-        { Metrika: 'Ukupno završenih radova na njivi', Vrednost: exportOverview?.totalFieldWorks || 0 },
-        { Metrika: 'Ukupno utrošeno goriva (litara)', Vrednost: exportOverview?.totalFuelLiters || 0 },
-        { Metrika: 'Ukupan trošak goriva (RSD)', Vrednost: exportOverview?.totalFuelCost || 0 },
-        { Metrika: 'Uloženo u popravke i servis (RSD)', Vrednost: exportOverview?.totalMaintenanceCost || 0 },
-        { Metrika: 'Trošak rezervnih delova (RSD)', Vrednost: exportOverview?.maintenancePartsCost || 0 },
-        { Metrika: 'Trošak eksternog rada servisa (RSD)', Vrednost: exportOverview?.maintenanceLaborCost || 0 },
-        { Metrika: 'Troškovi putarina i ENP (RSD)', Vrednost: exportOverview?.totalTollCost || 0 },
-        { Metrika: 'Troškovi nabavke đubriva (RSD)', Vrednost: exportOverview?.totalFertilizerCost || 0 },
-        { Metrika: 'Sati rada sezonskih radnika', Vrednost: exportOverview?.totalSeasonalHours || 0 },
-        { Metrika: 'Isplaćene dnevnice sezonaca (RSD)', Vrednost: exportOverview?.totalSeasonalWages || 0 },
-        { Metrika: 'Otpremljeno luka (kg)', Vrednost: exportOverview?.onionShippedKg || 0 },
-        { Metrika: 'Fakturisana vrednost luka (RSD)', Vrednost: exportOverview?.onionShipmentValue || 0 },
-        { Metrika: 'UKUPNI OPERATIVNI TROŠKOVI (RSD)', Vrednost: exportOperatingCosts },
-      ];
-      const wsOverview = XLSX.utils.json_to_sheet(overviewRows);
-      XLSX.utils.book_append_sheet(wb, wsOverview, 'Pregled & KPI');
-
-      // Sheet 2: Mašine
-      const machineRows = (exportMachinesRes?.machines || []).map((m: any) => ({
-        'Naziv Mašine': m.machine.name,
-        Tip: m.machine.type,
-        'Model / Marka': m.machine.brandModel || '',
-        'Trenutni Radni Sati': m.machine.currentHours || 0,
-        Status: m.machine.status,
-        'Urađeno ha (period)': m.fieldWork.totalHa || 0,
-        'Radnih Sati na Njivi': m.fieldWork.totalWorkHours || 0,
-        'Utrošeno Goriva (L)': m.fuel.totalLiters || 0,
-        'Trošak Goriva (RSD)': m.fuel.totalCost || 0,
-        'Popravke Ukupno (RSD)': m.maintenance.totalCost || 0,
-        'Trošak Delova (RSD)': m.maintenance.partsCost || 0,
-        'Trošak Rada Servisa (RSD)': m.maintenance.laborCost || 0,
-        'Broj Kvarova': m.maintenance.count || 0,
-        'Sati Zastoja (Downtime)': Math.round((m.maintenance.downtimeHours || 0) * 10) / 10,
-        'Putarine (RSD)': m.tolls.totalCost || 0,
-        'UKUPAN TROŠAK MAŠINE (RSD)': m.totalCostMachine || 0,
-      }));
-      const wsMachines = XLSX.utils.json_to_sheet(machineRows);
-      XLSX.utils.book_append_sheet(wb, wsMachines, 'Mašine');
-
-      // Sheet 3: Radnici
-      const workerRows = (exportWorkersRes?.workers || []).map((w: any) => ({
-        'Ime Radnika': w.worker.name,
-        Uloga: w.worker.role || 'OPERATER',
-        Tip: w.worker.type || 'STALNI',
-        Telefon: w.worker.phone || '',
-        'Urađeno ha (period)': w.fieldWork.totalHa || 0,
-        'Radni Sati na Njivi': w.fieldWork.totalWorkHours || 0,
-        'Efikasnost (ha/h)':
-          w.fieldWork.totalWorkHours && w.fieldWork.totalHa
-            ? +(w.fieldWork.totalHa / w.fieldWork.totalWorkHours).toFixed(2)
-            : 0,
-        'Sipano Gorivo Tokom Rada (L)': w.fuel.totalLiters || 0,
-        'Broj Prijavljenih Kvarova': w.maintenanceReported || 0,
-        'Putarine (RSD)': w.tolls.totalCost || 0,
-        'Procenjen Trošak Rada (RSD)': w.fieldWork.estimatedLabourCost || 0,
-      }));
-      const wsWorkers = XLSX.utils.json_to_sheet(workerRows);
-      XLSX.utils.book_append_sheet(wb, wsWorkers, 'Radnici');
-
-      // Sheet 4: Istorija Popravki Mehanizacije (Šta je rađeno)
-      const allRepairs: any[] = [];
-      (exportMachinesRes?.machines || []).forEach((m: any) => {
-        (m.maintenance.recentRepairs || []).forEach((r: any) => {
-          allRepairs.push({
-            Mašina: m.machine.name,
-            Datum: r.dateReported ? r.dateReported.substring(0, 10) : '',
-            'Naslov / Opis Kvara': r.title,
-            'Tip Servisa': r.serviceType,
-            Prioritet: r.priority,
-            Status: r.status,
-            'Zamenjeni Delovi': r.partsReplaced || '',
-            'Izveštaj Mehaničara': r.repairNotes || '',
-            'Utrošeno Mazivo': r.lubricantType ? `${r.lubricantType} (${r.lubricantLiters || 0} L)` : '',
-            'Trošak Popravke (RSD)': r.totalCost || 0,
-            'Sati Zastoja': Math.round((r.downtimeHours || 0) * 10) / 10,
-          });
-        });
+      setExportError(null);
+      await exportAnalyticsExcel({
+        apiBase: API,
+        queryParams,
+        searchTerm,
+        fuelFilters,
+        dateFrom,
+        dateTo,
+        loadXlsx: () => import('xlsx'),
       });
-      if (allRepairs.length > 0) {
-        const wsRepairs = XLSX.utils.json_to_sheet(allRepairs);
-        XLSX.utils.book_append_sheet(wb, wsRepairs, 'Istorija Popravki');
-      }
-
-      // Sheet 5: Parcele
-      const parcelRows = (exportParcelsRes?.parcels || []).map((p: any) => ({
-        'Naziv Parcele': p.parcel.name,
-        Šifra: p.parcel.code,
-        'Površina (ha)': p.parcel.areaHa,
-        'Urađeno Operacija (broj)': p.fieldWork.count || 0,
-        'Urađeno ha (ukupno operacija)': p.fieldWork.totalHa || 0,
-        'Utrošak Đubriva (kg/L)': p.fertilizer.totalQuantity || 0,
-        'Trošak Đubriva (RSD)': p.fertilizer.totalCost || 0,
-        'Sati Sezonaca na Parceli': p.seasonal.totalHours || 0,
-        'Isplaćene Dnevnice na Parceli (RSD)': p.seasonal.totalWages || 0,
-      }));
-      const wsParcels = XLSX.utils.json_to_sheet(parcelRows);
-      XLSX.utils.book_append_sheet(wb, wsParcels, 'Parcele');
-
-      // Sheet 6: Mesečni Troškovi
-      const monthlyRows = (exportFinancialRes?.allFuelByMonth || exportFinancialRes?.fuelByMonth || []).map((f: any) => {
-        const mnt = (exportFinancialRes?.maintenanceByMonth || []).find((m: any) => m.month === f.month);
-        const toll = (exportFinancialRes?.tollsByMonth || []).find((t: any) => t.month === f.month);
-        const seas = (exportFinancialRes?.seasonalByMonth || []).find((s: any) => s.month === f.month);
-        const fuelCost = f.total_cost || 0;
-        const maintCost = mnt ? mnt.total_cost || 0 : 0;
-        const tollCost = toll ? toll.total_amount || 0 : 0;
-        const seasCost = seas ? seas.total_wages || 0 : 0;
-        return {
-          Mesec: f.month,
-          'Gorivo (L)': f.total_liters || 0,
-          'Gorivo Trošak (RSD)': fuelCost,
-          'Popravke Trošak (RSD)': maintCost,
-          'Putarine (RSD)': tollCost,
-          'Dnevnice Sezonaca (RSD)': seasCost,
-          'UKUPNO TROŠAK (RSD)': fuelCost + maintCost + tollCost + seasCost,
-        };
-      });
-      if (monthlyRows.length > 0) {
-        const wsMonthly = XLSX.utils.json_to_sheet(monthlyRows);
-        XLSX.utils.book_append_sheet(wb, wsMonthly, 'Mesečni Troškovi');
-      }
-
-      const workRows = (exportWorksRes?.works || []).map((w: any) => ({
-        Datum: w.date ? new Date(w.date).toLocaleDateString('sr-RS') : '',
-        Smena: w.shift || '',
-        Radnik: w.worker?.name || '',
-        Operacija: w.workType?.name || '',
-        Parcela: w.parcel ? `[${w.parcel.code}] ${w.parcel.name}` : '',
-        Mašina: w.machine?.name || '',
-        Priključak: w.attachment?.name || '',
-        'Urađeno (ha)': w.areaDoneHa || 0,
-        'Radni sati (h)': w.workHours || 0,
-        'Vreme': w.startTime && w.endTime ? `${w.startTime} - ${w.endTime}` : '',
-        Napomena: w.notes || '',
-      }));
-      if (workRows.length > 0) {
-        const wsWorks = XLSX.utils.json_to_sheet(workRows);
-        XLSX.utils.book_append_sheet(wb, wsWorks, 'Dnevnik Radova');
-      }
-
-      const fuelExport = await fetchFuelExport(fuelFilters);
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-        ['Bilans zaduzenja sa dopunama; raspodela po satima ili hektarima.'],
-        ['Obuhvaceno ha', fuelExport.summary.coveredHa, 'Ukupno ha', fuelExport.summary.totalHa],
-        ['Bez obracuna (radovi)', fuelExport.summary.uncoveredWorksCount],
-        ['Potrosnja L', fuelExport.summary.totalLiters, 'Trosak tocenja RSD', fuelExport.summary.dispensedCostRSD],
-        fuelHeaders, ...fuelOperationRows(fuelExport),
-      ]), 'Gorivo normativi');
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([criticalFuelHeaders, ...fuelCriticalRows(fuelExport)]), 'Gorivo odstupanja');
-      XLSX.writeFile(wb, `Nandra_Direktorska_Analitika_${dateFrom || 'sve'}_${dateTo || 'sve'}.xlsx`);
     } catch (err) {
       console.error('Greška pri izradi Excel tabele:', err);
-      alert('Došlo je do greške pri izvozu u Excel.');
+      const message =
+        err instanceof AnalyticsExportError
+          ? err.message
+          : 'Došlo je do greške pri izvozu u Excel.';
+      setExportError(message);
     } finally {
       setExportingExcel(false);
     }
@@ -937,6 +781,21 @@ export const AnalitikaDashboard: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {exportError && (
+          <div className={styles.exportErrorBanner} role="alert">
+            <ShieldAlert size={18} className={styles.exportErrorIcon} />
+            <span className={styles.exportErrorText}>{exportError}</span>
+            <button
+              type="button"
+              className={styles.exportErrorClose}
+              onClick={() => setExportError(null)}
+              aria-label="Zatvori obaveštenje o grešci izvoza"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {/* ========================================================
             FILTER CARD

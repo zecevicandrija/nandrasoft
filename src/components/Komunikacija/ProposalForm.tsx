@@ -1,3 +1,7 @@
+import { useQuery } from '@tanstack/react-query';
+import { PackingFields, newPackingPlan } from '../../Luk/PackingFields';
+import { onionRequest } from '../../Luk/onionRequest';
+import QueryErrorNotice from '../QueryErrorNotice';
 import { useMemo, useState } from 'react';
 import {
   AlertCircle,
@@ -43,6 +47,7 @@ function emptyProposal(): ProposalData {
 }
 
 const ORDER_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: 'PAKOVANJE', label: 'Pakovanje', subLabel: 'Sortiranje i pakovanje luka u magacinu' },
   {
     value: 'RAD_NJIVA',
     label: 'Rad na njivi',
@@ -192,6 +197,12 @@ export default function ProposalForm({
   );
   const [photoUploading, setPhotoUploading] = useState(false);
 
+  const isPacking = data.orderType === 'PAKOVANJE';
+  const lots = useQuery({
+    queryKey: ['onion-lookup'],
+    queryFn: ({ signal }) => onionRequest('/lookup', signal),
+    enabled: isPacking,
+  });
   const isRemont = data.orderType === 'REMONT_SERVIS';
   const field = <K extends keyof ProposalData>(key: K, value: ProposalData[K]) =>
     setData((current) => ({ ...current, [key]: value }));
@@ -205,7 +216,7 @@ export default function ProposalForm({
     const filteredWorkers = filterWorkersForOrderType(catalog?.workers || [], data.orderType);
     return buildCatalogOptions(
       filteredWorkers,
-      data.workerId,
+      data.orderType === 'PAKOVANJE' ? null : data.workerId,
       data.labels?.workerId,
       isRemont ? 'Mehaničar može biti određen i kasnije' : 'Radnik može biti određen i kasnije'
     );
@@ -310,6 +321,7 @@ export default function ProposalForm({
       : {
           ...data,
           serviceType: null,
+          workerId: isPacking && !workerOptions.some(option => option.value === data.workerId) ? null : data.workerId,
           contractorId: data.orderType === 'RAD_NJIVA' ? (data.contractorId || null) : null,
           workMaterials: data.orderType === 'RAD_NJIVA' ? materialPayload(workMaterials) : [],
           photoUrl: data.photoUrl || null,
@@ -379,7 +391,7 @@ export default function ProposalForm({
                       placeholder={
                         isRemont
                           ? 'npr. Zamena ulja i filtera — John Deere 6155M'
-                          : 'npr. Prihrana pšenice — Tabla 4'
+                          : isPacking ? 'npr. Pakovanje luka za isporuku' : 'npr. Prihrana pšenice — Tabla 4'
                       }
                       value={data.title}
                       onChange={(e) => field('title', e.target.value)}
@@ -401,6 +413,8 @@ export default function ProposalForm({
                         setData((current) => ({
                           ...current,
                           orderType: val,
+                          packingPlan: val === 'PAKOVANJE' ? current.packingPlan ?? newPackingPlan(current.orderDate) : undefined,
+                          machineId: val === 'PAKOVANJE' ? null : current.machineId,
                           priority:
                             val === 'REMONT_SERVIS'
                               ? current.orderType !== 'REMONT_SERVIS' && current.priority === 'NORMALNO'
@@ -486,7 +500,8 @@ export default function ProposalForm({
                     </>
                   ) : (
                     <>
-                      <div className={styles.formField}>
+                      {!isPacking && (
+                        <div className={styles.formField}>
                         <label htmlFor="proposal-date">Planirani datum *</label>
                         <input
                           id="proposal-date"
@@ -496,7 +511,8 @@ export default function ProposalForm({
                           value={data.orderDate}
                           onChange={(e) => field('orderDate', e.target.value)}
                         />
-                      </div>
+                        </div>
+                      )}
 
                       <div className={styles.formField}>
                         <label htmlFor="proposal-shift">Smena</label>
@@ -531,88 +547,90 @@ export default function ProposalForm({
                         />
                       </div>
 
-                      <div className={styles.formField}>
-                        <label htmlFor="proposal-parcel">Parcela</label>
-                        <CustomSelect
-                          id="proposal-parcel"
-                          value={data.parcelId || ''}
-                          onChange={(val) => field('parcelId', val || null)}
-                          options={parcelOptions}
-                          placeholder="— Izaberite parcelu —"
-                        />
-                      </div>
-
-                      <div className={styles.formField}>
-                        <label htmlFor="proposal-machine">Mašina</label>
-                        <CustomSelect
-                          id="proposal-machine"
-                          value={data.machineId || ''}
-                          onChange={(val) => field('machineId', val || null)}
-                          options={machineOptions}
-                          placeholder="— Izaberite mašinu —"
-                        />
-                      </div>
-
-                      <div className={styles.formField}>
-                        <label htmlFor="proposal-attachment">Priključak</label>
-                        <CustomSelect
-                          id="proposal-attachment"
-                          value={data.attachmentId || ''}
-                          onChange={(val) => field('attachmentId', val || null)}
-                          options={attachmentOptions}
-                          placeholder="— Izaberite priključak —"
-                        />
-                      </div>
-
-                      {data.orderType === 'RAD_NJIVA' && (
-                        <div className={`${styles.formField} ${styles.formFieldFull}`}>
-                          <ContractorSelect
-                            value={data.contractorId || ''}
-                            onChange={(val) => field('contractorId', val || null)}
-                            canManage={true}
+                      {!isPacking && (<>
+                        <div className={styles.formField}>
+                          <label htmlFor="proposal-parcel">Parcela</label>
+                          <CustomSelect
+                            id="proposal-parcel"
+                            value={data.parcelId || ''}
+                            onChange={(val) => field('parcelId', val || null)}
+                            options={parcelOptions}
+                            placeholder="— Izaberite parcelu —"
                           />
                         </div>
-                      )}
 
-                      <div className={styles.formField}>
-                        <label htmlFor="proposal-work-type">Vrsta rada</label>
-                        <CustomSelect
-                          id="proposal-work-type"
-                          value={data.workTypeId || ''}
-                          onChange={(val) => {
-                            const nextId = val || null;
-                            if (nextId !== data.workTypeId) {
-                              setWorkMaterials([]);
-                            }
-                            field('workTypeId', nextId);
-                          }}
-                          options={workTypeOptions}
-                          placeholder="— Izaberite vrstu rada —"
-                        />
-                      </div>
+                        <div className={styles.formField}>
+                          <label htmlFor="proposal-machine">Mašina</label>
+                          <CustomSelect
+                            id="proposal-machine"
+                            value={data.machineId || ''}
+                            onChange={(val) => field('machineId', val || null)}
+                            options={machineOptions}
+                            placeholder="— Izaberite mašinu —"
+                          />
+                        </div>
 
-                      <div className={styles.formField}>
-                        <label htmlFor="proposal-area">Planirana površina (ha)</label>
-                        <input
-                          id="proposal-area"
-                          className={styles.formInput}
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          max="100000"
-                          placeholder="npr. 12.5"
-                          value={data.plannedAreaHa ?? ''}
-                          onChange={(e) => {
-                            const raw = e.target.value;
-                            if (!raw) {
-                              field('plannedAreaHa', null);
-                              return;
-                            }
-                            const parsed = Number(raw);
-                            field('plannedAreaHa', Number.isFinite(parsed) ? parsed : null);
-                          }}
-                        />
-                      </div>
+                        <div className={styles.formField}>
+                          <label htmlFor="proposal-attachment">Priključak</label>
+                          <CustomSelect
+                            id="proposal-attachment"
+                            value={data.attachmentId || ''}
+                            onChange={(val) => field('attachmentId', val || null)}
+                            options={attachmentOptions}
+                            placeholder="— Izaberite priključak —"
+                          />
+                        </div>
+
+                        {data.orderType === 'RAD_NJIVA' && (
+                          <div className={`${styles.formField} ${styles.formFieldFull}`}>
+                            <ContractorSelect
+                              value={data.contractorId || ''}
+                              onChange={(val) => field('contractorId', val || null)}
+                              canManage={true}
+                            />
+                          </div>
+                        )}
+
+                        <div className={styles.formField}>
+                          <label htmlFor="proposal-work-type">Vrsta rada</label>
+                          <CustomSelect
+                            id="proposal-work-type"
+                            value={data.workTypeId || ''}
+                            onChange={(val) => {
+                              const nextId = val || null;
+                              if (nextId !== data.workTypeId) {
+                                setWorkMaterials([]);
+                              }
+                              field('workTypeId', nextId);
+                            }}
+                            options={workTypeOptions}
+                            placeholder="— Izaberite vrstu rada —"
+                          />
+                        </div>
+
+                        <div className={styles.formField}>
+                          <label htmlFor="proposal-area">Planirana površina (ha)</label>
+                          <input
+                            id="proposal-area"
+                            className={styles.formInput}
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            max="100000"
+                            placeholder="npr. 12.5"
+                            value={data.plannedAreaHa ?? ''}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (!raw) {
+                                field('plannedAreaHa', null);
+                                return;
+                              }
+                              const parsed = Number(raw);
+                              field('plannedAreaHa', Number.isFinite(parsed) ? parsed : null);
+                            }}
+                          />
+                        </div>
+                      </>)}
                     </>
                   )}
                 </div>
@@ -629,7 +647,19 @@ export default function ProposalForm({
                   </div>
                 )}
 
-                {!isRemont && (
+                {isPacking && data.packingPlan && <>
+                  {lots.isError && <QueryErrorNotice title="Učitavanje LOT-ova nije uspelo." error={lots.error}
+                    pending={lots.isFetching} onRetry={() => void lots.refetch()} />}
+                  <PackingFields plan={data.packingPlan} allSelectableLots={lots.data?.allLots || []}
+                    onChange={update => setData(current => {
+                      const plan = current.packingPlan;
+                      if (!plan) return current;
+                      const packingPlan = typeof update === 'function' ? update(plan) : update;
+                      return { ...current, packingPlan, orderDate: packingPlan.packagingForm.date };
+                    })} />
+                </>}
+
+                {!isRemont && !isPacking && (
                   <div className={styles.formField}>
                     <label htmlFor="proposal-materials">Predlog materijala i količina (napomena)</label>
                     <textarea

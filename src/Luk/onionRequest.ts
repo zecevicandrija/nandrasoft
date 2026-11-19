@@ -1,7 +1,7 @@
 import { operationalRequest } from '../lib/operationalQueries.ts';
 
 const collections: Record<string, string> = {
-  '/lots': 'lots', '/harvest': 'arrivals', '/storage': 'entries', '/sorting': 'sortings',
+  '/work-orders': 'orders', '/lots': 'lots', '/harvest': 'arrivals', '/storage': 'entries', '/sorting': 'sortings',
   '/processing-history': 'rows', '/packaging': 'packagings', '/shipment': 'shipments', '/waste': 'wastes',
 };
 

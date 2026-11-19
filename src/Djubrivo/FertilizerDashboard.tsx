@@ -489,34 +489,33 @@ const FertilizerDashboard: React.FC = () => {
     setActiveTab('receive');
   };
 
-  const handleReceiveSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!receiveForm.productId || !receiveForm.quantity || Number(receiveForm.quantity) <= 0) {
+  const receiveDraft = useDurableSubmission('fertilizer-receive', currentUser?.id, receiveForm, setReceiveForm);
+  const receiveDraftSending = useRef(false);
+
+  const handleReceiveSubmit = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
+    if (receiveDraftSending.current || replay !== Boolean(receiveDraft.pending)) return;
+    if (!replay && (!receiveForm.productId || !receiveForm.quantity || Number(receiveForm.quantity) <= 0)) {
       showToast('Izaberite artikal đubriva i unesite količinu veću od 0.', 'error');
       return;
     }
 
+    receiveDraftSending.current = true;
     setReceiveLoading(true);
     try {
-      const res = await fetch(`${API}/fertilizer/receive`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          date: receiveForm.date,
-          productId: receiveForm.productId,
-          supplierId: receiveForm.supplierId || null,
-          quantity: Number(receiveForm.quantity),
-          unitPrice: receiveForm.unitPrice ? Number(receiveForm.unitPrice) : null,
-          receiptNumber: receiveForm.receiptNumber.trim() || null,
-          warehouseLocation: receiveForm.warehouseLocation.trim() || null,
-          notes: receiveForm.notes.trim() || null,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri prijemu đubriva.');
-
+      const payload = receiveDraft.pending?.payload ?? {
+        date: receiveForm.date,
+        productId: receiveForm.productId,
+        supplierId: receiveForm.supplierId || null,
+        quantity: Number(receiveForm.quantity),
+        unitPrice: receiveForm.unitPrice ? Number(receiveForm.unitPrice) : null,
+        receiptNumber: receiveForm.receiptNumber.trim() || null,
+        warehouseLocation: receiveForm.warehouseLocation.trim() || null,
+        notes: receiveForm.notes.trim() || null,
+      };
+      const data = await receiveDraft.request(`${API}/fertilizer/receive`, payload);
+      receiveDraft.clear();
+      receiveDraft.resume();
       showToast(data.message || 'Prijem đubriva uspešno evidentiran!');
       setReceiveForm((prev) => ({
         ...prev,
@@ -531,6 +530,7 @@ const FertilizerDashboard: React.FC = () => {
     } catch (err: any) {
       showToast(err.message || 'Greška pri prijemu robe.', 'error');
     } finally {
+      receiveDraftSending.current = false;
       setReceiveLoading(false);
     }
   };
@@ -1407,6 +1407,8 @@ const FertilizerDashboard: React.FC = () => {
               </p>
 
               <form onSubmit={handleReceiveSubmit} className={styles.formGrid}>
+                <SubmissionRecovery pending={!!receiveDraft.pending} busy={receiveLoading} error={receiveDraft.storageError}
+                  onRetry={() => void handleReceiveSubmit(undefined, true)} />
                 <div className={styles.formField}>
                   <label>Datum prijema *</label>
                   <input
@@ -1607,7 +1609,7 @@ const FertilizerDashboard: React.FC = () => {
                     type="submit"
                     className={styles.btnPrimary}
                     style={{ width: '100%', padding: '0.8rem' }}
-                    disabled={receiveLoading}
+                    disabled={receiveLoading || !!receiveDraft.pending}
                   >
                     {receiveLoading ? (
                       <Loader2 size={18} style={{ animation: 'spin 0.8s linear infinite' }} />

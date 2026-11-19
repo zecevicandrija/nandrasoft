@@ -1,10 +1,14 @@
+import { PackingExecution, PackingFields, newPackingPlan, packingBalance, sortingFields, packageTypeOptions, PACKAGE_WEIGHTS, formatKgAndTons, type EntryMode, type PackingPlan } from './PackingFields';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
-import { remainingLotStock, suggestPacking, suggestPallets } from './onionStock';
+import OrderDetailsModal from '../Nalozi/OrderDetailsModal';
+import type { WorkOrder } from '../Nalozi/RadniNaloziDashboard';
+import { remainingLotStock, suggestPacking } from './onionStock';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import QueryErrorNotice from '../components/QueryErrorNotice';
 import { onionRequest } from './onionRequest';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import {
   Sprout,
   Snowflake,
@@ -13,6 +17,7 @@ import {
   Package,
   Truck,
   AlertTriangle,
+  Info,
   Search,
   Plus,
   Tractor,
@@ -44,7 +49,15 @@ import { useSession } from '../lib/auth-client';
 import { ParcelQuickModal, ParcelQuickActions, type ParcelItem } from '../components/ParcelQuickModal';
 import { BuyerQuickModal, BuyerQuickActions, type BuyerItem } from '../components/BuyerQuickModal';
 import styles from './OnionDashboard.module.css';
-import { onionQueryEnabled, invalidateOnionMutation, refreshOnionTab, type TabKey } from './onionQueries';
+import {
+  onionQueryEnabled,
+  onionSharedQueryEnabled,
+  onionTabRequiresSharedData,
+  parseOnionTab,
+  invalidateOnionMutation,
+  refreshOnionTab,
+  type TabKey,
+} from './onionQueries';
 
 const API = '/api/onion';
 
@@ -56,16 +69,6 @@ const PACKAGE_LABELS: Record<string, string> = {
   BOKS_PALETA: 'Drvena boks paleta 160x120x120 (1.100 kg)',
   RINFUZ: 'Rinfuz',
   DRUGO: 'Prilagođeno pakovanje',
-};
-
-const PACKAGE_WEIGHTS: Record<string, number> = {
-  DZAK_5KG: 5,
-  DZAK_10KG: 10,
-  DZAK_25KG: 25,
-  DZAMBO_VRECA: 1000,
-  BOKS_PALETA: 1100,
-  RINFUZ: 1,
-  DRUGO: 10,
 };
 
 const WASTE_REASON_LABELS: Record<string, string> = {
@@ -85,18 +88,6 @@ const LOT_STATUS_LABELS: Record<string, string> = {
   ISPORUCEN: 'Isporučen',
   ARHIVIRAN: 'Arhiviran',
 };
-
-function formatKgAndTons(kgValue: number | undefined | null): string {
-  const kg = Number(kgValue || 0);
-  if (Math.abs(kg) >= 1000) {
-    const tons = (kg / 1000).toLocaleString('sr-RS', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-    return `${kg.toLocaleString('sr-RS', { maximumFractionDigits: 0 })} kg (${tons} t)`;
-  }
-  return `${kg.toLocaleString('sr-RS', { maximumFractionDigits: 1 })} kg`;
-}
 
 function formatDateTime(d: string | undefined | null): string {
   if (!d) return '-';
@@ -130,22 +121,40 @@ function formatTimeOnly(timeTarget: string | undefined | null, fallbackDate?: st
   });
 }
 
-const entryModeOptions = [
-  { value: 'both', label: 'Sortiranje i pakovanje' },
-  { value: 'sorting', label: 'Samo sortiranje' },
-  { value: 'packaging', label: 'Pakovanje ranije sortirane I klase' },
-];
-
-const emptySorting = { inputQuantityKg: '', qualityQuantityKg: '', smallQuantityKg: '', wasteQuantityKg: '', plevaKg: '' };
-const sortingFields = [
-  ['inputQuantityKg', 'Ulazna masa'], ['qualityQuantityKg', 'I klasa'],
-  ['smallQuantityKg', 'II klasa'], ['wasteQuantityKg', 'Otpad'],
-  ['plevaKg', 'Pleva'],
-] as const;
-
 /** Sprečava slučajnu promenu vrednosti u number poljima prilikom skrolovanja točkićem miša. */
 function preventWheelNumberChange(e: React.WheelEvent<HTMLInputElement>) {
   e.currentTarget.blur();
+}
+
+function PackagingTableScroller({ children }: { children: React.ReactNode }) {
+  const drag = useRef<{ pointerId: number; x: number; scrollLeft: number } | null>(null);
+
+  function finishDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (drag.current?.pointerId !== event.pointerId) return;
+    drag.current = null;
+    const container = event.currentTarget;
+    delete container.dataset.dragging;
+    if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
+  }
+
+  return <div className={`${styles.tableWrapper} ${styles.packagingScroller}`}
+    role="region" aria-label="Evidencija sortiranja i pakovanja" tabIndex={0}
+    onPointerDown={event => {
+      if (event.pointerType !== 'mouse' || event.button !== 0 || !(event.target instanceof Element)) return;
+      if (!event.target.closest('td, th') || event.target.closest('button, a, input, select, textarea, [role="button"]')) return;
+      const container = event.currentTarget;
+      if (container.scrollWidth <= container.clientWidth) return;
+      event.preventDefault();
+      drag.current = { pointerId: event.pointerId, x: event.clientX, scrollLeft: container.scrollLeft };
+      container.setPointerCapture(event.pointerId);
+      container.dataset.dragging = 'true';
+    }}
+    onPointerMove={event => {
+      const start = drag.current;
+      if (start?.pointerId === event.pointerId) event.currentTarget.scrollLeft = start.scrollLeft + start.x - event.clientX;
+    }}
+    onPointerUp={finishDrag} onPointerCancel={finishDrag} onLostPointerCapture={finishDrag}
+  >{children}</div>;
 }
 
 const OnionDashboard: React.FC = () => {
@@ -164,7 +173,12 @@ const OnionDashboard: React.FC = () => {
   const [buyerToEdit, setBuyerToEdit] = useState<BuyerItem | null>(null);
   const [buyerQuickTarget, setBuyerQuickTarget] = useState<'shipment-form' | 'shipment-filter'>('shipment-form');
 
-  const [activeTab, setActiveTab] = useState<TabKey>('dovoz');
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<TabKey>(() => parseOnionTab(searchParams.get('tab')));
+  useEffect(() => {
+    const requestedTab = searchParams.get('tab');
+    if (requestedTab) setActiveTab(parseOnionTab(requestedTab));
+  }, [searchParams]);
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
@@ -203,7 +217,43 @@ const OnionDashboard: React.FC = () => {
   // Modali
   const [isHarvestModalOpen, setIsHarvestModalOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
-  const [entryMode, setEntryMode] = useState<'both' | 'sorting' | 'packaging'>('both');
+  const [packingPlan, setPackingPlan] = useState(() => newPackingPlan(new Date().toISOString().slice(0, 10)));
+  const { packagingForm, sortingForm, entryMode } = packingPlan;
+  const [packingOrder, setPackingOrder] = useState<{ id: string; updatedAt: string } | null>(null);
+  const [reversal, setReversal] = useState<{ id: string; updatedAt: string; orderNumber: string } | null>(null);
+  const [outcome, setOutcome] = useState<'reopen' | 'cancel'>('reopen');
+  const [reason, setReason] = useState('');
+  const [reversalError, setReversalError] = useState('');
+
+  function openReversal(order: NonNullable<typeof reversal>) {
+    setReversal(order);
+    setReason('');
+    setOutcome('reopen');
+    setReversalError('');
+  }
+
+  async function reverseConfirmation(event: React.FormEvent) {
+    event.preventDefault();
+    if (!reversal || !reason.trim() || submitting) return;
+    setSubmitting(true);
+    setReversalError('');
+    try {
+      const res = await fetch(`${API}/work-orders/${encodeURIComponent(reversal.id)}/reverse`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: outcome, updatedAt: reversal.updatedAt, reason: reason.trim() }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Poništavanje nije uspelo.');
+      setReversal(null);
+      showToast(outcome === 'cancel' ? 'Knjiženje je poništeno i nalog otkazan.' : 'Knjiženje je poništeno i nalog je vraćen na izvršenje.');
+      void invalidateOnionMutation(queryClient, 'sorting');
+      for (const key of [['onion-orders'], ['operational'], ['communication']]) void queryClient.invalidateQueries({ queryKey: key });
+    } catch (error) {
+      setReversalError(error instanceof Error ? error.message : 'Poništavanje nije uspelo.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
   const [isPackagingModalOpen, setIsPackagingModalOpen] = useState(false);
   const [isShipmentModalOpen, setIsShipmentModalOpen] = useState(false);
   const [isWasteModalOpen, setIsWasteModalOpen] = useState(false);
@@ -264,21 +314,6 @@ const OnionDashboard: React.FC = () => {
     notes: '',
   });
 
-  const [sortingForm, setSortingForm] = useState(emptySorting);
-  const [packagingForm, setPackagingForm] = useState({
-    date: todayStr,
-    lotId: '',
-    packageType: 'DZAK_10KG',
-    unitWeightKg: '10',
-    palletsCount: '',
-    packageCount: '',
-    palletNumber: '',
-    packerCount: '',
-    packerNotes: '',
-    responsiblePerson: 'Bojan Ćorović',
-    notes: '',
-  });
-
   const [shipmentForm, setShipmentForm] = useState({
     date: todayStr,
     buyerId: '',
@@ -309,9 +344,13 @@ const OnionDashboard: React.FC = () => {
   // ==========================================
   // DATA QUERIES
   // ==========================================
+  const needsExecutionLookup =
+    isPackagingModalOpen || isHarvestModalOpen || isStorageModalOpen || isShipmentModalOpen || isWasteModalOpen;
+
   const lookupQuery = useQuery({
     queryKey: ['onion-lookup'],
     staleTime: 30_000,
+    enabled: onionSharedQueryEnabled('onion-lookup', activeTab, needsExecutionLookup),
     queryFn: ({ signal }) => onionRequest('/lookup', signal),
   });
   const { data: lookupData } = lookupQuery;
@@ -319,6 +358,7 @@ const OnionDashboard: React.FC = () => {
   const dashboardQuery = useQuery({
     queryKey: ['onion-dashboard'],
     staleTime: 30_000,
+    enabled: onionSharedQueryEnabled('onion-dashboard', activeTab),
     queryFn: ({ signal }) => onionRequest('/dashboard', signal),
   });
   const { data: dashboardData, isFetching: loadingDashboard } = dashboardQuery;
@@ -447,6 +487,12 @@ const OnionDashboard: React.FC = () => {
   const workers = lookupData?.workers || [];
   const buyers = lookupData?.buyers || [];
 
+  useEffect(() => {
+    if (isHarvestModalOpen && !harvestForm.parcelId && parcels[0]?.id) {
+      setHarvestForm((prev) => (prev.parcelId ? prev : { ...prev, parcelId: parcels[0].id }));
+    }
+  }, [isHarvestModalOpen, harvestForm.parcelId, parcels]);
+
   // ==========================================
   // CUSTOM SELECT OPCIJE (MEMOIZOVANE)
   // ==========================================
@@ -539,9 +585,7 @@ const OnionDashboard: React.FC = () => {
     return buyers.find((b: any) => b.id === shipmentForm.buyerId) || null;
   }, [buyers, shipmentForm.buyerId]);
 
-  const selectedPackagingLotObj = useMemo(() => {
-    return allSelectableLots.find((l: any) => l.id === packagingForm.lotId) || null;
-  }, [allSelectableLots, packagingForm.lotId]);
+
 
   const readySortOrderOptions: CustomSelectOption[] = useMemo(
     () => [
@@ -680,72 +724,6 @@ const OnionDashboard: React.FC = () => {
     []
   );
 
-  const sortingLotOptions: CustomSelectOption[] = useMemo(
-    () => [
-      { value: '', label: '— Izaberi LOT sa sirovim lukom —' },
-      ...allSelectableLots
-        .filter((l: any) => l.rawStockKg > 0)
-        .map((l: any) => ({
-          value: l.id,
-          label: l.lotNumber,
-          subLabel: `${l.parcel?.name || '-'} • Raspoloživo sirovo: ${formatKgAndTons(l.rawStockKg)}`,
-          badge: `${Math.round((l.rawStockKg || 0) / 1100)} boks.`,
-        })),
-    ],
-    [allSelectableLots]
-  );
-
-  const packagingLotOptions: CustomSelectOption[] = useMemo(
-    () => [
-      { value: '', label: '— Izaberi LOT sa I klasom —' },
-      ...allSelectableLots
-        .filter((l: any) => l.unpackedQualityKg > 0)
-        .map((l: any) => ({
-          value: l.id,
-          label: l.lotNumber,
-          subLabel: `${l.parcel?.name || '-'} • Spremno za pakericu: ${formatKgAndTons(l.unpackedQualityKg)}`,
-          badge: `${Math.round((l.unpackedQualityKg || 0) / 1000)} t`,
-          badgeType: 'success' as 'success',
-        })),
-    ],
-    [allSelectableLots]
-  );
-
-  const packageTypeOptions: CustomSelectOption[] = useMemo(
-    () => [
-      {
-        value: 'DZAK_10KG',
-        label: 'Mrežasti džak 10 kg',
-        badgeType: 'success' as 'success',
-      },
-      {
-        value: 'DZAK_5KG',
-        label: 'Mrežasti džak 5 kg',
-        badgeType: 'warning' as 'warning',
-      },
-      {
-        value: 'DZAK_25KG',
-        label: 'Mrežasti džak 25 kg',
-      },
-      {
-        value: 'DZAMBO_VRECA',
-        label: 'Džambo vreća',
-        subLabel: '1.000 kg po vreći',
-      },
-      {
-        value: 'BOKS_PALETA',
-        label: 'Boks paleta 160x120x120',
-        subLabel: '1.100 kg po boksu',
-      },
-      {
-        value: 'RINFUZ',
-        label: 'Rinfuz',
-        subLabel: 'Masa u rasutom stanju',
-      },
-    ],
-    []
-  );
-
   const shipmentBuyerOptions: CustomSelectOption[] = useMemo(
     () => [
       { value: '', label: '— Izaberi kupca —' },
@@ -817,30 +795,31 @@ const OnionDashboard: React.FC = () => {
   // ==========================================
   // FORM SUBMIT HANDLERS
   // ==========================================
-  const handleCreateHarvest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!harvestForm.parcelId) {
+  const harvestDraft = useDurableSubmission('onion-harvest', currentUser?.id, harvestForm, setHarvestForm);
+  const harvestDraftSending = useRef(false);
+
+  const handleCreateHarvest = async (e?: React.FormEvent, replay = false) => {
+    e?.preventDefault();
+    if (harvestDraftSending.current || replay !== Boolean(harvestDraft.pending)) return;
+    if (!replay && !harvestForm.parcelId) {
       showToast('Molimo izaberite parcelu.', 'error');
       return;
     }
+    harvestDraftSending.current = true;
     setSubmitting(true);
     try {
-      const res = await fetch(`${API}/harvest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          ...harvestForm,
-          chamberId: harvestForm.chamberId || chamberIdForName(harvestForm.locationOrChamber),
-          quantityKg: Number(harvestForm.quantityKg),
-          boxCount: harvestForm.boxCount ? Number(harvestForm.boxCount) : undefined,
-          existingLotId: harvestForm.existingLotId || null,
-          vehicleId: harvestForm.vehicleId || null,
-          driverId: harvestForm.driverId || null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri čuvanju dovoza.');
+      const payload = harvestDraft.pending?.payload ?? {
+        ...harvestForm,
+        chamberId: harvestForm.chamberId || chamberIdForName(harvestForm.locationOrChamber),
+        quantityKg: Number(harvestForm.quantityKg),
+        boxCount: harvestForm.boxCount ? Number(harvestForm.boxCount) : undefined,
+        existingLotId: harvestForm.existingLotId || null,
+        vehicleId: harvestForm.vehicleId || null,
+        driverId: harvestForm.driverId || null,
+      };
+      const data = await harvestDraft.request(`${API}/harvest`, payload);
+      harvestDraft.clear();
+      harvestDraft.resume();
       showToast(data.message || 'Dovoz sa njive uspešno sačuvan.');
       setIsHarvestModalOpen(false);
       setHarvestForm((prev) => ({
@@ -850,10 +829,11 @@ const OnionDashboard: React.FC = () => {
         trailerInfo: '',
         notes: '',
       }));
-      void invalidateOnionMutation(queryClient, harvestForm.autoStore ? 'harvestStored' : 'harvest');
+      void invalidateOnionMutation(queryClient, data.storageEntry ? 'harvestStored' : 'harvest');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
+      harvestDraftSending.current = false;
       setSubmitting(false);
     }
   };
@@ -1010,25 +990,53 @@ const OnionDashboard: React.FC = () => {
   const freeQualityForLot = (lotId: string) =>
     allSelectableLots.find((lot: any) => lot.id === lotId)?.unpackedQualityKg ?? 0;
 
-  const openEntry = (mode: typeof entryMode, lotId = '') => {
-    setEntryMode(mode);
-    setSortingForm(emptySorting);
-    const qualityKg = mode === 'packaging' ? freeQualityForLot(lotId) : 0;
-    setPackagingForm(prev => ({
-      ...prev, lotId, date: todayStr, packerCount: '', palletNumber: '', packerNotes: '',
-      ...suggestPacking(qualityKg, Number(prev.unitWeightKg), prev.packageType),
-    }));
+  const openEntry = (mode: EntryMode, lotId = '') => {
+    setPackingOrder(null);
+    const plan = newPackingPlan(todayStr, mode);
+    plan.packagingForm = { ...plan.packagingForm, lotId, ...suggestPacking(mode === 'packaging' ? freeQualityForLot(lotId) : 0, 10, 'DZAK_10KG') };
+    setPackingPlan(plan);
     setIsPackagingModalOpen(true);
   };
 
-  const sortingDifference = Number(sortingForm.inputQuantityKg) - Number(sortingForm.qualityQuantityKg)
-    - Number(sortingForm.smallQuantityKg) - Number(sortingForm.wasteQuantityKg) - Number(sortingForm.plevaKg);
-  const remainingQuality = (selectedPackagingLotObj?.unpackedQualityKg || 0)
-    + (entryMode === 'packaging' ? 0 : Number(sortingForm.qualityQuantityKg))
-    - (entryMode === 'sorting' ? 0 : Number(packagingForm.packageCount) * Number(packagingForm.unitWeightKg));
+  const closePackingEntry = () => {
+    setIsPackagingModalOpen(false);
+    if (packingOrder) {
+      setActiveTab('nalozi');
+      setPackingOrder(null);
+    }
+  };
+
+  const packagingDraft = useDurableSubmission('onion-packaging', currentUser?.id, {}, () => {});
+  const packagingSending = useRef(false);
+  const standalonePacking = !packingOrder && entryMode !== 'sorting';
+
+  const retryPackaging = async () => {
+    if (!packagingDraft.pending || packagingSending.current) return;
+    packagingSending.current = true;
+    setSubmitting(true);
+    try {
+      const { url, payload } = packagingDraft.pending;
+      const result = await packagingDraft.request(url, payload);
+      packagingDraft.clear();
+      setIsPackagingModalOpen(false);
+      showToast(result.message || 'Pakovanje je sačuvano.');
+      void invalidateOnionMutation(queryClient, result.packaging.sortingId ? 'sorting' : 'packaging');
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      packagingSending.current = false;
+      setSubmitting(false);
+    }
+  };
 
   const handleCreatePackaging = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (packagingSending.current || (standalonePacking && packagingDraft.pending)) return;
+    const { sortingDifference, remainingQuality } = packingBalance(packingPlan, freeQualityForLot(packagingForm.lotId));
+    if (entryMode !== 'packaging' && !packagingForm.sourceKey) {
+      showToast('Izaberite komoru ili neraspoređenu sirovinu za sortiranje.', 'error');
+      return;
+    }
     if (!packagingForm.lotId) {
       showToast('Izaberite LOT.', 'error');
       return;
@@ -1041,39 +1049,42 @@ const OnionDashboard: React.FC = () => {
       showToast('Masa džakova je veća od raspoložive I klase za taj LOT.', 'error');
       return;
     }
+    packagingSending.current = true;
     setSubmitting(true);
     try {
-      const res = await fetch(`${API}/${entryMode === 'sorting' ? 'sorting' : 'packaging'}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(entryMode === 'sorting' ? {
-          ...sortingForm, lotId: packagingForm.lotId, date: packagingForm.date,
-        } : {
-          ...packagingForm,
-          sorting: entryMode === 'both' ? sortingForm : undefined,
-          unitWeightKg: Number(packagingForm.unitWeightKg),
-          packageCount: Number(packagingForm.packageCount),
-          palletsCount: packagingForm.palletsCount ? Number(packagingForm.palletsCount) : undefined,
-          packerCount: packagingForm.packerCount ? Number(packagingForm.packerCount) : null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Greška pri pakovanju.');
-      showToast(entryMode === 'both' ? 'Sortiranje i pakovanje su sačuvani.' : data.message || 'Unos je sačuvan.');
-      setIsPackagingModalOpen(false);
-      setPackagingForm((prev) => ({
-        ...prev,
-        palletsCount: '',
-        packageCount: '',
-        palletNumber: '',
-        packerNotes: '',
-        notes: '',
-      }));
+      const payload = entryMode === 'sorting' ? {
+        ...sortingForm, sourceKey: packagingForm.sourceKey, workOrderId: packingOrder?.id, orderUpdatedAt: packingOrder?.updatedAt, lotId: packagingForm.lotId, date: packagingForm.date,
+      } : {
+        ...packagingForm, workOrderId: packingOrder?.id, orderUpdatedAt: packingOrder?.updatedAt,
+        sorting: entryMode === 'both' ? sortingForm : undefined,
+        unitWeightKg: Number(packagingForm.unitWeightKg),
+        packageCount: Number(packagingForm.packageCount),
+        palletsCount: packagingForm.palletsCount ? Number(packagingForm.palletsCount) : undefined,
+        packerCount: packagingForm.packerCount ? Number(packagingForm.packerCount) : null,
+      };
+      let data;
+      if (standalonePacking) {
+        data = await packagingDraft.request(`${API}/packaging`, payload);
+        packagingDraft.clear();
+      } else {
+        const res = await fetch(`${API}/${entryMode === 'sorting' ? 'sorting' : 'packaging'}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+          body: JSON.stringify(payload),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Greška pri pakovanju.');
+      }
+      showToast(packingOrder ? 'Unos je sačuvan i radni nalog je završen.' : entryMode === 'both' ? 'Sortiranje i pakovanje su sačuvani.' : data.message || 'Unos je sačuvan.');
+      closePackingEntry();
+      if (packingOrder) {
+        void queryClient.invalidateQueries({ queryKey: ['onion-orders'] });
+        void queryClient.invalidateQueries({ queryKey: ['operational', currentUser?.id, currentUser?.role, 'orders'] });
+      }
       void invalidateOnionMutation(queryClient, entryMode === 'packaging' ? 'packaging' : 'sorting');
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
+      packagingSending.current = false;
       setSubmitting(false);
     }
   };
@@ -1130,6 +1141,11 @@ const OnionDashboard: React.FC = () => {
       const data = await res.json();
       if (!res.ok) {
         const errorMsg = data.error || 'Nije moguće obrisati ovo pakovanje.';
+        if (res.status === 409 && data.order) {
+          setPackagingToDelete(null);
+          openReversal(data.order);
+          return;
+        }
         setDeletePackagingError(errorMsg);
         showToast(errorMsg, 'error');
         return;
@@ -1334,7 +1350,16 @@ const OnionDashboard: React.FC = () => {
     }
   };
 
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [infoOrderId, setInfoOrderId] = useState<string | null>(null);
+  const warehouseOrders = useQuery({
+    queryKey: ['onion-orders', ordersPage],
+    enabled: activeTab === 'nalozi',
+    queryFn: ({ signal }) => onionRequest(`/work-orders?page=${ordersPage}`, signal),
+  });
+  const infoOrder = warehouseOrders.data?.orders.find((order: WorkOrder) => order.id === infoOrderId) as WorkOrder | undefined;
   const tabQueryStates = {
+    nalozi: [{ title: 'Radni nalozi', query: warehouseOrders }],
     dovoz: [{ title: 'LOT zapisi', query: lotsQuery }, { title: 'Dovoz', query: harvestQuery }],
     skladiste: [{ title: 'Skladištenje', query: storageQuery }],
     pakovanje: [{ title: 'Pakovanje', query: packagingQuery }],
@@ -1342,27 +1367,25 @@ const OnionDashboard: React.FC = () => {
     otpis: [{ title: 'Otpis', query: wasteQuery }],
     sledljivost: [{ title: 'LOT sledljivost', query: traceQuery }],
   };
+  const requiresSharedData = onionTabRequiresSharedData(activeTab);
   const sharedQueryStates = [{ title: 'Šifarnici luka', query: lookupQuery }, { title: 'Stanje lagera i komora', query: dashboardQuery }];
-  const sharedUnavailable = sharedQueryStates.some(({ query }) => query.data === undefined);
-  const tabUnavailable = tabQueryStates[activeTab].some(({ query }) => query.data === undefined && (query.isFetching || query.isError));
-  const queryFeedback = <>{[...sharedQueryStates, ...tabQueryStates[activeTab]].map(({ title, query }) => query.isError ? (
+  const sharedUnavailable = requiresSharedData && sharedQueryStates.some(({ query }) => query.data === undefined);
+  const tabUnavailable = sharedUnavailable || tabQueryStates[activeTab].some(({ query }) => query.data === undefined && (query.isFetching || query.isError));
+  const visibleFeedbackStates = requiresSharedData
+    ? [...sharedQueryStates, ...tabQueryStates[activeTab]]
+    : tabQueryStates[activeTab];
+  const queryFeedback = <>{visibleFeedbackStates.map(({ title, query }) => query.isError ? (
     <QueryErrorNotice key={title} title={`${title}: ${query.data === undefined ? 'podaci nisu učitani.' : 'osvežavanje nije uspelo; prikazani su poslednji učitani podaci.'}`}
       error={query.error} pending={query.isFetching} onRetry={() => { void query.refetch(); }} />
   ) : null)}</>;
-
-  if (sharedUnavailable) return (
-    <AppLayout pageTitle="Modul Luk & Hladnjača — Tok Robe i Sledljivost">
-      <div className={styles.container}>
-        {queryFeedback}
-        {sharedQueryStates.some(({ query }) => query.isFetching) && <p role="status">Učitavanje šifarnika, lagera i komora…</p>}
-      </div>
-    </AppLayout>
-  );
 
   return (
     <AppLayout pageTitle="Modul Luk & Hladnjača — Tok Robe i Sledljivost">
       <div className={styles.container}>
         {queryFeedback}
+        {!isPackagingModalOpen && packagingDraft.pending && <section aria-label="Pakovanje luka"><strong>Pakovanje luka</strong>
+          <SubmissionRecovery pending={!!packagingDraft.pending} busy={submitting} error={packagingDraft.storageError}
+                  onRetry={() => void retryPackaging()} /></section>}
         {!isShipmentModalOpen && <SubmissionRecovery pending={!!shipmentDraft.pending} busy={submitting} error={shipmentDraft.storageError || shipmentError}
                 onRetry={() => void handleCreateShipment(undefined, true)} />}
 
@@ -1384,6 +1407,7 @@ const OnionDashboard: React.FC = () => {
                   setHarvestForm((prev) => ({ ...prev, parcelId: parcels[0].id }));
                 }
                 setIsHarvestModalOpen(true);
+                if (lookupQuery.isError) void lookupQuery.refetch();
               }}
             >
               <Plus size={16} />
@@ -1395,6 +1419,7 @@ const OnionDashboard: React.FC = () => {
               className={styles.btnAmber}
               onClick={() => {
                 openEntry('both');
+                if (lookupQuery.isError) void lookupQuery.refetch();
               }}
             >
               <Package size={16} />
@@ -1407,14 +1432,14 @@ const OnionDashboard: React.FC = () => {
               onClick={refreshCurrentTab}
               title="Osveži podatke"
             >
-              <RotateCw size={16} className={loadingDashboard ? 'spin' : ''} />
+              <RotateCw size={16} className={(activeTab === 'nalozi' ? warehouseOrders.isFetching : loadingDashboard) ? 'spin' : ''} />
               <span>Osveži</span>
             </button>
           </div>
         </div>
 
-        {/* 360° KPI KARTICE STANJA (7 ključnih tačaka) */}
-        <div className={styles.kpiGrid}>
+        {/* 360° KPI KARTICE STANJA (7 ključnih tačaka) — prikazuju se kada je zbirni lager učitan */}
+        {dashboardData && <div className={styles.kpiGrid}>
           <div className={styles.kpiCard} onClick={() => setActiveTab('dovoz')}>
             <div className={`${styles.kpiIcon} ${styles.iconGreen}`}>
               <Tractor size={22} />
@@ -1513,10 +1538,12 @@ const OnionDashboard: React.FC = () => {
               </span>
             </div>
           </div>
-        </div>
+        </div>}
 
         {/* Glavna navigacija tabova (7 tabova poređanih po toku sledljivosti) */}
         <div className={styles.tabsBar}>
+          <button type="button" className={`${styles.tabBtn} ${activeTab === 'nalozi' ? styles.tabBtnActive : ''}`}
+            onClick={() => setActiveTab('nalozi')}><ClipboardCheck size={17} />Radni nalozi</button>
           <button
             type="button"
             className={`${styles.tabBtn} ${activeTab === 'dovoz' ? styles.tabBtnActive : ''}`}
@@ -1575,7 +1602,36 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 2: SKLADIŠTE & DINAMIČKE KOMORE HLADNJAČE */}
         {/* ============================================================ */}
-        {tabUnavailable && tabQueryStates[activeTab].some(({ query }) => query.isFetching) && <p role="status">Učitavanje podataka…</p>}
+        {sharedUnavailable && sharedQueryStates.some(({ query }) => query.isFetching) && <p role="status">Učitavanje šifarnika, lagera i komora…</p>}
+        {!sharedUnavailable && tabUnavailable && tabQueryStates[activeTab].some(({ query }) => query.isFetching) && <p role="status">Učitavanje podataka…</p>}
+        {!tabUnavailable && activeTab === 'nalozi' && warehouseOrders.data && (
+          <section className={styles.sectionCard}>
+            <div className={styles.sectionHeader}><h3 className={styles.sectionTitle}><ClipboardCheck size={18} />Radni nalozi za pakovanje</h3></div>
+            <div className={styles.tableWrapper}><table className={styles.table}>
+              <thead><tr><th>Nalog</th><th>Datum</th><th>Komora</th><th>LOT</th><th>Radnik</th><th>Status</th><th>Akcija</th></tr></thead>
+              <tbody>{warehouseOrders.data.orders.map((order: WorkOrder & { updatedAt: string; packingPlan: PackingPlan; plannedLotNumber?: string | null }) => (
+                <tr key={order.id}><td>{order.orderNumber}</td><td>{formatDateOnly(order.orderDate)}</td>
+                  <td>{order.packingPlan.execution?.sourceName || order.packingPlan.packagingForm.sourceName || '—'}</td>
+                  <td>{order.packingPlan.execution ? <PackingExecution plan={order.packingPlan} /> :
+                    order.plannedLotNumber || allSelectableLots.find((lot: any) => lot.id === order.packingPlan.packagingForm.lotId)?.lotNumber || '—'}</td>
+                  <td>{order.worker.name}</td><td>{{ DODELJEN: 'Dodeljen', PLANIRAN: 'Planiran', U_TOKU: 'U toku', ZAVRSEN: 'Završen', OTKAZAN: 'Otkazan' }[order.status]}</td>
+                  <td><div className={styles.orderActions}>
+                    <button type="button" className={styles.btnSecondary} aria-label={`Info za nalog ${order.orderNumber}`} onClick={() => setInfoOrderId(order.id)}><Info size={15} />Info</button>
+                    {['DODELJEN', 'PLANIRAN'].includes(order.status) && <button type="button" className={styles.btnAmber} onClick={() => {
+                    setPackingOrder({ id: order.id, updatedAt: order.updatedAt });
+                    setPackingPlan(order.packingPlan);
+                    setIsPackagingModalOpen(true);
+                    if (lookupQuery.isError) void lookupQuery.refetch();
+                  }}>Prihvati</button>}
+                    {isManager && order.status === 'ZAVRSEN' && <button type="button" className={styles.btnSecondary}
+                      onClick={() => openReversal(order)}>Poništi potvrdu</button>}</div></td>
+                </tr>
+              ))}{!warehouseOrders.data.orders.length && <tr><td colSpan={7}>Nema radnih naloga za pakovanje.</td></tr>}</tbody>
+            </table></div>
+            <TablePagination currentPage={ordersPage} totalPages={Math.ceil(warehouseOrders.data.total / PAGE_SIZE) || 1}
+              totalItems={warehouseOrders.data.total} pageSize={PAGE_SIZE} onPageChange={setOrdersPage} itemName="naloga" />
+          </section>
+        )}
         {!tabUnavailable && activeTab === 'skladiste' && (
           <>
             <div className={styles.sectionCard}>
@@ -2197,12 +2253,13 @@ const OnionDashboard: React.FC = () => {
                 </div>
               </div>
 
-              <div className={styles.tableWrapper}>
+              <PackagingTableScroller>
                 <table className={styles.table}>
                   <thead>
                     <tr>
                       <th>Datum</th>
                       <th>LOT Broj</th>
+                      <th>Komora</th>
                       <th>Parcela & Sorta</th>
                       {sortingFields.map(([key, label]) => <th key={key}>{label} (kg)</th>)}
                       <th>Škart (%)</th>
@@ -2217,7 +2274,7 @@ const OnionDashboard: React.FC = () => {
                   <tbody>
                     {(packagingData?.rows || []).length === 0 ? (
                       <tr>
-                        <td colSpan={15}>
+                        <td colSpan={16}>
                           <div className={styles.emptyState}>
                             <span>Nema unosa za izabrane filtere.</span>
                           </div>
@@ -2239,6 +2296,9 @@ const OnionDashboard: React.FC = () => {
                                 <QrCode size={13} />
                                 <span>{pk.lot?.lotNumber}</span>
                               </button>
+                            </td>
+                            <td title={pk.sourceName && !pk.sorting ? 'Komora izabrana kao filter pri pakovanju ranije sortirane I klase' : undefined}>
+                              {pk.sourceName || '—'}
                             </td>
                             <td>
                               <div style={{ fontWeight: 700 }}>
@@ -2354,7 +2414,7 @@ const OnionDashboard: React.FC = () => {
                     )}
                   </tbody>
                 </table>
-              </div>
+              </PackagingTableScroller>
 
               <TablePagination
                 currentPage={packagingPage}
@@ -3492,7 +3552,21 @@ const OnionDashboard: React.FC = () => {
               </div>
 
               <form onSubmit={handleCreateHarvest}>
+                <SubmissionRecovery pending={!!harvestDraft.pending} busy={submitting} error={harvestDraft.storageError}
+                  onRetry={() => void handleCreateHarvest(undefined, true)} />
                 <div className={styles.modalBody}>
+                  {lookupQuery.data === undefined && (
+                    lookupQuery.isError ? (
+                      <QueryErrorNotice
+                        title="Šifarnici za dovoz nisu učitani."
+                        error={lookupQuery.error}
+                        pending={lookupQuery.isFetching}
+                        onRetry={() => { void lookupQuery.refetch(); }}
+                      />
+                    ) : (
+                      <p role="status">Učitavanje šifarnika parcela, vozila i komora…</p>
+                    )
+                  )}
                   <div className={styles.formGrid2}>
                     <div className={styles.formGroup}>
                       <label>Datum dovoza *</label>
@@ -3533,11 +3607,25 @@ const OnionDashboard: React.FC = () => {
                       </div>
                       <CustomSelect
                         value={harvestForm.parcelId}
-                        onChange={(val) => setHarvestForm({ ...harvestForm, parcelId: val })}
+                        onChange={(val) => setHarvestForm({ ...harvestForm, parcelId: val, existingLotId: '' })}
                         options={harvestParcelOptions}
                         placeholder="— Izaberi parcelu —"
                       />
                     </div>
+                  </div>
+
+                  <div className={styles.formGroup}>
+                    <label>LOT za dovoz</label>
+                    <CustomSelect
+                      value={harvestForm.existingLotId}
+                      onChange={(existingLotId) => setHarvestForm({ ...harvestForm, existingLotId })}
+                      options={[
+                        { value: '', label: 'Novi LOT' },
+                        ...(lookupData?.activeLots || []).filter((lot: any) => lot.parcelId === harvestForm.parcelId)
+                          .map((lot: any) => ({ value: lot.id, label: lot.lotNumber })),
+                      ]}
+                      placeholder="Novi LOT"
+                    />
                   </div>
 
                   <div className={styles.formGrid2}>
@@ -3671,7 +3759,7 @@ const OnionDashboard: React.FC = () => {
                   >
                     Odustani
                   </button>
-                  <button type="submit" className={styles.btnPrimary} disabled={submitting}>
+                  <button type="submit" className={styles.btnPrimary} disabled={submitting || !!harvestDraft.pending}>
                     <CheckCircle2 size={16} />
                     <span>{submitting ? 'Čuvanje...' : 'Sačuvaj dovoz i generiši LOT'}</span>
                   </button>
@@ -3930,7 +4018,7 @@ const OnionDashboard: React.FC = () => {
         {/* MODAL 4: PAKOVANJE NA PAKERICI (10KG / 5KG, BROJ PAKERA, BOJAN ĆOROVIĆ) */}
         {/* ============================================================ */}
         {isPackagingModalOpen && (
-          <div className={styles.modalOverlay} onClick={() => setIsPackagingModalOpen(false)}>
+          <div className={styles.modalOverlay} onClick={() => { if (!submitting) closePackingEntry(); }}>
             <div className={`${styles.modalCard} ${styles.entryModal}`} onClick={(e) => e.stopPropagation()}>
               <div className={styles.modalHeader}>
                 <h3>
@@ -3940,237 +4028,53 @@ const OnionDashboard: React.FC = () => {
                 <button
                   type="button"
                   className={styles.btnIconSmall}
-                  onClick={() => setIsPackagingModalOpen(false)}
+                  onClick={() => { if (!submitting) closePackingEntry(); }}
                 >
                   <X size={16} />
                 </button>
               </div>
 
               <form onSubmit={handleCreatePackaging}>
+                {standalonePacking && <SubmissionRecovery pending={!!packagingDraft.pending} busy={submitting} error={packagingDraft.storageError}
+                  onRetry={() => void retryPackaging()} />}
                 <div className={styles.modalBody}>
-                  <div className={styles.formGroup}>
-                    <label id="onion-entry-mode-label">Vrsta unosa</label>
-                    <CustomSelect
-                      labelledBy="onion-entry-mode-label"
-                      value={entryMode}
-                      options={entryModeOptions}
-                      searchable={false}
-                      onChange={value => {
-                        setEntryMode(value as typeof entryMode);
-                        setPackagingForm(prev => ({
-                          ...prev, lotId: '',
-                          ...suggestPacking(value === 'both' ? Number(sortingForm.qualityQuantityKg) : 0,
-                            Number(prev.unitWeightKg), prev.packageType),
-                        }));
-                      }}
-                    />
-                  </div>
-                  <div className={styles.formGrid2}>
-                    <div className={styles.formGroup}>
-                      <label id="onion-entry-lot-label">LOT *</label>
-                      <CustomSelect
-                        labelledBy="onion-entry-lot-label"
-                        value={packagingForm.lotId}
-                        onChange={lotId => setPackagingForm(prev => ({
-                          ...prev, lotId,
-                          ...(entryMode === 'packaging' && suggestPacking(freeQualityForLot(lotId), Number(prev.unitWeightKg), prev.packageType)),
-                        }))}
-                        options={entryMode === 'packaging' ? packagingLotOptions : sortingLotOptions}
-                        placeholder="Izaberi LOT"
-                        hideTriggerSubLabel
+                  {lookupQuery.data === undefined ? (
+                    lookupQuery.isError ? (
+                      <QueryErrorNotice
+                        title="Podaci o LOT-u i stanju komora nisu učitani."
+                        error={lookupQuery.error}
+                        pending={lookupQuery.isFetching}
+                        onRetry={() => { void lookupQuery.refetch(); }}
                       />
-                    </div>
-                    <div className={styles.formGroup}>
-                      <label htmlFor="onion-entry-date">Datum *</label>
-                      <input id="onion-entry-date" type="date" required className={styles.input}
-                        value={packagingForm.date}
-                        onChange={e => setPackagingForm({ ...packagingForm, date: e.target.value })} />
-                    </div>
-                  </div>
-
-                  {selectedPackagingLotObj && (
-                    <div className={styles.entryBalance}>
-                      <strong>{selectedPackagingLotObj.parcel?.code} — {selectedPackagingLotObj.parcel?.name} ({selectedPackagingLotObj.cropVariety || 'Žuti luk'})</strong>
-                      <span>Sirovo: <strong>{formatKgAndTons(selectedPackagingLotObj.rawStockKg)}</strong></span>
-                      <span>Slobodna I klasa: <strong>{formatKgAndTons(selectedPackagingLotObj.unpackedQualityKg)}</strong></span>
-                    </div>
-                  )}
-
-                  {entryMode !== 'packaging' && (
-                    <section className={styles.entrySection}>
-                      <h3 className={styles.sectionTitle}><Scale size={18} color="#0284c7" />Sortiranje</h3>
-                      <div className={styles.sortingInputs}>
-                        {sortingFields.map(([key, label]) => {
-                          const required = key === 'inputQuantityKg' || key === 'qualityQuantityKg';
-                          return (
-                            <div key={key} className={styles.formGroup}>
-                              <label htmlFor={`onion-${key}`}>{label} (kg){required && ' *'}</label>
-                              <input id={`onion-${key}`} type="number" className={styles.input} step="any"
-                                min={key === 'inputQuantityKg' ? 0.01 : 0} required={required}
-                                value={sortingForm[key]} placeholder="0"
-                                onWheel={preventWheelNumberChange}
-                                onChange={e => {
-                                  const value = e.target.value;
-                                  setSortingForm({ ...sortingForm, [key]: value });
-                                  if (entryMode === 'both' && key === 'qualityQuantityKg') {
-                                    setPackagingForm(prev => ({
-                                      ...prev, ...suggestPacking(Number(value), Number(prev.unitWeightKg), prev.packageType),
-                                    }));
-                                  }
-                                }} />
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div className={styles.entryBalance}>
-                        <span>Razlika između ulaza i izlaza</span>
-                        <strong>{sortingDifference.toLocaleString('sr-RS')} kg</strong>
-                      </div>
-                    </section>
-                  )}
-                  {entryMode !== 'sorting' && (
-                    <section className={styles.entrySection}>
-                      <h3 className={styles.sectionTitle}><Package size={18} color="#d97706" />Pakovanje</h3>
-                      <div className={styles.formGrid2}>
-                        <div className={styles.formGroup}>
-                          <label>Tip džaka / pakovanja *</label>
-                          <CustomSelect
-                            value={packagingForm.packageType}
-                            onChange={(t) => {
-                              const unitW = PACKAGE_WEIGHTS[t] || 10;
-                              setPackagingForm({
-                                ...packagingForm,
-                                packageType: t,
-                                unitWeightKg: String(unitW),
-                                ...suggestPacking(entryMode === 'packaging' ? freeQualityForLot(packagingForm.lotId)
-                                  : Number(sortingForm.qualityQuantityKg), unitW, t),
-                              });
-                            }}
-                            options={packageTypeOptions}
-                            searchable={false}
-                          />
-                        </div>
-
-                        <div className={styles.formGroup}>
-                          <label>Broj paleta</label>
-                          <input
-                            type="number"
-                            step="1"
-                            min="1"
-                            className={styles.input}
-                            placeholder="npr. 2"
-                            value={packagingForm.palletsCount}
-                            onWheel={preventWheelNumberChange}
-                            onChange={e => setPackagingForm({ ...packagingForm, palletsCount: e.target.value })}
-                          />
-                        </div>
-                      </div>
-
-                      <div className={styles.formGrid2}>
-                        <div className={styles.formGroup}>
-                          <label>Ukupan broj džakova (kom) *</label>
-                          <input
-                            type="number"
-                            step="1"
-                            min="1"
-                            className={styles.input}
-                            placeholder="npr. 500"
-                            value={packagingForm.packageCount}
-                            onWheel={preventWheelNumberChange}
-                            onChange={e => setPackagingForm({
-                              ...packagingForm, packageCount: e.target.value,
-                              palletsCount: suggestPallets(Number(e.target.value), Number(packagingForm.unitWeightKg), packagingForm.packageType),
-                            })}
-                            required
-                          />
-                        </div>
-
-                        <div className={styles.formGroup}>
-                          <label>Oznaka palete / lokacije</label>
-                          <input
-                            type="text"
-                            className={styles.input}
-                            placeholder="npr. PALETA-01..05"
-                            value={packagingForm.palletNumber}
-                            onChange={(e) =>
-                              setPackagingForm({ ...packagingForm, palletNumber: e.target.value })
-                            }
-                          />
-                        </div>
-                      </div>
-
-                      {/* Pakerica (broj pakera - izmenljivo) i Bojan Ćorović */}
-                      <div className={styles.formGrid2}>
-                        <div className={styles.formGroup}>
-                          <label>Broj pakera (opciono)</label>
-                          <input
-                            type="number"
-                            step="1"
-                            min="1"
-                            max="30"
-                            className={styles.input}
-                            value={packagingForm.packerCount}
-                            onWheel={preventWheelNumberChange}
-                            onChange={(e) =>
-                              setPackagingForm({ ...packagingForm, packerCount: e.target.value })
-                            }
-                          />
-                        </div>
-
-                        <div className={styles.formGroup}>
-                          <label>Zadužen za ulaz, izlaz i pakovanje *</label>
-                          <input
-                            type="text"
-                            className={styles.input}
-                            value={packagingForm.responsiblePerson}
-                            onChange={(e) =>
-                              setPackagingForm({ ...packagingForm, responsiblePerson: e.target.value })
-                            }
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <div className={styles.formGroup}>
-                        <label>Napomena za pakericu (opciono)</label>
-                        <input
-                          type="text"
-                          className={styles.input}
-                          placeholder="npr. Druga smena, priprema za Maxi..."
-                          value={packagingForm.packerNotes}
-                          onChange={(e) =>
-                            setPackagingForm({ ...packagingForm, packerNotes: e.target.value })
-                          }
+                    ) : (
+                      <p role="status">Učitavanje podataka o LOT-u i stanju komora…</p>
+                    )
+                  ) : (
+                    <>
+                      {lookupQuery.isError && (
+                        <QueryErrorNotice
+                          title="Osvežavanje podataka o LOT-u nije uspelo; prikazani su poslednji učitani podaci."
+                          error={lookupQuery.error}
+                          pending={lookupQuery.isFetching}
+                          onRetry={() => { void lookupQuery.refetch(); }}
                         />
-                      </div>
-
-                      {Number(packagingForm.packageCount) > 0 && (
-                        <div className={styles.entryBalance}>
-                          <span>Bilans pakovanja</span>
-                          <strong>{packagingForm.packageCount} × {packagingForm.unitWeightKg} kg = {formatKgAndTons(
-                            Number(packagingForm.packageCount) * Number(packagingForm.unitWeightKg)
-                          )}</strong>
-                        </div>
                       )}
-                    </section>
+                      <PackingFields plan={packingPlan} onChange={setPackingPlan} allSelectableLots={allSelectableLots} />
+                    </>
                   )}
-                  <div className={styles.entryBalance}>
-                    <span>Preostala slobodna I klasa</span>
-                    <strong>{remainingQuality.toLocaleString('sr-RS')} kg</strong>
-                  </div>
                 </div>
 
                 <div className={styles.modalFooter}>
                   <button
                     type="button"
                     className={styles.btnSecondary}
-                    onClick={() => setIsPackagingModalOpen(false)}
+                    onClick={() => { if (!submitting) closePackingEntry(); }}
                   >
                     Odustani
                   </button>
-                  <button type="submit" className={styles.btnAmber} disabled={submitting}>
+                  <button type="submit" className={styles.btnAmber} disabled={submitting || lookupQuery.data === undefined || (standalonePacking && !!packagingDraft.pending)}>
                     <CheckCircle2 size={16} />
-                    <span>{submitting ? 'Čuvanje...' : 'Sačuvaj unos'}</span>
+                    <span>{submitting ? 'Čuvanje...' : packingOrder ? 'Potvrdi i završi nalog' : 'Sačuvaj unos'}</span>
                   </button>
                 </div>
               </form>
@@ -4899,6 +4803,37 @@ const OnionDashboard: React.FC = () => {
         {/* ============================================================ */}
         {/* MODAL 8B: POTVRDA BRISANJA PAKOVANJA SA PAKERICE */}
         {/* ============================================================ */}
+        {infoOrder && <OrderDetailsModal order={infoOrder} onClose={() => setInfoOrderId(null)}
+          plannedLotNumber={(infoOrder as any).plannedLotNumber || allSelectableLots.find((lot: { id: string }) => lot.id === infoOrder.packingPlan?.packagingForm.lotId)?.lotNumber} />}
+        {reversal && (
+          <div className={styles.modalOverlay}>
+            <form className={`${styles.modalCard} ${styles.reversalCard}`} onSubmit={reverseConfirmation} role="dialog" aria-modal="true" aria-labelledby="reversal-title" aria-describedby="reversal-description">
+              <div className={styles.modalHeader}>
+                <h3 id="reversal-title"><RotateCw size={19} aria-hidden="true" /> Poništi potvrdu · {reversal.orderNumber}</h3>
+                <button type="button" className={styles.btnIconSmall} aria-label="Zatvori" disabled={submitting} onClick={() => setReversal(null)}><X size={17} /></button>
+              </div>
+              <div className={styles.modalBody}>
+                <p id="reversal-description" className={styles.reversalDescription}>Poništavanjem knjiženja vraća se stanje robe na lageru.</p>
+                <fieldset className={styles.reversalOutcomes} disabled={submitting}>
+                  <legend>Šta uraditi sa nalogom?</legend>
+                  <div className={styles.reversalChoices}>
+                    <label><input type="radio" name="reversal-outcome" value="reopen" checked={outcome === 'reopen'} onChange={() => setOutcome('reopen')} />Vrati na izvršenje</label>
+                    <label><input type="radio" name="reversal-outcome" value="cancel" checked={outcome === 'cancel'} onChange={() => setOutcome('cancel')} />Otkaži i nalog</label>
+                  </div>
+                </fieldset>
+                <div className={styles.formGroup}>
+                  <label htmlFor="reversal-reason">Razlog poništavanja</label>
+                  <textarea id="reversal-reason" className={styles.textarea} rows={3} required disabled={submitting} maxLength={500} value={reason} onChange={e => setReason(e.target.value)} />
+                </div>
+                {reversalError && <div role="alert" className={styles.modalAlertDanger}><AlertCircle size={20} className={styles.modalAlertDangerIcon} /><span className={styles.modalAlertText}>{reversalError}</span></div>}
+              </div>
+              <div className={styles.modalFooter}>
+                <button type="button" className={styles.btnSecondary} disabled={submitting} onClick={() => setReversal(null)}>Odustani</button>
+                <button type="submit" className={styles.btnDangerSolid} disabled={submitting || !reason.trim()}>{submitting ? 'Poništavanje…' : 'Poništi knjiženje'}</button>
+              </div>
+            </form>
+          </div>
+        )}
         {packagingToDelete && (
           <div
             className={styles.modalOverlay}
@@ -5100,7 +5035,7 @@ const OnionDashboard: React.FC = () => {
             void invalidateOnionMutation(queryClient, mode === 'create' ? 'parcelCreate' : 'parcelUpdate');
 
             if (parcelQuickTarget === 'harvest-form') {
-              setHarvestForm((prev) => ({ ...prev, parcelId: savedParcel.id }));
+              setHarvestForm((prev) => ({ ...prev, parcelId: savedParcel.id, existingLotId: prev.parcelId === savedParcel.id ? prev.existingLotId : '' }));
             } else if (parcelQuickTarget === 'harvest-filter') {
               setHarvestParcelFilter(savedParcel.id);
             }

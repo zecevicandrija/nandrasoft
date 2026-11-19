@@ -1229,6 +1229,7 @@ const GorivoDashboard: React.FC = () => {
         {/* Modal 2: Prijem Cisterne (Samo Menadžer) */}
         {isManager && (
           <PrijemCisterneModal
+            userId={userId}
             isOpen={isSupplyModalOpen}
             onClose={() => setIsSupplyModalOpen(false)}
             onSuccess={refreshSuppliesAndTank}

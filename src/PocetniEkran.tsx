@@ -357,7 +357,9 @@ const PocetniEkran: React.FC = () => {
                 )}
               </div>
 
-              {todayOrder.orderType === 'REMONT_SERVIS' ? (
+              {todayOrder.orderType === 'PAKOVANJE' ? (
+                <Link to="/modul-luk?tab=nalozi" className={styles.adminBtn}><Package size={16} />Otvori u magacinu</Link>
+              ) : todayOrder.orderType === 'REMONT_SERVIS' ? (
                 <Link
                   to={`/masine-kvarovi?orderId=${todayOrder.id}&machineId=${todayOrder.machineId || ''}`}
                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginTop: '0.75rem', padding: '0.7rem 1rem', borderRadius: '6px', fontWeight: 700 }}
@@ -369,7 +371,7 @@ const PocetniEkran: React.FC = () => {
                 <Link
                   to={`/radovi/novi?orderId=${todayOrder.id}&parcelId=${todayOrder.parcelId || ''}&machineId=${
                     todayOrder.machineId || ''
-                  }&workTypeId=${todayOrder.workTypeId || ''}&workerId=${todayOrder.workerId}`}
+                  }&attachmentId=${todayOrder.attachmentId || ''}&workTypeId=${todayOrder.workTypeId || ''}&workerId=${todayOrder.workerId}&shift=${todayOrder.shift || ''}`}
                   style={{
                     display: 'flex',
                     alignItems: 'center',

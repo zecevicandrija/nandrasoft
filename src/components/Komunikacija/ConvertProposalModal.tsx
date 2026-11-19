@@ -30,6 +30,7 @@ function buildInitialInstructions(proposal: Proposal) {
 }
 
 export function filterWorkersForOrderType(workers: Named[], orderType: string) {
+  if (orderType === 'PAKOVANJE') return workers.filter(worker => worker.canReceivePackingOrder);
   if (orderType === 'REMONT_SERVIS') {
     return workers.filter(
       (worker) =>
@@ -95,7 +96,7 @@ export function ConvertProposalModal({
 
   const eligibleWorkers = useMemo(() => {
     const filtered = filterWorkersForOrderType(catalog?.workers || [], proposal.data.orderType);
-    if (workerId && !filtered.some((worker) => worker.id === workerId)) {
+    if (proposal.data.orderType !== 'PAKOVANJE' && workerId && !filtered.some((worker) => worker.id === workerId)) {
       const fallback = catalog?.workers.find((worker) => worker.id === workerId);
       if (fallback) return [fallback, ...filtered];
     }
@@ -119,7 +120,7 @@ export function ConvertProposalModal({
 
   const handleSubmit = async () => {
     setLocalError(null);
-    if (!workerId) {
+    if (!workerId || (proposal.data.orderType === 'PAKOVANJE' && !eligibleWorkers.some(worker => worker.id === workerId))) {
       setLocalError('Izaberite radnika pre pretvaranja u radni nalog.');
       return;
     }

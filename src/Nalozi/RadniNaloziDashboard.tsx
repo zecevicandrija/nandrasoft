@@ -1,3 +1,5 @@
+import { PackingFields, newPackingPlan, type PackingPlan } from '../Luk/PackingFields';
+import { onionRequest } from '../Luk/onionRequest';
 import OtherOrderCompletion from '../components/OtherOrderCompletion';
 import MachineUsageModal from '../components/MachineUsageModal';
 import MachineUsageAction from '../components/MachineUsageAction';
@@ -39,6 +41,7 @@ import { useSession } from '../lib/auth-client';
 import styles from './RadniNaloziDashboard.module.css';
 
 interface Worker {
+  canReceivePackingOrder?: boolean;
   id: string;
   name: string;
   type?: 'STALNI' | 'SEZONAC';
@@ -81,7 +84,8 @@ export interface WorkOrder {
   id: string;
   orderNumber: string;
   orderDate: string;
-  orderType: 'RAD_NJIVA' | 'REMONT_SERVIS' | 'OSTALO';
+  orderType: 'RAD_NJIVA' | 'REMONT_SERVIS' | 'PAKOVANJE' | 'OSTALO';
+  packingPlan?: PackingPlan;
   status: 'PLANIRAN' | 'DODELJEN' | 'U_TOKU' | 'ZAVRSEN' | 'OTKAZAN';
   priority: string;
   workerId: string;
@@ -235,6 +239,7 @@ const RadniNaloziDashboard: React.FC = () => {
   // Form podaci za novi nalog
   const [formData, setFormData] = useState(() => ({
     orderDate: getLocalTomorrowStr(),
+    packingPlan: newPackingPlan(getLocalTomorrowStr()),
     orderType: 'RAD_NJIVA',
     priority: 'NORMALNO',
     serviceType: 'REDOVAN_SERVIS',
@@ -252,11 +257,12 @@ const RadniNaloziDashboard: React.FC = () => {
   }));
 
   const orderDraft = useDurableSubmission('create-work-order', currentUser?.id, formData,
-    (draft) => { setFormData({ ...draft, serviceType: draft.serviceType ?? 'REDOVAN_SERVIS', photoUrl: draft.photoUrl ?? null, materials: draft.materials ?? [] }); });
+    (draft) => { setFormData({ ...draft, packingPlan: draft.packingPlan ?? newPackingPlan(draft.orderDate), serviceType: draft.serviceType ?? 'REDOVAN_SERVIS', photoUrl: draft.photoUrl ?? null, materials: draft.materials ?? [] }); });
 
   // Modal za izmenu radnog naloga
   const [editingOrder, setEditingOrder] = useState<WorkOrder | null>(null);
   const [editFormData, setEditFormData] = useState({
+    packingPlan: newPackingPlan(getLocalTomorrowStr()),
     orderDate: '',
     orderType: 'RAD_NJIVA',
     priority: 'NORMALNO',
@@ -276,6 +282,8 @@ const RadniNaloziDashboard: React.FC = () => {
   });
   const [editModalLoading, setEditModalLoading] = useState(false);
   const [editModalError, setEditModalError] = useState('');
+  const [editHasConflict, setEditHasConflict] = useState(false);
+  const [editConflictOrder, setEditConflictOrder] = useState<WorkOrder | null>(null);
 
   // Modali za potvrdu akcija nad nalogom
   const [orderToCancel, setOrderToCancel] = useState<WorkOrder | null>(null);
@@ -292,6 +300,11 @@ const RadniNaloziDashboard: React.FC = () => {
   const workersQuery = useQuery({
     ...operationalQueryOptions<{ workers: Worker[] }>(userId, userRole, 'workers'),
     enabled: needsMasterData,
+  });
+  const packingLookup = useQuery({
+    queryKey: ['onion-lookup'],
+    enabled: needsMasterData && (formData.orderType === 'PAKOVANJE' || editFormData.orderType === 'PAKOVANJE'),
+    queryFn: ({ signal }) => onionRequest('/lookup', signal),
   });
   const machinesQuery = useQuery({
     ...operationalQueryOptions<{ machines: Machine[] }>(userId, userRole, 'machines'),
@@ -340,6 +353,7 @@ const RadniNaloziDashboard: React.FC = () => {
   const pagination = ordersQuery.data?.pagination || { total: 0, page, limit: 25, totalPages: 1 };
   const stats = ordersQuery.data?.stats || { totalOrders: 0, pendingOrders: 0, inProgressOrders: 0, completedOrders: 0 };
   const refreshOrders = useCallback((targetPage = page) => {
+    void queryClient.invalidateQueries({ queryKey: ['onion-orders'] });
     if (targetPage !== page) setPage(targetPage);
     void queryClient.invalidateQueries({ queryKey: operationalKey(userId, userRole, 'orders'), refetchType: targetPage === page ? 'active' : 'none' });
   }, [page, queryClient, userId, userRole]);
@@ -368,6 +382,10 @@ const RadniNaloziDashboard: React.FC = () => {
         );
         return;
       }
+      if (formData.orderType === 'RAD_NJIVA' && (!formData.machineId || !formData.parcelId)) {
+        setModalError('Za njivski nalog izaberite glavnu mašinu i parcelu.');
+        return;
+      }
       if (formData.orderType === 'REMONT_SERVIS') {
         if (!formData.machineId) {
           setModalError('Molimo izaberite mašinu ili priključak za remont.');
@@ -389,9 +407,11 @@ const RadniNaloziDashboard: React.FC = () => {
     try {
       const payload: any = replay && orderDraft.pending ? orderDraft.pending.payload : {
         ...formData,
+        orderDate: formData.orderType === 'PAKOVANJE' ? formData.packingPlan.packagingForm.date : formData.orderDate,
+        packingPlan: formData.orderType === 'PAKOVANJE' ? formData.packingPlan : undefined,
         serviceType: formData.orderType === 'REMONT_SERVIS' ? formData.serviceType : undefined,
         plannedAreaHa: formData.orderType === 'RAD_NJIVA' && formData.plannedAreaHa ? parseFloat(formData.plannedAreaHa) : null,
-        machineId: formData.machineId || null,
+        machineId: formData.orderType === 'PAKOVANJE' ? null : formData.machineId || null,
         attachmentId: formData.orderType === 'RAD_NJIVA' ? (formData.attachmentId || null) : null,
         materials: materialPayload(formData.orderType === 'RAD_NJIVA' ? formData.materials : []),
         contractorId: formData.orderType === 'RAD_NJIVA' ? formData.contractorId || null : null,
@@ -406,6 +426,7 @@ const RadniNaloziDashboard: React.FC = () => {
       // Reset forme
       setFormData({
         orderDate: getLocalTomorrowStr(),
+        packingPlan: newPackingPlan(getLocalTomorrowStr()),
         orderType: 'RAD_NJIVA',
         priority: 'NORMALNO',
         serviceType: 'REDOVAN_SERVIS',
@@ -444,6 +465,7 @@ const RadniNaloziDashboard: React.FC = () => {
   // - REMONT_SERVIS: samo mehaničari
   // - OSTALO: svi radnici
   const getFilteredWorkers = (type: string) => {
+    if (type === 'PAKOVANJE') return workers.filter(w => w.canReceivePackingOrder);
     if (type === 'REMONT_SERVIS') {
       return workers.filter(
         (w) =>
@@ -503,6 +525,7 @@ const RadniNaloziDashboard: React.FC = () => {
     () => [
       { value: '', label: 'Svi tipovi posla' },
       { value: 'RAD_NJIVA', label: 'Rad na njivi' },
+      { value: 'PAKOVANJE', label: 'Pakovanje' },
       { value: 'REMONT_SERVIS', label: 'Remont & Servis' },
     ],
     []
@@ -532,6 +555,7 @@ const RadniNaloziDashboard: React.FC = () => {
   const orderTypeOptions: CustomSelectOption[] = useMemo(
     () => [
       { value: 'RAD_NJIVA', label: 'Rad na njivi', subLabel: 'Rad sa mehanizacijom i oruđima na parcelama' },
+      { value: 'PAKOVANJE', label: 'Pakovanje' },
       { value: 'REMONT_SERVIS', label: 'Remont & Servis mašine', subLabel: 'Popravke i servis mehanizacije u radionici' },
     ],
     []
@@ -628,6 +652,8 @@ const RadniNaloziDashboard: React.FC = () => {
     ];
   }, [machines]);
 
+  const fieldMachineOptions = useMemo(() => machineOptions.filter(option => option.value), [machineOptions]);
+
   // Opcije za mašine u režimu Remont & Servis (usklađeno sa /masine-kvarovi)
   const remontMachineOptions: CustomSelectOption[] = useMemo(() => {
     return machines.map((m) => {
@@ -723,8 +749,11 @@ const RadniNaloziDashboard: React.FC = () => {
   const handleOpenEditModal = useCallback((order: WorkOrder) => {
     setEditingOrder(order);
     setEditModalError('');
+    setEditHasConflict(false);
+    setEditConflictOrder(null);
     setEditFormData({
       orderDate: order.orderDate ? new Date(order.orderDate).toISOString().split('T')[0] : '',
+      packingPlan: order.packingPlan ?? newPackingPlan(order.orderDate.slice(0, 10)),
       orderType: order.orderType,
       priority: order.orderType === 'REMONT_SERVIS' ? toRemontPriority(order.priority) : (order.priority || 'NORMALNO'),
       serviceType: order.maintenance?.serviceType || 'REDOVAN_SERVIS',
@@ -743,10 +772,43 @@ const RadniNaloziDashboard: React.FC = () => {
     });
   }, []);
 
+  const handleReloadEditingOrder = useCallback(async () => {
+    if (!editingOrder) return;
+    setEditModalLoading(true);
+    try {
+      const res = await fetch(`${API}/work-orders/${editingOrder.id}`, {
+        credentials: 'include',
+      });
+      const resData = await res.json();
+      if (res.ok && resData.workOrder) {
+        handleOpenEditModal(resData.workOrder);
+        refreshOrders(page);
+        return;
+      }
+      if (editConflictOrder) {
+        handleOpenEditModal(editConflictOrder);
+        refreshOrders(page);
+        return;
+      }
+      throw new Error(resData.error || 'Greška pri učitavanju aktuelnog plana.');
+    } catch (err: any) {
+      if (editConflictOrder) {
+        handleOpenEditModal(editConflictOrder);
+        refreshOrders(page);
+      } else {
+        setEditModalError(err?.message || 'Greška pri učitavanju aktuelnog plana.');
+      }
+    } finally {
+      setEditModalLoading(false);
+    }
+  }, [editConflictOrder, editingOrder, handleOpenEditModal, page, refreshOrders]);
+
   const handleUpdateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingOrder || editPhotoUploading) return;
     setEditModalError('');
+    setEditHasConflict(false);
+    setEditConflictOrder(null);
 
     if (!editFormData.workerId) {
       setEditModalError(
@@ -757,6 +819,11 @@ const RadniNaloziDashboard: React.FC = () => {
       return;
     }
 
+    if (editFormData.orderType === 'RAD_NJIVA' && ['PLANIRAN', 'DODELJEN'].includes(editingOrder.status)
+      && (!editFormData.machineId || !editFormData.parcelId)) {
+      setEditModalError('Za njivski nalog izaberite glavnu mašinu i parcelu.');
+      return;
+    }
     if (editFormData.orderType === 'REMONT_SERVIS') {
       if (!editFormData.machineId) {
         setEditModalError('Molimo izaberite mašinu ili priključak za remont.');
@@ -777,9 +844,12 @@ const RadniNaloziDashboard: React.FC = () => {
     try {
       const payload: any = {
         ...editFormData,
+        orderUpdatedAt: editingOrder.updatedAt,
+        orderDate: editFormData.orderType === 'PAKOVANJE' ? editFormData.packingPlan.packagingForm.date : editFormData.orderDate,
+        packingPlan: editFormData.orderType === 'PAKOVANJE' ? editFormData.packingPlan : undefined,
         serviceType: editFormData.orderType === 'REMONT_SERVIS' ? editFormData.serviceType : undefined,
         plannedAreaHa: editFormData.orderType === 'RAD_NJIVA' && editFormData.plannedAreaHa ? parseFloat(editFormData.plannedAreaHa) : null,
-        machineId: editFormData.machineId || null,
+        machineId: editFormData.orderType === 'PAKOVANJE' ? null : editFormData.machineId || null,
         attachmentId: editFormData.orderType === 'RAD_NJIVA' ? (editFormData.attachmentId || null) : null,
         materials: materialPayload(editFormData.orderType === 'RAD_NJIVA' ? editFormData.materials : []),
         contractorId: editFormData.orderType === 'RAD_NJIVA' ? editFormData.contractorId || null : null,
@@ -796,6 +866,13 @@ const RadniNaloziDashboard: React.FC = () => {
 
       const resData = await res.json();
       if (!res.ok) {
+        if (res.status === 409) {
+          setEditHasConflict(true);
+          if (resData.workOrder) {
+            setEditConflictOrder(resData.workOrder);
+          }
+          refreshOrders(page);
+        }
         throw new Error(resData.error || 'Greška pri izmeni radnog naloga.');
       }
 
@@ -1155,7 +1232,24 @@ const RadniNaloziDashboard: React.FC = () => {
 
               <form onSubmit={handleCreateOrder} className={styles.modalForm}>
                 {masterFeedback}
-                {formData.orderType === 'REMONT_SERVIS' ? (
+                {formData.orderType === 'PAKOVANJE' ? (
+                  <>
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}><label>Tip naloga *</label>
+                        <CustomSelect value={formData.orderType} options={orderTypeOptions} searchable={false}
+                          onChange={handleCreateOrderTypeChange} /></div>
+                      <div className={styles.formGroup}><label>Dodeljeni radnik *</label>
+                        <CustomSelect value={formData.workerId} options={createWorkerOptions}
+                          onChange={workerId => setFormData(prev => ({ ...prev, workerId }))} /></div>
+                    </div>
+                    {packingLookup.isError && <QueryErrorNotice title="Učitavanje LOT-ova nije uspelo." error={packingLookup.error}
+                      pending={packingLookup.isFetching} onRetry={() => void packingLookup.refetch()} />}
+                    <div className={styles.packingFields}>
+                      <PackingFields plan={formData.packingPlan} allSelectableLots={packingLookup.data?.allLots || []}
+                        onChange={update => setFormData(prev => ({ ...prev, packingPlan: typeof update === 'function' ? update(prev.packingPlan) : update }))} />
+                    </div>
+                  </>
+                ) : formData.orderType === 'REMONT_SERVIS' ? (
                   <>
                     <div className={styles.formGroupFull}>
                       <div className={styles.formLabelRow}>
@@ -1350,12 +1444,12 @@ const RadniNaloziDashboard: React.FC = () => {
                     <div className={styles.formGrid}>
                       <div className={styles.formGroup}>
                         <div className={styles.formLabelRow}>
-                          <label>Glavna mašina / Traktor</label>
+                          <label>Glavna mašina / Traktor{formData.orderType === 'RAD_NJIVA' && ' *'}</label>
                         </div>
                         <CustomSelect
                           value={formData.machineId}
                           onChange={(val) => setFormData((prev) => ({ ...prev, machineId: val }))}
-                          options={machineOptions}
+                          options={formData.orderType === 'RAD_NJIVA' ? fieldMachineOptions : machineOptions}
                           placeholder="— Izaberi mašinu —"
                           searchable
                           hideTriggerSubLabel={true}
@@ -1389,7 +1483,7 @@ const RadniNaloziDashboard: React.FC = () => {
                       <div className={styles.formGrid}>
                         <div className={styles.formGroup}>
                           <div className={styles.formLabelRow}>
-                            <label>Parcela / Njiva</label>
+                            <label>Parcela / Njiva *</label>
 
                           </div>
                           <CustomSelect
@@ -1502,15 +1596,42 @@ const RadniNaloziDashboard: React.FC = () => {
               </div>
 
               {editModalError && (
-                <div style={{ padding: '0.75rem 1.5rem', background: '#fee2e2', color: '#b91c1c' }}>
-                  {editModalError}
+                <div style={{ padding: '0.75rem 1.5rem', background: '#fee2e2', color: '#b91c1c', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <span>{editModalError}</span>
+                  {editHasConflict && (
+                    <button
+                      type="button"
+                      className={styles.cancelModalBtn}
+                      onClick={() => { void handleReloadEditingOrder(); }}
+                      disabled={editModalLoading}
+                    >
+                      Učitaj aktuelni plan
+                    </button>
+                  )}
                 </div>
               )}
 
-              {!['PLANIRAN', 'DODELJEN'].includes(editingOrder.status) && editingOrder.orderType !== 'REMONT_SERVIS' && <MachineUsageAction inset onClick={() => { setUsageId(editingOrder.id); setEditingOrder(null); }} />}
+              {!['PLANIRAN', 'DODELJEN'].includes(editingOrder.status) && !['REMONT_SERVIS', 'PAKOVANJE'].includes(editingOrder.orderType) && <MachineUsageAction inset onClick={() => { setUsageId(editingOrder.id); setEditingOrder(null); }} />}
               <form onSubmit={handleUpdateOrder} className={styles.modalForm}>
                 {masterFeedback}
-                {editFormData.orderType === 'REMONT_SERVIS' ? (
+                {editFormData.orderType === 'PAKOVANJE' ? (
+                  <>
+                    <div className={styles.formGrid}>
+                      <div className={styles.formGroup}><label>Tip naloga *</label>
+                        <CustomSelect value={editFormData.orderType} options={orderTypeOptions.filter(option => option.value === 'PAKOVANJE')} searchable={false}
+                          onChange={handleEditOrderTypeChange} /></div>
+                      <div className={styles.formGroup}><label>Dodeljeni radnik *</label>
+                        <CustomSelect value={editFormData.workerId} options={editWorkerOptions}
+                          onChange={workerId => setEditFormData(prev => ({ ...prev, workerId }))} /></div>
+                    </div>
+                    {packingLookup.isError && <QueryErrorNotice title="Učitavanje LOT-ova nije uspelo." error={packingLookup.error}
+                      pending={packingLookup.isFetching} onRetry={() => void packingLookup.refetch()} />}
+                    <div className={styles.packingFields}>
+                      <PackingFields plan={editFormData.packingPlan} allSelectableLots={packingLookup.data?.allLots || []}
+                        onChange={update => setEditFormData(prev => ({ ...prev, packingPlan: typeof update === 'function' ? update(prev.packingPlan) : update }))} />
+                    </div>
+                  </>
+                ) : editFormData.orderType === 'REMONT_SERVIS' ? (
                   <>
                     <div className={styles.formGrid}>
                       <div className={styles.formGroup}>
@@ -1537,7 +1658,7 @@ const RadniNaloziDashboard: React.FC = () => {
                           value={editFormData.orderType}
                           disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
                           onChange={handleEditOrderTypeChange}
-                          options={orderTypeOptions}
+                          options={orderTypeOptions.filter(option => option.value !== 'PAKOVANJE')}
                           placeholder="— Izaberite tip naloga —"
                           searchable={false}
                           hideTriggerSubLabel={true}
@@ -1678,7 +1799,7 @@ const RadniNaloziDashboard: React.FC = () => {
                           value={editFormData.orderType}
                           disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
                           onChange={handleEditOrderTypeChange}
-                          options={orderTypeOptions}
+                          options={orderTypeOptions.filter(option => option.value !== 'PAKOVANJE')}
                           placeholder="— Izaberite tip naloga —"
                           searchable={false}
                           hideTriggerSubLabel={true}
@@ -1729,14 +1850,14 @@ const RadniNaloziDashboard: React.FC = () => {
                     <div className={styles.formGrid}>
                       <div className={styles.formGroup}>
                         <div className={styles.formLabelRow}>
-                          <label>Glavna mašina / Traktor</label>
+                          <label>Glavna mašina / Traktor{editFormData.orderType === 'RAD_NJIVA' && ' *'}</label>
                         </div>
                         <CustomSelect
                           value={editFormData.machineId}
                           disabled={!["PLANIRAN", "DODELJEN"].includes(editingOrder.status)}
                           onChange={(val) => setEditFormData((prev) => ({ ...prev, machineId: val }))}
-                          options={machineOptions}
-                          placeholder="— Bez mašine —"
+                          options={editFormData.orderType === 'RAD_NJIVA' ? fieldMachineOptions : machineOptions}
+                          placeholder={editFormData.orderType === 'RAD_NJIVA' ? '— Izaberi mašinu —' : '— Bez mašine —'}
                           searchable
                           hideTriggerSubLabel={true}
                           triggerClassName={styles.modalFormSelectTrigger}
@@ -1770,7 +1891,7 @@ const RadniNaloziDashboard: React.FC = () => {
                       <div className={styles.formGrid}>
                         <div className={styles.formGroup}>
                           <div className={styles.formLabelRow}>
-                            <label>Parcela / Njiva</label>
+                            <label>Parcela / Njiva *</label>
 
                           </div>
                           <CustomSelect

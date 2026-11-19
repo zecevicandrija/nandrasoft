@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Tractor,
   Wrench,
+  Package,
   User,
   MapPin,
   X,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 import MachineUsageAction from '../components/MachineUsageAction';
 import { materialLabels, materialUnits } from '../lib/workMaterials';
+import { PackingExecution } from '../Luk/PackingFields';
 import { SERVICE_TYPE_LABELS, type WorkOrder } from './RadniNaloziDashboard';
 import styles from './RadniNaloziDashboard.module.css';
 
@@ -60,6 +62,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
   onReactivate,
   onDelete,
 }) => {
+  const isPacking = order.orderType === 'PAKOVANJE';
   const isRemont = order.orderType === 'REMONT_SERVIS';
   const fuelAssignments = (order.machineAssignments || []).filter(
     (a) => !a.voidedAt && a.status !== 'PONISTENA' && (a.startFuelLiters != null || a.endFuelLiters != null)
@@ -109,7 +112,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
             </span>
           </div>
           <span className={isRemont ? styles.typeBadgeRemont : styles.typeBadgeNjiva}>
-            {isRemont ? (
+            {isPacking ? <><Package size={12} />Pakovanje</> : isRemont ? (
               <>
                 <Wrench size={12} />
                 <span>Remont / Servis</span>
@@ -127,6 +130,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
       {/* Card Body */}
       <div className={styles.orderBody}>
         <div className={styles.metaRowsList}>
+          {isPacking && <PackingExecution plan={order.packingPlan} />}
           <div className={styles.orderRow}>
             <div className={styles.rowIconWrapper}>
               <User size={15} />
@@ -278,7 +282,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
       {/* Card Footer / Akcije */}
       <div className={styles.orderCardFooter}>
         <div className={styles.primaryActionWrapper}>
-          {!isRemont && (order.status === 'PLANIRAN' || order.status === 'DODELJEN') && (
+          {!isPacking && !isRemont && (order.status === 'PLANIRAN' || order.status === 'DODELJEN') && (
             <button
               type="button"
               className={styles.acceptOrderBtn}
@@ -291,7 +295,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
 
           {order.orderType === 'RAD_NJIVA' && order.status === 'U_TOKU' && (
             <Link
-              to={`/radovi/novi?orderId=${order.id}&parcelId=${order.parcelId || ''}&machineId=${order.machineId || ''}&attachmentId=${order.attachmentId || ''}&workTypeId=${order.workTypeId || ''}&workerId=${order.workerId}`}
+              to={`/radovi/novi?orderId=${order.id}&parcelId=${order.parcelId || ''}&machineId=${order.machineId || ''}&attachmentId=${order.attachmentId || ''}&workTypeId=${order.workTypeId || ''}&workerId=${order.workerId}&shift=${order.shift || ''}`}
               className={styles.startWorkBtn}
             >
               <Play size={16} />
@@ -305,6 +309,9 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
             </button>
           )}
 
+          {isPacking && <Link to="/modul-luk?tab=nalozi" className={styles.workshopBtn}>
+            <Package size={16} />Otvori u magacinu
+          </Link>}
           {isRemont && order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
             <Link
               to={`/masine-kvarovi?orderId=${order.id}&machineId=${order.machineId || ''}`}
@@ -316,13 +323,13 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
           )}
         </div>
 
-        {!isRemont && ['U_TOKU', 'ZAVRSEN'].includes(order.status) && (
+        {!isPacking && !isRemont && ['U_TOKU', 'ZAVRSEN'].includes(order.status) && (
           <MachineUsageAction compact onClick={() => onUsage(order.id)} />
         )}
 
         {isManager && (
           <div className={styles.managerActionsWrapper}>
-            {canEdit && (
+            {canEdit && (!isPacking || ['DODELJEN', 'PLANIRAN'].includes(order.status)) && (
               <button
                 type="button"
                 className={styles.editBtn}
@@ -348,7 +355,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
               </button>
             )}
 
-            {order.status === 'OTKAZAN' && (
+            {order.status === 'OTKAZAN' && !order.packingPlan?.cancelledAfterReversal && (
               <button
                 type="button"
                 className={styles.reactivateBtn}
@@ -360,7 +367,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
               </button>
             )}
 
-            <button
+            {!(isPacking && (order.status === 'ZAVRSEN' || order.packingPlan?.cancelledAfterReversal)) && <button
               type="button"
               className={styles.deleteBtn}
               onClick={() => onDelete(order)}
@@ -368,7 +375,7 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
             >
               <Trash2 size={14} />
               <span>Obriši</span>
-            </button>
+            </button>}
           </div>
         )}
       </div>

@@ -73,6 +73,44 @@
   flex-wrap: wrap;
 }
 
+.exportErrorBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  background: rgba(254, 242, 242, 0.95);
+  color: #991b1b;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.exportErrorIcon {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: #dc2626;
+}
+
+.exportErrorText {
+  flex: 1;
+  font-weight: 500;
+}
+
+.exportErrorClose {
+  background: transparent;
+  border: none;
+  color: #991b1b;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.exportErrorClose:hover {
+  color: #7f1d1d;
+}
+
 .btnPdf {
   display: inline-flex;
   align-items: center;

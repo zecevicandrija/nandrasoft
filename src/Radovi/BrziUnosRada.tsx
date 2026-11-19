@@ -7,6 +7,12 @@ import WorkMaterialsEditor, { MaterialSummary } from '../components/WorkMaterial
 import { materialPayload, type WorkMaterial } from '../lib/workMaterials';
 import { ContractorSelect } from '../components/ContractorSelect';
 import { masterQueryKeys } from '../lib/masterQueryKeys';
+import {
+  invalidateFieldWorkCompletionQueries,
+  parseWorkShift,
+  resolveOrderInitialShift,
+  type WorkShift,
+} from '../lib/fieldWorkOrder';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import SubmissionRecovery from '../components/SubmissionRecovery';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -60,12 +66,19 @@ const BrziUnosRada: React.FC = () => {
   const attachmentIdParam = searchParams.get('attachmentId');
   const workTypeIdParam = searchParams.get('workTypeId');
   const workerIdParam = searchParams.get('workerId');
+  const shiftParam = parseWorkShift(searchParams.get('shift'));
 
   // Form states
-  const [shift, setShift] = useState<'PRVA' | 'DRUGA' | 'TRECA'>('PRVA');
+  const [shift, setShift] = useState<WorkShift>('PRVA');
   const [parcelId, setParcelId] = useState('');
   const [contractorId, setContractorId] = useState('');
-  const initializedContractorOrder = useRef<string | null>(null);
+  const initializedOrderRef = useRef<string | null>(null);
+  const shiftTouchedRef = useRef(false);
+  const previousOrderScopeRef = useRef<string | null>(null);
+  const handleSelectShift = (nextShift: WorkShift) => {
+    shiftTouchedRef.current = true;
+    setShift(nextShift);
+  };
   const [machineId, setMachineId] = useState('');
   const [usageOpen, setUsageOpen] = useState(false);
   const [cancelRemainder, setCancelRemainder] = useState(searchParams.get('cancelRemainder') === 'true');
@@ -99,7 +112,7 @@ const BrziUnosRada: React.FC = () => {
       setContractorId(draft.contractorId || '');
       setCancelRemainder(draft.cancelRemainder || false);
       setUsageCompletion(draft.usageCompletion || { usageAreas: [], machineReturns: [] });
-      setShift(draft.shift); setParcelId(draft.parcelId); setMachineId(draft.machineId);
+      setShift(parseWorkShift(draft.shift) ?? 'PRVA'); setParcelId(draft.parcelId); setMachineId(draft.machineId);
       setAttachmentId(draft.attachmentId); setWorkerId(draft.workerId); setWorkTypeId(draft.workTypeId);
       setAreaDoneHa(draft.areaDoneHa); setStartTime(draft.startTime); setEndTime(draft.endTime);
       setPhotoUrl(draft.photoUrl ?? null); setNotes(draft.notes); setEndFuelLiters(draft.endFuelLiters); setEndHours(draft.endHours);
@@ -170,11 +183,23 @@ const BrziUnosRada: React.FC = () => {
     return workerId ? a.workerId === workerId : false;
   });
 
+  useEffect(() => {
+    const scope = orderIdParam || 'manual';
+    if (previousOrderScopeRef.current !== scope) {
+      previousOrderScopeRef.current = scope;
+      shiftTouchedRef.current = false;
+      if (!orderIdParam) {
+        initializedOrderRef.current = null;
+      }
+    }
+  }, [orderIdParam]);
+
   // Postavi inicijalne vrednosti (prioritet ima radni nalog pa aktivno zaduženje!)
   // Ako unosimo rad ručno (bez radnog naloga i bez aktivnog zaduženja), polja ostaju prazna
   useEffect(() => {
     if (durable.hasDraft) return;
     if (orderIdParam) {
+      if (shiftParam && !shiftTouchedRef.current) setShift(shiftParam);
       if (parcelIdParam) setParcelId(parcelIdParam);
       if (machineIdParam) setMachineId(machineIdParam);
       if (attachmentIdParam) setAttachmentId(attachmentIdParam);
@@ -194,16 +219,26 @@ const BrziUnosRada: React.FC = () => {
         setParcelId(userActiveAssignment.parcelId);
       }
     }
-  }, [userActiveAssignment, orderIdParam, parcelIdParam, machineIdParam, attachmentIdParam, workTypeIdParam, workerIdParam, currentUser?.id]);
+  }, [userActiveAssignment, orderIdParam, shiftParam, parcelIdParam, machineIdParam, attachmentIdParam, workTypeIdParam, workerIdParam, currentUser?.id, durable.hasDraft]);
 
   useEffect(() => {
     if (durable.hasDraft) return;
     if (orderData?.workOrder) {
       const wo = orderData.workOrder;
-      if (initializedContractorOrder.current !== wo.id) {
+      const orderInitKey = `${currentUser?.id ?? ''}:${wo.id}`;
+      if (initializedOrderRef.current !== orderInitKey) {
         setMaterials(wo.materials ?? []);
         setContractorId(wo.contractorId || '');
-        initializedContractorOrder.current = wo.id;
+        setShift((currentShift) =>
+          resolveOrderInitialShift({
+            hasDraft: durable.hasDraft,
+            shiftTouched: shiftTouchedRef.current,
+            currentShift,
+            orderShift: wo.shift,
+            paramShift: shiftParam,
+          })
+        );
+        initializedOrderRef.current = orderInitKey;
       }
       if (wo.parcelId && !parcelId) setParcelId(wo.parcelId);
       if (wo.machineId) setMachineId(wo.machineId);
@@ -212,7 +247,7 @@ const BrziUnosRada: React.FC = () => {
       if (wo.workerId && !workerId) setWorkerId(wo.workerId);
       if (wo.plannedAreaHa && !areaDoneHa) setAreaDoneHa(wo.plannedAreaHa);
     }
-  }, [orderData, currentUser?.id]);
+  }, [orderData, shiftParam, currentUser?.id, durable.hasDraft]);
 
   useEffect(() => {
     if (durable.hasDraft) return;
@@ -352,12 +387,8 @@ const BrziUnosRada: React.FC = () => {
     },
     onSuccess: (data) => {
       durable.clear();
-      queryClient.invalidateQueries({ queryKey: ['field-works'] });
-      queryClient.invalidateQueries({ queryKey: ['field-work-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-active'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['assignments-history'] });
-      queryClient.invalidateQueries({ queryKey: masterQueryKeys.machines });
+      const completedOrderId = data?.work?.workOrderId || data?.work?.workOrder?.id || orderIdParam;
+      void invalidateFieldWorkCompletionQueries(queryClient, completedOrderId);
       setSubmittedData(data.work);
       setErrorMsg('');
     },
@@ -652,7 +683,7 @@ const BrziUnosRada: React.FC = () => {
                     <button
                       type="button"
                       className={`${styles.shiftBtn} ${shift === 'PRVA' ? styles.shiftBtnActive : ''}`}
-                      onClick={() => setShift('PRVA')}
+                      onClick={() => handleSelectShift('PRVA')}
                     >
                       <Sun size={15} />
                       <span>1. Smena</span>
@@ -660,7 +691,7 @@ const BrziUnosRada: React.FC = () => {
                     <button
                       type="button"
                       className={`${styles.shiftBtn} ${shift === 'DRUGA' ? styles.shiftBtnActive : ''}`}
-                      onClick={() => setShift('DRUGA')}
+                      onClick={() => handleSelectShift('DRUGA')}
                     >
                       <SunMedium size={15} />
                       <span>2. Smena</span>
@@ -668,7 +699,7 @@ const BrziUnosRada: React.FC = () => {
                     <button
                       type="button"
                       className={`${styles.shiftBtn} ${shift === 'TRECA' ? styles.shiftBtnActive : ''}`}
-                      onClick={() => setShift('TRECA')}
+                      onClick={() => handleSelectShift('TRECA')}
                     >
                       <Moon size={15} />
                       <span>Noćna</span>
