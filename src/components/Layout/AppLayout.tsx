@@ -19,6 +19,7 @@ import {
   Loader2,
   CreditCard,
   BarChart3,
+  MessageSquare,
 } from 'lucide-react';
 import { useSession, signOut } from '../../lib/auth-client';
 import ThemeToggle from '../ThemeToggle';
@@ -49,7 +50,7 @@ const NAV_GROUPS: NavGroup[] = [
       {
         title: 'Komunikacija',
         to: '/komunikacija',
-        icon: <ClipboardList size={18} />,
+        icon: <MessageSquare size={18} />,
         allowedRoles: ['DIREKTOR'],
       },
     ],

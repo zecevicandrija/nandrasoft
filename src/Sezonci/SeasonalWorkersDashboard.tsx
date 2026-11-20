@@ -35,7 +35,7 @@ import { CustomSelect, type CustomSelectOption } from '../components/CustomSelec
 import styles from './SeasonalWorkers.module.css';
 import { workHours, earnings } from './hourlyPay';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 const PAGE_SIZE = 25;
 
 const COMMON_JOBS = [

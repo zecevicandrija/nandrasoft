@@ -21,7 +21,7 @@ interface ParcelQuickModalProps {
   onSaved: (savedParcel: ParcelItem, mode: 'create' | 'edit') => void;
 }
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 export const ParcelQuickModal: React.FC<ParcelQuickModalProps> = ({
   isOpen,

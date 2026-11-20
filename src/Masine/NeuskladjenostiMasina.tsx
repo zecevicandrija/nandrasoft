@@ -16,7 +16,7 @@ import TablePagination from '../components/TablePagination/TablePagination';
 import { useSession } from '../lib/auth-client';
 import styles from './Neuskladjenosti.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 type PeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve';
 

@@ -23,7 +23,13 @@ import {
   Layers,
 } from 'lucide-react';
 import { materialLabels, materialUnits } from '../lib/workMaterials';
-import { PackingExecution, entryModeOptions, packageTypeOptions, sortingFields } from '../Luk/PackingFields';
+import {
+  entryModeOptions,
+  formatKgAndTons,
+  getPackingDisplayData,
+  packageTypeOptions,
+  sortingFields,
+} from '../Luk/PackingFields';
 import { SERVICE_TYPE_LABELS, type WorkOrder } from './RadniNaloziDashboard';
 import styles from './OrderDetailsModal.module.css';
 
@@ -113,8 +119,13 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   const isRemont = order.orderType === 'REMONT_SERVIS';
   const plan = order.packingPlan;
+  const packing = plan
+    ? getPackingDisplayData(plan, plannedLotNumber || order.plannedLotNumber, order.packingSummary)
+    : null;
   const packingRows = plan ? [
-    ['Planirani LOT', plan.execution?.plannedLotNumber || plannedLotNumber || plan.packagingForm.lotId],
+    ['Planirani LOT', packing?.plannedLot || plan.execution?.plannedLotNumber || plannedLotNumber || order.plannedLotNumber || plan.packagingForm.lotId],
+    ['Parcela', order.packingSummary?.plannedParcelName || order.packingSummary?.executedParcelName],
+    ['Sorta', order.packingSummary?.plannedCropVariety || order.packingSummary?.executedCropVariety],
     ['Komora', plan.packagingForm.sourceName],
     ['Vrsta rada', entryModeOptions.find(option => option.value === plan.entryMode)?.label],
     ['Prioritet', ({ NORMALNO: 'Normalno', HITNO: 'Hitno', KRITICNO: 'Kritično' } as Record<string, string>)[order.priority] || order.priority],
@@ -339,7 +350,6 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
               <div className={styles.infoGrid}>
                 {/* Radnik */}
-                {order.packingPlan?.execution && <div className={styles.infoCard}><PackingExecution plan={order.packingPlan} /></div>}
                 <div className={styles.infoCard}>
                   <div className={styles.infoIconWrapper}>
                     <User size={18} />
@@ -537,6 +547,69 @@ export const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     );
                   })}
                 </ul>
+              </div>
+            )}
+
+            {/* REALIZACIJA PAKOVANJA */}
+            {packing?.isExecuted && (
+              <div className={styles.section}>
+                <div className={styles.sectionHeader}>
+                  <h4 className={styles.sectionTitle}>
+                    <CheckCircle2 className={styles.sectionIcon} size={18} />
+                    <span>Realizacija pakovanja u magacinu</span>
+                  </h4>
+                </div>
+
+                <div className={styles.realizationGrid}>
+                  <div className={styles.realizationCard}>
+                    <span className={styles.realizationLabel}>Izvršeni LOT</span>
+                    <span className={styles.realizationValue}>{packing.executedLot || packing.displayLot}</span>
+                  </div>
+
+                  {packing.displaySource && (
+                    <div className={styles.realizationCard}>
+                      <span className={styles.realizationLabel}>Komora</span>
+                      <span className={styles.realizationValue}>{packing.displaySource}</span>
+                    </div>
+                  )}
+
+                  <div className={styles.realizationCard}>
+                    <span className={styles.realizationLabel}>Vrsta rada</span>
+                    <span className={styles.realizationValue}>{packing.executedModeLabel}</span>
+                  </div>
+
+                  <div className={styles.realizationCard}>
+                    <span className={styles.realizationLabel}>Potvrdio/la</span>
+                    <span className={styles.realizationValue}>{packing.actorName}</span>
+                  </div>
+
+                  {packing.displayMode !== 'sorting' && packing.totalWeightKg > 0 && (
+                    <div className={styles.realizationCard}>
+                      <span className={styles.realizationLabel}>Spakovano</span>
+                      <span className={styles.realizationValue}>
+                        {packing.packageCount.toLocaleString('sr-RS')} × {packing.unitWeightKg} kg ({formatKgAndTons(packing.totalWeightKg)})
+                      </span>
+                    </div>
+                  )}
+
+                  {packing.displayMode !== 'sorting' && packing.palletsCount > 0 && (
+                    <div className={styles.realizationCard}>
+                      <span className={styles.realizationLabel}>Broj paleta</span>
+                      <span className={styles.realizationValue}>
+                        {packing.palletsCount}{packing.palletNumber ? ` (${packing.palletNumber})` : ''}
+                      </span>
+                    </div>
+                  )}
+
+                  {packing.displayMode !== 'packaging' && packing.sorting.inputQuantityKg > 0 && (
+                    <div className={styles.realizationCard}>
+                      <span className={styles.realizationLabel}>Sortirano (Ulaz / I klasa)</span>
+                      <span className={styles.realizationValue}>
+                        {packing.sorting.inputQuantityKg.toLocaleString('sr-RS')} kg → {packing.sorting.qualityQuantityKg.toLocaleString('sr-RS')} kg
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

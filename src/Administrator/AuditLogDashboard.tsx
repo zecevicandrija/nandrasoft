@@ -20,7 +20,7 @@ import { TablePagination } from '../components/TablePagination/TablePagination';
 import styles from './AuditLog.module.css';
 import AuditDetails from './AuditDetails';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 const DATE_FORMATTER = new Intl.DateTimeFormat('sr-RS');
 const TIME_FORMATTER = new Intl.DateTimeFormat('sr-RS', {

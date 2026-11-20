@@ -4,8 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import './index.css';
 import App from './App.tsx';
 import AppErrorBoundary from './components/AppErrorBoundary';
+import { installApiBaseFetch } from './lib/api';
 import { initializeSentry } from './lib/sentry';
 
+installApiBaseFetch();
 void initializeSentry();
 
 const queryClient = new QueryClient({

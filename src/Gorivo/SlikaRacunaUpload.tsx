@@ -11,7 +11,7 @@ import {
 import { compressImage } from '../utils/imageCompressor';
 import styles from './GorivoDashboard.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 interface SlikaRacunaUploadProps {
   receiptImageUrl: string | null;

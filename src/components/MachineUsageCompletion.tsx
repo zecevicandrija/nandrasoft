@@ -10,7 +10,7 @@ export default function MachineUsageCompletion({ type, id, primaryMachineId, tot
   value: UsageCompletionData; onChange: (value: UsageCompletionData) => void;
 }) {
   const query = useQuery({ queryKey: ['machine-usage', type, id], queryFn: async () => {
-    const r = await fetch(`http://localhost:5000/api/machine-usage/${type}/${id}`, { credentials: 'include' });
+    const r = await fetch(`/api/machine-usage/${type}/${id}`, { credentials: 'include' });
     const data = await r.json(); if (!r.ok) throw new Error(data.error); return data;
   } });
   const segments = (query.data?.assignments || []).filter((a: any) => !a.voidedAt);

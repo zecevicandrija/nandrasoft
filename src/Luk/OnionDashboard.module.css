@@ -1524,6 +1524,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .formGroup label {
@@ -1573,6 +1574,155 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.45rem;
+}
+
+.packingExecBox {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.packingExecMain {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  color: var(--text-primary);
+}
+
+.packingExecMeta {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.packingExecPlan {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.packingExecActor {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #16a34a;
+}
+
+:global([data-theme="dark"]) .packingExecActor {
+  color: #4ade80;
+}
+
+.orderNumberBtn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #16a34a;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.orderNumberBtn:hover {
+  text-decoration: underline;
+}
+
+:global([data-theme="dark"]) .orderNumberBtn {
+  color: #4ade80;
+}
+
+.orderModeSub {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+  white-space: nowrap;
+}
+
+.orderChamberText {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.orderLotCell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.orderMetaSub {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.orderActorSub {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #16a34a;
+}
+
+:global([data-theme="dark"]) .orderActorSub {
+  color: #4ade80;
+}
+
+.orderSpecCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 180px;
+}
+
+.orderSpecMain {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.orderStatusPLANIRAN {
+  background: rgba(99, 102, 241, 0.14);
+  color: #4f46e5;
+}
+
+.orderStatusDODELJEN {
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+}
+
+.orderStatusU_TOKU {
+  background: rgba(14, 165, 233, 0.14);
+  color: #0369a1;
+}
+
+.orderStatusZAVRSEN {
+  background: rgba(22, 163, 74, 0.14);
+  color: #15803d;
+}
+
+.orderStatusOTKAZAN {
+  background: rgba(239, 68, 68, 0.14);
+  color: #b91c1c;
+}
+
+:global([data-theme="dark"]) .orderStatusPLANIRAN {
+  color: #a5b4fc;
+}
+
+:global([data-theme="dark"]) .orderStatusDODELJEN {
+  color: #fbbf24;
+}
+
+:global([data-theme="dark"]) .orderStatusU_TOKU {
+  color: #38bdf8;
+}
+
+:global([data-theme="dark"]) .orderStatusZAVRSEN {
+  color: #4ade80;
+}
+
+:global([data-theme="dark"]) .orderStatusOTKAZAN {
+  color: #f87171;
 }
 
 .reversalDescription {

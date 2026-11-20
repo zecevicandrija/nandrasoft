@@ -1,4 +1,4 @@
-import { PackingExecution, PackingFields, newPackingPlan, packingBalance, sortingFields, packageTypeOptions, PACKAGE_WEIGHTS, formatKgAndTons, type EntryMode, type PackingPlan } from './PackingFields';
+import { PackingFields, newPackingPlan, packingBalance, sortingFields, packageTypeOptions, PACKAGE_WEIGHTS, formatKgAndTons, getPackingDisplayData, type EntryMode, type PackingPlan, type PackingSummary } from './PackingFields';
 import { useDurableSubmission } from '../lib/useDurableSubmission';
 import OrderDetailsModal from '../Nalozi/OrderDetailsModal';
 import type { WorkOrder } from '../Nalozi/RadniNaloziDashboard';
@@ -1608,13 +1608,65 @@ const OnionDashboard: React.FC = () => {
           <section className={styles.sectionCard}>
             <div className={styles.sectionHeader}><h3 className={styles.sectionTitle}><ClipboardCheck size={18} />Radni nalozi za pakovanje</h3></div>
             <div className={styles.tableWrapper}><table className={styles.table}>
-              <thead><tr><th>Nalog</th><th>Datum</th><th>Komora</th><th>LOT</th><th>Radnik</th><th>Status</th><th>Akcija</th></tr></thead>
-              <tbody>{warehouseOrders.data.orders.map((order: WorkOrder & { updatedAt: string; packingPlan: PackingPlan; plannedLotNumber?: string | null }) => (
-                <tr key={order.id}><td>{order.orderNumber}</td><td>{formatDateOnly(order.orderDate)}</td>
-                  <td>{order.packingPlan.execution?.sourceName || order.packingPlan.packagingForm.sourceName || '—'}</td>
-                  <td>{order.packingPlan.execution ? <PackingExecution plan={order.packingPlan} /> :
-                    order.plannedLotNumber || allSelectableLots.find((lot: any) => lot.id === order.packingPlan.packagingForm.lotId)?.lotNumber || '—'}</td>
-                  <td>{order.worker.name}</td><td>{{ DODELJEN: 'Dodeljen', PLANIRAN: 'Planiran', U_TOKU: 'U toku', ZAVRSEN: 'Završen', OTKAZAN: 'Otkazan' }[order.status]}</td>
+              <thead><tr><th>Nalog</th><th>Datum</th><th>Komora</th><th>LOT</th><th>Specifikacija</th><th>Radnik</th><th>Status</th><th>Akcija</th></tr></thead>
+              <tbody>{warehouseOrders.data.orders.map((order: WorkOrder & { updatedAt: string; packingPlan: PackingPlan; plannedLotNumber?: string | null; packingSummary?: PackingSummary | null }) => {
+                const fallbackLot = order.plannedLotNumber || allSelectableLots.find((lot: any) => lot.id === order.packingPlan?.packagingForm?.lotId)?.lotNumber || null;
+                const packing = getPackingDisplayData(order.packingPlan, fallbackLot, order.packingSummary);
+                const statusLabel = { DODELJEN: 'Dodeljen', PLANIRAN: 'Planiran', U_TOKU: 'U toku', ZAVRSEN: 'Završen', OTKAZAN: 'Otkazan' }[order.status];
+                const canTraceLot = Boolean(packing?.displayLot && packing.displayLot !== '—' && !packing.displayLot.startsWith('cm'));
+                return (
+                <tr key={order.id}>
+                  <td>
+                    <button type="button" className={styles.orderNumberBtn} onClick={() => setInfoOrderId(order.id)} title="Prikaži detalje naloga">
+                      #{order.orderNumber}
+                    </button>
+                    {packing && <div className={styles.orderModeSub}>{packing.displayModeLabel}</div>}
+                  </td>
+                  <td>{formatDateOnly(order.orderDate)}</td>
+                  <td>
+                    <span className={styles.orderChamberText}>{packing?.displaySource || '—'}</span>
+                    {packing?.sourceChanged && packing.plannedSource && (
+                      <div className={styles.orderMetaSub}>Plan: {packing.plannedSource}</div>
+                    )}
+                  </td>
+                  <td>
+                    <div className={styles.orderLotCell}>
+                      {canTraceLot && packing ? (
+                        <button type="button" className={styles.lotBadge} onClick={() => handleOpenTraceability(packing.displayLot)} title="Otvori 360° sledljivost ovog LOT-a">
+                          <QrCode size={13} />
+                          <span>{packing.displayLot}</span>
+                        </button>
+                      ) : (
+                        <span>{packing?.displayLot || '—'}</span>
+                      )}
+                      {packing?.parcelLabel && <div className={styles.orderMetaSub}>{packing.parcelLabel}</div>}
+                      {packing?.lotChanged && <div className={styles.orderMetaSub}>Plan: {packing.plannedLot}</div>}
+                      {packing?.actorName && <div className={styles.orderActorSub}>Potvrdio/la: {packing.actorName}</div>}
+                    </div>
+                  </td>
+                  <td>
+                    {packing ? (
+                      <div className={styles.orderSpecCell}>
+                        {packing.displayMode !== 'sorting' && (
+                          <div className={styles.orderSpecMain}>
+                            <strong>{packing.packageLabel}</strong>
+                            {packing.packageCount > 0 && (
+                              <span> · {packing.packageCount.toLocaleString('sr-RS')} × {packing.unitWeightKg} kg ({formatKgAndTons(packing.totalWeightKg)})</span>
+                            )}
+                            {packing.palletsCount > 0 && <span> · {packing.palletsCount} pal.</span>}
+                          </div>
+                        )}
+                        {packing.displayMode !== 'packaging' && packing.sorting.inputQuantityKg > 0 && (
+                          <div className={styles.orderMetaSub}>
+                            Ulaz: {packing.sorting.inputQuantityKg.toLocaleString('sr-RS')} kg
+                            {packing.sorting.qualityQuantityKg > 0 && ` → I klasa: ${packing.sorting.qualityQuantityKg.toLocaleString('sr-RS')} kg`}
+                          </div>
+                        )}
+                      </div>
+                    ) : '—'}
+                  </td>
+                  <td>{order.worker.name}</td>
+                  <td><span className={`${styles.badgeStatus} ${styles[`orderStatus${order.status}`]}`}>{statusLabel}</span></td>
                   <td><div className={styles.orderActions}>
                     <button type="button" className={styles.btnSecondary} aria-label={`Info za nalog ${order.orderNumber}`} onClick={() => setInfoOrderId(order.id)}><Info size={15} />Info</button>
                     {['DODELJEN', 'PLANIRAN'].includes(order.status) && <button type="button" className={styles.btnAmber} onClick={() => {
@@ -1626,7 +1678,8 @@ const OnionDashboard: React.FC = () => {
                     {isManager && order.status === 'ZAVRSEN' && <button type="button" className={styles.btnSecondary}
                       onClick={() => openReversal(order)}>Poništi potvrdu</button>}</div></td>
                 </tr>
-              ))}{!warehouseOrders.data.orders.length && <tr><td colSpan={7}>Nema radnih naloga za pakovanje.</td></tr>}</tbody>
+                );
+              })}{!warehouseOrders.data.orders.length && <tr><td colSpan={8}>Nema radnih naloga za pakovanje.</td></tr>}</tbody>
             </table></div>
             <TablePagination currentPage={ordersPage} totalPages={Math.ceil(warehouseOrders.data.total / PAGE_SIZE) || 1}
               totalItems={warehouseOrders.data.total} pageSize={PAGE_SIZE} onPageChange={setOrdersPage} itemName="naloga" />

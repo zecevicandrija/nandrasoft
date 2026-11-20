@@ -59,7 +59,7 @@ export default function AuditDetails({ id, onClose }: { id: string; onClose: () 
   const { data, isLoading, error } = useQuery({
     queryKey: ['audit-detail', id],
     queryFn: async ({ signal }) => {
-      const res = await fetch(`http://localhost:5000/api/audit-logs/${encodeURIComponent(id)}`, {
+      const res = await fetch(`/api/audit-logs/${encodeURIComponent(id)}`, {
         credentials: 'include',
         signal,
       });

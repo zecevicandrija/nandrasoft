@@ -8,7 +8,7 @@ import { useDurableSubmission } from '../lib/useDurableSubmission';
 import SubmissionRecovery from './SubmissionRecovery';
 import styles from './MachineUsageModal.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 type Props = { contextType: 'order' | 'work' | 'assignment'; contextId: string; onClose: () => void; onSaved?: () => void };
 const localDate = (value: string | Date) => {
   const d = new Date(value); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);

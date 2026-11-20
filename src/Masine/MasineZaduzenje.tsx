@@ -31,7 +31,7 @@ import EditAssignmentModal from './EditAssignmentModal';
 import AssignmentPhotoModal from './AssignmentPhotoModal';
 import styles from './MasineZaduzenje.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 const EMPTY_LIST: any[] = [];
 
 type TabType = 'active' | 'checkout' | 'history' | 'direct';

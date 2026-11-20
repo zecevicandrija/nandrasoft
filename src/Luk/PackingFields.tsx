@@ -64,20 +64,198 @@ export const newPackingPlan = (date: string, mode: EntryMode = 'both') => ({
     notes: '',
   },
 });
+
+export interface PackingSummary {
+  plannedLotNumber?: string | null;
+  plannedParcelName?: string | null;
+  plannedCropVariety?: string | null;
+  executedLotNumber?: string | null;
+  executedParcelName?: string | null;
+  executedCropVariety?: string | null;
+  actual?: {
+    packageType?: string | null;
+    unitWeightKg?: number | null;
+    packageCount?: number | null;
+    totalWeightKg?: number | null;
+    palletsCount?: number | null;
+    palletNumber?: string | null;
+    packerCount?: number | null;
+    responsiblePerson?: string | null;
+    packerNotes?: string | null;
+    notes?: string | null;
+    sorting?: {
+      inputQuantityKg?: number | null;
+      qualityQuantityKg?: number | null;
+      smallQuantityKg?: number | null;
+      wasteQuantityKg?: number | null;
+      plevaKg?: number | null;
+      wastePercentage?: number | null;
+    } | null;
+  } | null;
+}
+
 export type PackingPlan = ReturnType<typeof newPackingPlan> & {
   cancelledAfterReversal?: boolean;
-  execution?: { entryId: string; lotId: string; lotNumber: string; plannedLotNumber: string; entryMode: EntryMode; actorName: string; sourceName?: string };
+  execution?: { entryId: string; lotId: string; lotNumber: string; plannedLotNumber: string; entryMode: EntryMode; actorName: string; sourceKey?: string; sourceName?: string };
 };
 
-export function PackingExecution({ plan }: { plan?: PackingPlan }) {
-  const execution = plan?.execution;
-  if (!execution || !plan) return null;
-  const label = (mode: EntryMode) => entryModeOptions.find(option => option.value === mode)?.label;
-  return <div>
-    <div>Planirano: {execution.plannedLotNumber} · {plan.packagingForm.sourceName && `${plan.packagingForm.sourceName} · `}{label(plan.entryMode)}</div>
-    <div><strong>Izvršeno: {execution.lotNumber} · {execution.sourceName && `${execution.sourceName} · `}{label(execution.entryMode)}</strong></div>
-    <div>Potvrdio/la: {execution.actorName}</div>
-  </div>;
+export const ENTRY_MODE_LABELS: Record<EntryMode, string> = {
+  both: 'Sortiranje i pakovanje',
+  sorting: 'Samo sortiranje',
+  packaging: 'Pakovanje ranije sortirane I klase',
+};
+
+export const PACKAGE_TYPE_LABELS: Record<string, string> = {
+  DZAK_5KG: 'Mrežasti džak 5 kg',
+  DZAK_10KG: 'Mrežasti džak 10 kg',
+  DZAK_25KG: 'Mrežasti džak 25 kg',
+  DZAMBO_VRECA: 'Džambo vreća',
+  BOKS_PALETA: 'Boks paleta 160x120x120',
+  RINFUZ: 'Rinfuz',
+  DRUGO: 'Prilagođeno pakovanje',
+};
+
+export function getEntryModeLabel(mode?: EntryMode | string | null): string {
+  if (!mode) return 'Pakovanje';
+  return ENTRY_MODE_LABELS[mode as EntryMode] || String(mode);
+}
+
+export function getPackageTypeLabel(packageType?: string | null): string {
+  if (!packageType) return 'Pakovanje';
+  return PACKAGE_TYPE_LABELS[packageType] || packageType;
+}
+
+const toPositiveNum = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
+
+export function getPackingDisplayData(
+  plan?: PackingPlan | null,
+  plannedLotNumber?: string | null,
+  summary?: PackingSummary | null
+) {
+  if (!plan) return null;
+  const execution = plan.execution;
+  const isExecuted = Boolean(execution);
+  const actual = isExecuted ? summary?.actual : null;
+  const plannedMode = plan.entryMode;
+  const executedMode = execution?.entryMode ?? plannedMode;
+  const displayMode = executedMode;
+  const plannedModeLabel = getEntryModeLabel(plannedMode);
+  const executedModeLabel = getEntryModeLabel(executedMode);
+  const displayModeLabel = getEntryModeLabel(displayMode);
+
+  const plannedLot =
+    execution?.plannedLotNumber ||
+    summary?.plannedLotNumber ||
+    plannedLotNumber ||
+    plan.packagingForm?.lotId ||
+    '—';
+  const executedLot = execution?.lotNumber || summary?.executedLotNumber || null;
+  const displayLot = (isExecuted && executedLot) ? executedLot : plannedLot;
+
+  const parcelLabel = (isExecuted ? summary?.executedParcelName : null) || summary?.plannedParcelName || null;
+  const cropVariety = (isExecuted ? summary?.executedCropVariety : null) || summary?.plannedCropVariety || null;
+
+  const plannedSource = plan.packagingForm?.sourceName || '';
+  const executedSource = execution?.sourceName || '';
+  const displaySource = (isExecuted && executedSource) ? executedSource : plannedSource;
+
+  const lotChanged = Boolean(isExecuted && executedLot && plannedLot !== '—' && executedLot !== plannedLot);
+  const modeChanged = Boolean(isExecuted && execution && execution.entryMode !== plannedMode);
+  const sourceChanged = Boolean(
+    isExecuted &&
+      execution &&
+      (plan.packagingForm?.sourceKey || plannedSource) !== (execution.sourceKey || executedSource) &&
+      (plannedSource || executedSource)
+  );
+  const hasPlanDeviation = lotChanged || modeChanged || sourceChanged;
+
+  const pkgForm = plan.packagingForm;
+  const packageType = actual?.packageType || pkgForm.packageType;
+  const packageLabel = getPackageTypeLabel(packageType);
+  const unitWeightKg = actual?.unitWeightKg ?? (toPositiveNum(pkgForm.unitWeightKg) || PACKAGE_WEIGHTS[packageType] || 10);
+  const packageCount = actual?.packageCount ?? toPositiveNum(pkgForm.packageCount);
+  const totalWeightKg = actual?.totalWeightKg ?? (packageCount > 0 ? Number((packageCount * unitWeightKg).toFixed(2)) : 0);
+  const palletsCount = actual?.palletsCount ?? toPositiveNum(pkgForm.palletsCount);
+  const palletNumber = (actual ? actual.palletNumber : pkgForm.palletNumber)?.trim() || '';
+  const packerCount = actual?.packerCount ?? toPositiveNum(pkgForm.packerCount);
+  const responsiblePerson = (actual ? actual.responsiblePerson : pkgForm.responsiblePerson)?.trim() || '';
+  const packerNotes = (actual ? actual.packerNotes : pkgForm.packerNotes)?.trim() || '';
+  const notes = (actual ? actual.notes : pkgForm.notes)?.trim() || '';
+
+  const sortSrc = actual?.sorting ?? plan.sortingForm;
+  const sorting = {
+    inputQuantityKg: toPositiveNum(sortSrc?.inputQuantityKg),
+    qualityQuantityKg: toPositiveNum(sortSrc?.qualityQuantityKg),
+    smallQuantityKg: toPositiveNum(sortSrc?.smallQuantityKg),
+    wasteQuantityKg: toPositiveNum(sortSrc?.wasteQuantityKg),
+    plevaKg: toPositiveNum(sortSrc?.plevaKg),
+    wastePercentage: actual?.sorting?.wastePercentage ?? null,
+    hasAny:
+      toPositiveNum(sortSrc?.inputQuantityKg) > 0 ||
+      toPositiveNum(sortSrc?.qualityQuantityKg) > 0 ||
+      toPositiveNum(sortSrc?.smallQuantityKg) > 0 ||
+      toPositiveNum(sortSrc?.wasteQuantityKg) > 0 ||
+      toPositiveNum(sortSrc?.plevaKg) > 0,
+  };
+
+  return {
+    isExecuted,
+    actorName: execution?.actorName || '',
+    plannedMode,
+    executedMode,
+    displayMode,
+    plannedModeLabel,
+    executedModeLabel,
+    displayModeLabel,
+    plannedLot,
+    executedLot,
+    displayLot,
+    parcelLabel,
+    cropVariety,
+    plannedSource,
+    executedSource,
+    displaySource,
+    lotChanged,
+    modeChanged,
+    sourceChanged,
+    hasPlanDeviation,
+    packageType,
+    packageLabel,
+    unitWeightKg,
+    packageCount,
+    totalWeightKg,
+    palletsCount,
+    palletNumber,
+    packerCount,
+    responsiblePerson,
+    packerNotes,
+    notes,
+    sorting,
+  };
+}
+
+export function PackingExecution({ plan, plannedLotNumber, summary }: { plan?: PackingPlan; plannedLotNumber?: string | null; summary?: PackingSummary | null }) {
+  const data = getPackingDisplayData(plan, plannedLotNumber, summary);
+  if (!data || !plan?.execution) return null;
+  return (
+    <div className={styles.packingExecBox}>
+      <div className={styles.packingExecMain}>
+        <strong>{data.executedLot || data.displayLot}</strong>
+        {data.executedSource && <span className={styles.packingExecMeta}>· {data.executedSource}</span>}
+      </div>
+      {data.hasPlanDeviation && (
+        <div className={styles.packingExecPlan}>
+          Plan: {data.plannedLot}
+          {data.plannedSource ? ` · ${data.plannedSource}` : ''}
+          {data.modeChanged ? ` · ${data.plannedModeLabel}` : ''}
+        </div>
+      )}
+      <div className={styles.packingExecActor}>Potvrdio/la: {data.actorName}</div>
+    </div>
+  );
 }
 
 export const packageTypeOptions: CustomSelectOption[] = [

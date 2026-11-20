@@ -1,4 +1,4 @@
-import { PackingFields, newPackingPlan, type PackingPlan } from '../Luk/PackingFields';
+import { PackingFields, newPackingPlan, type PackingPlan, type PackingSummary } from '../Luk/PackingFields';
 import { onionRequest } from '../Luk/onionRequest';
 import OtherOrderCompletion from '../components/OtherOrderCompletion';
 import MachineUsageModal from '../components/MachineUsageModal';
@@ -86,6 +86,8 @@ export interface WorkOrder {
   orderDate: string;
   orderType: 'RAD_NJIVA' | 'REMONT_SERVIS' | 'PAKOVANJE' | 'OSTALO';
   packingPlan?: PackingPlan;
+  plannedLotNumber?: string | null;
+  packingSummary?: PackingSummary | null;
   status: 'PLANIRAN' | 'DODELJEN' | 'U_TOKU' | 'ZAVRSEN' | 'OTKAZAN';
   priority: string;
   workerId: string;

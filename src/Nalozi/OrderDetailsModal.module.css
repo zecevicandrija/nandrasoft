@@ -613,9 +613,8 @@
   font-size: 0.92rem;
   font-weight: 700;
   color: var(--text-primary, #f1f5f9);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 :global([data-theme="light"]) .infoValue {

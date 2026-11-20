@@ -25,7 +25,7 @@ import { CustomSelect, type CustomSelectOption } from '../components/CustomSelec
 import { TablePagination } from '../components/TablePagination/TablePagination';
 import styles from './AdminPanel.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 const PAGE_SIZE = 25;
 

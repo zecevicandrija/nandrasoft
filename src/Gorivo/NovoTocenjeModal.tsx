@@ -44,7 +44,7 @@ interface NovoTocenjeModalProps {
   isManager: boolean;
 }
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 const FLUID_TYPES = [
   { value: 'EURODIZEL', label: '[123] Eurodizel (Osnovno pogonsko)', unit: 'L' },

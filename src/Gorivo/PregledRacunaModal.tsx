@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import styles from './GorivoDashboard.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 interface FuelEntryForReceipt {
   id: string;

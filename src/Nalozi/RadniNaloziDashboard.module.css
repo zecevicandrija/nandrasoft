@@ -657,6 +657,26 @@
   border-color: #bae6fd;
 }
 
+.typeBadgePakovanje {
+  background: rgba(249, 115, 22, 0.14);
+  color: #fb923c;
+  border: 1px solid rgba(249, 115, 22, 0.32);
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+:global([data-theme="light"]) .typeBadgePakovanje {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fed7aa;
+}
+
 /* Card Body */
 .orderBody {
   display: flex;
@@ -905,6 +925,170 @@
 :global([data-theme="dark"]) .fuelNotice { color: #7dd3fc; }
 :global([data-theme="dark"]) .fuelIcon { color: #38bdf8; }
 
+.packingPlanBadge {
+  display: inline-block;
+  padding: 0.14rem 0.5rem;
+  background: rgba(249, 115, 22, 0.14);
+  color: #fb923c;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+:global([data-theme="light"]) .packingPlanBadge {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fed7aa;
+}
+
+.packingSpecsCard {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-hover, rgba(255, 255, 255, 0.03));
+}
+
+:global([data-theme="light"]) .packingSpecsCard {
+  background: #f8fafc;
+}
+
+.packingSectionBlock {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.packingSectionBlock + .packingSectionBlock {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.inlineMetaIcon {
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+.packingMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 6px;
+}
+
+.packingMetricChip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  min-width: 0;
+}
+
+.packingMetricChip span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.packingMetricChip strong {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.packingSpecHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.packingSpecTitle {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.packingMetaChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.packingMetaPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.packingMetaPill strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.packingExecutionNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 9px;
+  padding: 0.5rem 0.7rem;
+  margin-top: 0.1rem;
+}
+
+:global([data-theme="light"]) .packingExecutionNotice {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #065f46;
+}
+
+.packingExecutionIcon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #10b981;
+}
+
+:global([data-theme="light"]) .packingExecutionIcon {
+  color: #059669;
+}
+
+.packingExecutionContent {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.packingDeviationBox {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-top: 0.25rem;
+  border-top: 1px dashed rgba(16, 185, 129, 0.35);
+  font-size: 0.78rem;
+}
+
 .instructionsBox {
   background: var(--bg-hover, #f8fafc);
   border-left: 3px solid #10b981;
@@ -1049,7 +1233,8 @@
 
 .acceptOrderBtn,
 .startWorkBtn,
-.workshopBtn {
+.workshopBtn,
+.packingBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1102,9 +1287,22 @@
   box-shadow: 0 5px 12px rgba(139, 92, 246, 0.38);
 }
 
+.packingBtn {
+  background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
+  color: #ffffff;
+  box-shadow: 0 3px 8px rgba(217, 119, 6, 0.28);
+}
+
+.packingBtn:hover {
+  background: linear-gradient(135deg, #b45309 0%, #92400e 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 5px 12px rgba(217, 119, 6, 0.38);
+}
+
 .acceptOrderBtn:active,
 .startWorkBtn:active,
-.workshopBtn:active {
+.workshopBtn:active,
+.packingBtn:active {
   transform: translateY(1px);
 }
 

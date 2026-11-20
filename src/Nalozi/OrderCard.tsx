@@ -18,10 +18,15 @@ import {
   FlaskConical,
   Sprout,
   Camera,
+  QrCode,
+  Snowflake,
+  CheckCircle2,
+  Scale,
+  Users,
 } from 'lucide-react';
 import MachineUsageAction from '../components/MachineUsageAction';
 import { materialLabels, materialUnits } from '../lib/workMaterials';
-import { PackingExecution } from '../Luk/PackingFields';
+import { formatKgAndTons, getPackingDisplayData } from '../Luk/PackingFields';
 import { SERVICE_TYPE_LABELS, type WorkOrder } from './RadniNaloziDashboard';
 import styles from './RadniNaloziDashboard.module.css';
 
@@ -64,10 +69,28 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
 }) => {
   const isPacking = order.orderType === 'PAKOVANJE';
   const isRemont = order.orderType === 'REMONT_SERVIS';
+  const packing = isPacking
+    ? getPackingDisplayData(order.packingPlan, order.plannedLotNumber, order.packingSummary)
+    : null;
   const fuelAssignments = (order.machineAssignments || []).filter(
     (a) => !a.voidedAt && a.status !== 'PONISTENA' && (a.startFuelLiters != null || a.endFuelLiters != null)
   );
   const photoCount = (order.photoUrl ? 1 : 0) + (order.fieldWork?.photoUrl ? 1 : 0);
+
+  const packingBadgeText = packing
+    ? packing.displayMode !== 'sorting' && packing.totalWeightKg > 0
+      ? formatKgAndTons(packing.totalWeightKg)
+      : packing.sorting.inputQuantityKg > 0
+        ? `Ulaz: ${formatKgAndTons(packing.sorting.inputQuantityKg)}`
+        : null
+    : null;
+
+  const hasPackingSpecDetails = Boolean(
+    packing &&
+      ((packing.displayMode !== 'packaging' && packing.sorting.hasAny) ||
+        packing.displayMode !== 'sorting' ||
+        (packing.notes && packing.notes !== order.instructions))
+  );
 
   return (
     <div className={styles.orderCard}>
@@ -111,8 +134,21 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
                       : 'Planiran'}
             </span>
           </div>
-          <span className={isRemont ? styles.typeBadgeRemont : styles.typeBadgeNjiva}>
-            {isPacking ? <><Package size={12} />Pakovanje</> : isRemont ? (
+          <span
+            className={
+              isPacking
+                ? styles.typeBadgePakovanje
+                : isRemont
+                  ? styles.typeBadgeRemont
+                  : styles.typeBadgeNjiva
+            }
+          >
+            {isPacking ? (
+              <>
+                <Package size={12} />
+                <span>Pakovanje</span>
+              </>
+            ) : isRemont ? (
               <>
                 <Wrench size={12} />
                 <span>Remont / Servis</span>
@@ -130,7 +166,6 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
       {/* Card Body */}
       <div className={styles.orderBody}>
         <div className={styles.metaRowsList}>
-          {isPacking && <PackingExecution plan={order.packingPlan} />}
           <div className={styles.orderRow}>
             <div className={styles.rowIconWrapper}>
               <User size={15} />
@@ -140,6 +175,151 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
               <strong className={styles.rowValue}>{order.worker?.name}</strong>
             </div>
           </div>
+
+          {packing && (
+            <>
+              <div className={styles.orderRow}>
+                <div className={styles.rowIconWrapper}>
+                  <QrCode size={15} />
+                </div>
+                <div className={styles.rowContent}>
+                  <span className={styles.rowLabel}>LOT:</span>
+                  <strong className={styles.rowValue}>{packing.displayLot}</strong>
+                  {(packing.parcelLabel || packing.cropVariety) && (
+                    <span className={styles.attachmentText}>
+                      • {[packing.parcelLabel, packing.cropVariety].filter(Boolean).join(' · ')}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {packing.displaySource && (
+                <div className={styles.orderRow}>
+                  <div className={styles.rowIconWrapper}>
+                    <Snowflake size={15} />
+                  </div>
+                  <div className={styles.rowContent}>
+                    <span className={styles.rowLabel}>Komora:</span>
+                    <strong className={styles.rowValue}>{packing.displaySource}</strong>
+                  </div>
+                </div>
+              )}
+
+              <div className={`${styles.orderRow} ${styles.jobRow}`}>
+                <div className={styles.rowIconWrapper}>
+                  <Package size={15} />
+                </div>
+                <div className={styles.jobDetails}>
+                  <div className={styles.jobHeader}>
+                    <div className={styles.jobTitle}>
+                      <span className={styles.rowLabel}>Posao</span>
+                      <strong>{packing.displayModeLabel}</strong>
+                    </div>
+                    {packingBadgeText && (
+                      <span className={styles.packingPlanBadge} title="Planirana ili realizovana masa">
+                        {packingBadgeText}
+                      </span>
+                    )}
+                  </div>
+
+                  {hasPackingSpecDetails && (
+                    <div className={styles.packingSpecsCard}>
+                      {packing.displayMode !== 'packaging' && packing.sorting.hasAny && (
+                        <div className={styles.packingSectionBlock}>
+                          <span className={styles.materialsLabel}>
+                            <Scale size={12} className={styles.inlineMetaIcon} aria-hidden="true" />
+                            Sortiranje
+                          </span>
+                          <div className={styles.packingMetricGrid}>
+                            {packing.sorting.inputQuantityKg > 0 && (
+                              <div className={styles.packingMetricChip}>
+                                <span>Ulaz</span>
+                                <strong>{packing.sorting.inputQuantityKg.toLocaleString('sr-RS')} kg</strong>
+                              </div>
+                            )}
+                            {packing.sorting.qualityQuantityKg > 0 && (
+                              <div className={styles.packingMetricChip}>
+                                <span>I klasa</span>
+                                <strong>{packing.sorting.qualityQuantityKg.toLocaleString('sr-RS')} kg</strong>
+                              </div>
+                            )}
+                            {packing.sorting.smallQuantityKg > 0 && (
+                              <div className={styles.packingMetricChip}>
+                                <span>II klasa</span>
+                                <strong>{packing.sorting.smallQuantityKg.toLocaleString('sr-RS')} kg</strong>
+                              </div>
+                            )}
+                            {packing.sorting.wasteQuantityKg > 0 && (
+                              <div className={styles.packingMetricChip}>
+                                <span>Otpad</span>
+                                <strong>{packing.sorting.wasteQuantityKg.toLocaleString('sr-RS')} kg</strong>
+                              </div>
+                            )}
+                            {packing.sorting.plevaKg > 0 && (
+                              <div className={styles.packingMetricChip}>
+                                <span>Pleva</span>
+                                <strong>{packing.sorting.plevaKg.toLocaleString('sr-RS')} kg</strong>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {packing.displayMode !== 'sorting' && (
+                        <div className={styles.packingSectionBlock}>
+                          <div className={styles.packingSpecHeader}>
+                            <span className={styles.packingSpecTitle}>{packing.packageLabel}</span>
+                            {packing.packageCount > 0 && (
+                              <span className={styles.materialDose}>
+                                {packing.packageCount.toLocaleString('sr-RS')} kom × {packing.unitWeightKg} kg
+                              </span>
+                            )}
+                          </div>
+
+                          {(packing.palletsCount > 0 ||
+                            packing.palletNumber ||
+                            packing.packerCount > 0 ||
+                            (packing.responsiblePerson && packing.responsiblePerson !== order.worker?.name)) && (
+                            <div className={styles.packingMetaChips}>
+                              {packing.palletsCount > 0 && (
+                                <span className={styles.packingMetaPill}>
+                                  Palete: <strong>{packing.palletsCount}</strong>
+                                </span>
+                              )}
+                              {packing.palletNumber && (
+                                <span className={styles.packingMetaPill}>
+                                  Oznaka: <strong>{packing.palletNumber}</strong>
+                                </span>
+                              )}
+                              {packing.packerCount > 0 && (
+                                <span className={styles.packingMetaPill}>
+                                  <Users size={12} aria-hidden="true" />
+                                  <strong>{packing.packerCount}</strong> pakera
+                                </span>
+                              )}
+                              {packing.responsiblePerson && packing.responsiblePerson !== order.worker?.name && (
+                                <span className={styles.packingMetaPill}>
+                                  Zadužen: <strong>{packing.responsiblePerson}</strong>
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {packing.packerNotes && (
+                            <p className={styles.materialNote}>{packing.packerNotes}</p>
+                          )}
+                        </div>
+                      )}
+
+                      {packing.notes && packing.notes !== order.instructions && (
+                        <p className={styles.materialNote}>{packing.notes}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
 
           {order.machine && (
             <div className={styles.orderRow}>
@@ -245,6 +425,32 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
           )}
         </div>
 
+        {packing?.isExecuted && (
+          <div className={styles.packingExecutionNotice}>
+            <CheckCircle2 size={15} className={styles.packingExecutionIcon} aria-hidden="true" />
+            <div className={styles.packingExecutionContent}>
+              <span>
+                Potvrdio/la u magacinu: <strong>{packing.actorName}</strong>
+              </span>
+              {packing.hasPlanDeviation && (
+                <div className={styles.packingDeviationBox}>
+                  <span>
+                    Planirano: {packing.plannedLot}
+                    {packing.plannedSource ? ` · ${packing.plannedSource}` : ''} · {packing.plannedModeLabel}
+                  </span>
+                  <span>
+                    Izvršeno:{' '}
+                    <strong>
+                      {packing.executedLot || packing.displayLot}
+                      {packing.executedSource ? ` · ${packing.executedSource}` : ''} · {packing.executedModeLabel}
+                    </strong>
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {fuelAssignments.map((a) => (
           <div key={a.id} className={styles.fuelNotice}>
             <Fuel size={15} className={styles.fuelIcon} aria-hidden="true" />
@@ -309,9 +515,12 @@ const OrderCard: React.FC<OrderCardProps> = React.memo(({
             </button>
           )}
 
-          {isPacking && <Link to="/modul-luk?tab=nalozi" className={styles.workshopBtn}>
-            <Package size={16} />Otvori u magacinu
-          </Link>}
+          {isPacking && (
+            <Link to="/modul-luk?tab=nalozi" className={styles.packingBtn}>
+              <Package size={16} />
+              <span>Otvori u magacinu</span>
+            </Link>
+          )}
           {isRemont && order.status !== 'ZAVRSEN' && order.status !== 'OTKAZAN' && (
             <Link
               to={`/masine-kvarovi?orderId=${order.id}&machineId=${order.machineId || ''}`}

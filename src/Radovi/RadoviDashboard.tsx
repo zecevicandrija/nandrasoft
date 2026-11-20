@@ -42,7 +42,7 @@ import {
 } from './EditWorkModal';
 import styles from './Radovi.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 type PeriodType = 'danas' | 'nedelja' | 'mesec' | 'sve' | 'custom';
 

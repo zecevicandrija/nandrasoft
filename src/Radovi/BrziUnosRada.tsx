@@ -44,7 +44,7 @@ import CustomSelect, { type CustomSelectOption } from '../components/CustomSelec
 import { useSession } from '../lib/auth-client';
 import styles from './BrziUnosRada.module.css';
 
-const API = 'http://localhost:5000/api';
+const API = '/api';
 
 const BrziUnosRada: React.FC = () => {
   const navigate = useNavigate();
