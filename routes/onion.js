@@ -1,4 +1,4 @@
-import { finishPackingOrder, packingSource, sourceKeySchema, warehouseRoles } from "../lib/packingWorkOrders.js";
+import { enrichPackingWorkOrders, finishPackingOrder, packingSource, sourceKeySchema, warehouseRoles } from "../lib/packingWorkOrders.js";
 import { reversePackingConfirmation } from "../lib/reversePackingConfirmation.js";
 import { writeAudit } from "../lib/audit.js";
 import { addMoney, multiplyMoney } from "../lib/money.js";
@@ -1456,23 +1456,10 @@ router.get("/work-orders", async (req, res) => {
           status: true, priority: true, shift: true, instructions: true, photoUrl: true, packingPlan: true, workerId: true,
           worker: { select: { id: true, name: true } }, issuedBy: { select: { id: true, name: true, role: true } } } }),
     ]);
-    const lotIds = [...new Set(orders.map((order) => order.packingPlan?.packagingForm?.lotId).filter(Boolean))];
-    const plannedLots = lotIds.length
-      ? await prisma.onionLot.findMany({
-          where: { id: { in: lotIds } },
-          select: { id: true, lotNumber: true },
-        })
-      : [];
-    const lotNumberById = new Map(plannedLots.map((lot) => [lot.id, lot.lotNumber]));
+    const enrichedOrders = await enrichPackingWorkOrders(prisma, orders);
     res.json({
       total,
-      orders: orders.map((order) => ({
-        ...order,
-        plannedLotNumber:
-          order.packingPlan?.execution?.plannedLotNumber ||
-          lotNumberById.get(order.packingPlan?.packagingForm?.lotId) ||
-          null,
-      })),
+      orders: enrichedOrders,
     });
   } catch (error) {
     console.error("Greška pri dohvatanju magacinskih radnih naloga:", error);

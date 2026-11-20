@@ -4,8 +4,36 @@ import { APIError } from "better-auth/api";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { prisma } from "../lib/prisma.js";
 
+const authBaseUrl = (process.env.BETTER_AUTH_URL || "http://localhost:5000").trim().replace(/\/+$/, "");
+const frontendUrl = process.env.FRONTEND_URL?.trim().replace(/\/+$/, "");
+
+function parseOrigin(value) {
+  try {
+    return value ? new URL(value).origin : null;
+  } catch {
+    return null;
+  }
+}
+
+const authOrigin = parseOrigin(authBaseUrl);
+const frontendOrigin = parseOrigin(frontendUrl);
+const useCrossOriginCookies =
+  process.env.CROSS_ORIGIN_COOKIES === "true" ||
+  (Boolean(authOrigin && frontendOrigin) &&
+    authBaseUrl.startsWith("https://") &&
+    frontendUrl.startsWith("https://") &&
+    authOrigin !== frontendOrigin);
+
+const envTrustedOrigins = [
+  frontendUrl,
+  authBaseUrl,
+  ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(",") : []),
+]
+  .map((origin) => origin?.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
 export const auth = betterAuth({
-  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000",
+  baseURL: authBaseUrl,
   secret: process.env.BETTER_AUTH_SECRET,
   rateLimit: {
     customRules: {
@@ -71,5 +99,16 @@ export const auth = betterAuth({
     "https://*.ngrok-free.app",
     "https://*.ngrok.io",
     "https://*.loca.lt",
+    ...envTrustedOrigins,
   ],
+  ...(useCrossOriginCookies
+    ? {
+        advanced: {
+          defaultCookieAttributes: {
+            sameSite: "none",
+            secure: true,
+          },
+        },
+      }
+    : {}),
 });

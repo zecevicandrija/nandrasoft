@@ -1,4 +1,4 @@
-import { requirePackingWorker, validatePackingOrder } from "../lib/packingWorkOrders.js";
+import { enrichPackingWorkOrders, requirePackingWorker, validatePackingOrder } from "../lib/packingWorkOrders.js";
 import { materialsInclude, prepareMaterials } from "../lib/workMaterials.js";
 import { createWorkOrderSchema, orderStatusEnum, createWorkOrderRecord, REMONT_PRIORITY_MAP } from "../lib/workOrderCreate.js";
 import { assertOrderTransition, assertGenericOrderEdit } from "../lib/workOrderStatusService.js";
@@ -262,9 +262,10 @@ router.get("/", async (req, res) => {
     }
 
     const totalPages = Math.max(1, Math.ceil(total / limit));
+    const enrichedOrders = await enrichPackingWorkOrders(prisma, workOrders);
 
     res.json({
-      workOrders,
+      workOrders: enrichedOrders,
       pagination: {
         total,
         page,
@@ -302,7 +303,8 @@ router.get("/:id", async (req, res) => {
       return res.status(403).json({ error: "Nemate dozvolu za pristup ovom radnom nalogu." });
     }
 
-    res.json({ workOrder: order });
+    const [enrichedOrder] = await enrichPackingWorkOrders(prisma, [order]);
+    res.json({ workOrder: enrichedOrder });
   } catch (error) {
     console.error("Greška pri dohvatanju radnog naloga:", error);
     res.status(500).json({ error: "Greška na serveru." });
